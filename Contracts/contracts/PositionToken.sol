@@ -10,14 +10,7 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 import {ERC7540} from "@openzeppelin/community-contracts/contracts/token/ERC20/extensions/ERC7540.sol";
 import {ERC7540AdminDeposit} from "@openzeppelin/community-contracts/contracts/token/ERC20/extensions/ERC7540AdminDeposit.sol";
 import {ERC7540AdminRedeem} from "@openzeppelin/community-contracts/contracts/token/ERC20/extensions/ERC7540AdminRedeem.sol";
-
-/// @dev Long or short exposure. An enum (not a bool) so a future third state -- e.g. a
-/// neutral/hedged strategy -- doesn't force a breaking rename; call sites read as
-/// `direction == Direction.Short` rather than a bare `!isLong`.
-enum Direction {
-    Long,
-    Short
-}
+import {Direction} from "./ILaxuTypes.sol";
 
 /**
  * @title PositionToken
@@ -26,7 +19,7 @@ enum Direction {
  * set once via {initialize}, not a constructor.
  *
  * Built on OpenZeppelin community-contracts' {ERC7540} base combined with the
- * {ERC7540AdminDeposit} / {ERC7540AdminRedeem} fulfillment strategies: `backendOperator` explicitly
+ * {ERC7540AdminDeposit} / {ERC7540AdminRedeem} fulfillment strategies: `arcusOperator` explicitly
  * transitions a controller's pending request to claimable, providing the exact exchange rate. That
  * matches this vault's real-world constraint -- a request can only become claimable after the
  * backend has actually moved margin on Arcus, not on a timer or a price tick.
@@ -34,7 +27,7 @@ enum Direction {
  * Two separate off-chain trust roles, kept visibly distinct even though one team runs both today:
  * - {creForwarder}: Chainlink CRE's forwarder. Reports price/funding only via {onReport}. Never
  *   moves capital.
- * - {backendOperator}: confirms real capital movement on Arcus before a request becomes claimable,
+ * - {arcusOperator}: confirms real capital movement on Arcus before a request becomes claimable,
  *   via {fulfillDepositRequest} / {fulfillRedeemRequest}, and closes the position via {close}.
  *   Never sets price.
  */
@@ -76,7 +69,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     // ---------------------------------------------------------------------
 
     address public creForwarder;
-    address public backendOperator;
+    address public arcusOperator;
 
     // ---------------------------------------------------------------------
     // Fees
@@ -149,7 +142,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         bytes32 _arcusPositionId,
         address _asset,
         address _creForwarder,
-        address _backendOperator,
+        address _arcusOperator,
         uint256 _creatorFeeBps
     ) external initializer {
         require(_creator != address(0), "PositionToken: zero creator");
@@ -157,7 +150,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         // a sanity check that the Factory is wiring up the asset it thinks it is, not a live setter.
         require(_asset == asset(), "PositionToken: asset mismatch");
         require(_creForwarder != address(0), "PositionToken: zero forwarder");
-        require(_backendOperator != address(0), "PositionToken: zero operator");
+        require(_arcusOperator != address(0), "PositionToken: zero operator");
         require(_entryPrice > 0, "PositionToken: zero entry price");
         require(_initialDeposit > 0, "PositionToken: zero deposit");
         require(_creatorFeeBps <= MAX_CREATOR_FEE_BPS, "PositionToken: fee too high");
@@ -171,7 +164,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         initialDeposit = _initialDeposit;
         arcusPositionId = _arcusPositionId;
         creForwarder = _creForwarder;
-        backendOperator = _backendOperator;
+        arcusOperator = _arcusOperator;
         creatorFeeBps = _creatorFeeBps;
 
         // Bootstrap price = 1: mark == entry means PnL == 0 the instant the vault exists, so
@@ -303,7 +296,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
      * parity with the spec and is always 0.
      */
     function fulfillDepositRequest(uint256 requestId, address controller, uint256 fulfillmentPrice) external {
-        require(msg.sender == backendOperator, "PositionToken: not backend operator");
+        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
         require(requestId == 0, "PositionToken: invalid requestId");
         require(fulfillmentPrice > 0, "PositionToken: invalid price");
 
@@ -323,7 +316,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
      * claimable. See {fulfillDepositRequest} for why `controller` is required alongside `requestId`.
      */
     function fulfillRedeemRequest(uint256 requestId, address controller, uint256 fulfillmentPrice) external {
-        require(msg.sender == backendOperator, "PositionToken: not backend operator");
+        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
         require(requestId == 0, "PositionToken: invalid requestId");
         require(fulfillmentPrice > 0, "PositionToken: invalid price");
 
@@ -346,7 +339,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     // ---------------------------------------------------------------------
 
     function close(uint256 finalMarkPrice, int256 finalFunding, bool wasLiquidated) external {
-        require(msg.sender == backendOperator, "PositionToken: not backend operator");
+        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
         require(!closed, "PositionToken: already closed");
 
         int256 value = _computeValue(finalMarkPrice, finalFunding);
