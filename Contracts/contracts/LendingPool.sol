@@ -23,7 +23,8 @@ import {IPositionToken} from "./IPositionToken.sol";
  * Collateral is priced LIVE off the position token on every read -- nothing is cached here, ever.
  * That is what makes "position gains value -> borrower gets more headroom, with no interaction
  * from anybody" fall out for free, and it is also why a stale CRE report is a real risk rather
- * than a theoretical one (see {healthFactor}).
+ * than a theoretical one: see {freshOracle} for the guard, and {liquidate} for why that guard
+ * deliberately does not cover every function.
  */
 contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     using Math for uint256;
@@ -92,6 +93,20 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     /// (The spec resolved the rate to a protocol-wide constant but left the number open; 10% is
     /// the chosen starting value for volatile collateral.)
     uint256 public constant BORROW_APR_BPS = 1_000; // 10% APR, simple (non-compounding)
+
+    /**
+     * @dev Resolves the report-latency gap risk cited throughout the risk-parameter reasoning
+     * above -- not a duplicate of it. Multiple/whitelisted CRE nodes don't help here: a DON
+     * reaching consensus across nodes protects against one node lying about the data (an
+     * integrity problem), not against how long ago the last successful report was (a recency
+     * problem) -- every node calls the same backend endpoint, so they'd all faithfully agree on
+     * the same stale number. A timestamp check against {IPositionToken-lastReportTimestamp} is
+     * the actual fix, applied via {freshOracle}.
+     *
+     * A starting guess, not tuned against real CRE report cadence yet -- revisit once the
+     * off-chain workflow is live and its actual interval is known.
+     */
+    uint256 public constant MAX_REPORT_AGE = 15 minutes;
 
     // ---------------------------------------------------------------------
     // Wiring -- set once at clone time
@@ -181,6 +196,26 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------------
+    // Oracle freshness guard
+    // ---------------------------------------------------------------------
+
+    /**
+     * @dev Blocks the two actions that OPEN new risk on a possibly-stale price: taking on more
+     * debt, or pulling collateral out from under existing debt. Deliberately NOT applied to
+     * {liquidate} or {healthFactor} -- see the rationale on {liquidate} itself. Blocking
+     * liquidation during a staleness window trades a small risk (acting on a slightly-old price)
+     * for a much bigger one (bad debt accumulating unchecked while liquidation sits frozen);
+     * liquidating on last-known data is safer than refusing to liquidate at all.
+     */
+    modifier freshOracle() {
+        require(
+            block.timestamp - IPositionToken(collateralToken).lastReportTimestamp() <= MAX_REPORT_AGE,
+            "LendingPool: stale oracle data"
+        );
+        _;
+    }
+
+    // ---------------------------------------------------------------------
     // Collateral
     // ---------------------------------------------------------------------
 
@@ -195,8 +230,9 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
 
     /// @dev Reverts if the withdrawal would push the caller below the liquidation line. Checked
     /// after the deduction rather than against a projected figure, so the guard reads the same
-    /// {healthFactor} a liquidator would.
-    function withdrawCollateral(uint256 shares) external nonReentrant {
+    /// {healthFactor} a liquidator would. Gated by {freshOracle}: pulling collateral out is,
+    /// like {borrow}, a way of increasing risk against a price that might be stale.
+    function withdrawCollateral(uint256 shares) external nonReentrant freshOracle {
         require(shares > 0, "LendingPool: zero shares");
         require(collateralBalance[msg.sender] >= shares, "LendingPool: insufficient collateral");
 
@@ -216,9 +252,11 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     /**
      * @dev Headroom is checked against LIVE collateral value, which is the whole mechanism: as the
      * underlying position gains value the borrower's limit rises on its own, with no re-appraisal,
-     * no oracle push into this contract and no transaction from anybody.
+     * no oracle push into this contract and no transaction from anybody. Gated by {freshOracle}:
+     * that live value is exactly what a stale report would misrepresent, and borrowing is how a
+     * misrepresented value turns into real new debt.
      */
-    function borrow(uint256 amount) external nonReentrant {
+    function borrow(uint256 amount) external nonReentrant freshOracle {
         require(amount > 0, "LendingPool: zero amount");
 
         _accrue(msg.sender);
@@ -267,6 +305,11 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
      * backend runs this today, and can run several independent wallets doing it, because nothing
      * here treats "liquidator" as an identity. Those wallets are worth funding separately from
      * `arcusOperator` and the deployer precisely because they need none of those privileges.
+     *
+     * Deliberately NOT gated by {freshOracle}, unlike {borrow} and {withdrawCollateral}. Blocking
+     * liquidation during a staleness window trades a small risk (acting on a slightly-old price)
+     * for a much bigger one (bad debt accumulating unchecked while liquidation sits frozen).
+     * Liquidating on last-known data is safer than refusing to liquidate at all.
      *
      * Seized collateral is transferred out as SHARES, never redeemed. {PositionToken} redemptions
      * are async (ERC-7540): they wait on `arcusOperator` confirming a real Arcus margin reduction.
@@ -318,11 +361,11 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     /**
      * @dev Ratio of risk-adjusted collateral to debt, in WAD. Below 1e18 the position is seizable.
      *
-     * TODO(stale-oracle): this trusts `markPrice` however old it is. Open decision, carried
-     * forward from the spec: should it read {IPositionToken-lastReportTimestamp} and refuse to
-     * operate -- or treat the position as maximally risky -- past some age? That is the same
-     * report-latency risk the conservative LTV above is partly sized for, showing up in a second
-     * place. Left unresolved deliberately rather than silently decided here.
+     * Trusts `markPrice` however old it is, and deliberately so -- this is a view, called from
+     * {liquidate} among other places, and {liquidate} must keep working on last-known data during
+     * a staleness window (see the rationale on {liquidate}). The staleness guard for the actions
+     * that OPEN new risk lives one level up, in {freshOracle} on {borrow} and
+     * {withdrawCollateral}, not here.
      */
     function healthFactor(address user) public view returns (uint256) {
         uint256 debt = currentDebt(user);

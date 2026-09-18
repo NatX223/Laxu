@@ -131,7 +131,10 @@ async function deployLendingFixture({ leverage = RISK_TIERS.low.leverage } = {})
 // Pushes a new mark price through the CRE reporting path, which is the only way collateral
 // value moves.
 async function report(positionToken, creForwarder, markPrice) {
-  const ts = (await positionToken.lastReportTimestamp()) + 1n;
+  // Timestamps the report at "now" (current chain time), not merely one tick past the previous
+  // report -- freshOracle compares against block.timestamp, so a report backdated to just after
+  // the last one would still read as stale after a time.increase() in between.
+  const ts = BigInt(await time.latest()) + 1n;
   const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
     ["uint256", "int256", "uint256"],
     [markPrice, 0n, ts]
@@ -374,7 +377,7 @@ describe("LendingPool", function () {
     });
 
     it("allows full collateral withdrawal once debt is cleared", async function () {
-      const { pool, positionToken, borrower } = await deployLendingFixture();
+      const { pool, positionToken, creForwarder, borrower } = await deployLendingFixture();
 
       await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
       await pool.connect(borrower).borrow(100n * PRICE_SCALE);
@@ -382,6 +385,9 @@ describe("LendingPool", function () {
       await pool.connect(borrower).repay(ethers.MaxUint256);
 
       expect(await pool.currentDebt(borrower.address)).to.equal(0n);
+      // withdrawCollateral is freshOracle-gated; the hour of time.increase above pushed the
+      // position's own report past MAX_REPORT_AGE, so a fresh report is needed first.
+      await report(positionToken, creForwarder, ENTRY_PRICE);
       await pool.connect(borrower).withdrawCollateral(INITIAL_DEPOSIT);
       expect(await positionToken.balanceOf(borrower.address)).to.equal(INITIAL_DEPOSIT);
     });
@@ -562,5 +568,76 @@ describe("LendingPool", function () {
       expect(await positionToken.balanceOf(liquidator.address)).to.equal(held);
       expect(await pool.collateralBalance(borrower.address)).to.equal(0n);
     });
+  });
+});
+
+describe("LendingPool oracle freshness", function () {
+  const MAX_REPORT_AGE = 15n * 60n; // matches LendingPool.MAX_REPORT_AGE
+
+  it("exposes the same MAX_REPORT_AGE this suite tests against", async function () {
+    const { pool } = await deployLendingFixture();
+    expect(await pool.MAX_REPORT_AGE()).to.equal(MAX_REPORT_AGE);
+  });
+
+  it("blocks borrow() once the collateral's last report is older than MAX_REPORT_AGE", async function () {
+    const { pool, borrower } = await deployLendingFixture();
+
+    await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
+    await time.increase(Number(MAX_REPORT_AGE) + 1);
+
+    await expect(pool.connect(borrower).borrow(1n * PRICE_SCALE)).to.be.revertedWith(
+      "LendingPool: stale oracle data"
+    );
+  });
+
+  it("allows borrow() again once a fresh report lands", async function () {
+    const { pool, positionToken, creForwarder, borrower } = await deployLendingFixture();
+
+    await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
+    await time.increase(Number(MAX_REPORT_AGE) + 1);
+    await expect(pool.connect(borrower).borrow(1n * PRICE_SCALE)).to.be.revertedWith(
+      "LendingPool: stale oracle data"
+    );
+
+    await report(positionToken, creForwarder, ENTRY_PRICE);
+    await pool.connect(borrower).borrow(1n * PRICE_SCALE); // no longer reverts
+  });
+
+  it("blocks withdrawCollateral() the same way it blocks borrow()", async function () {
+    const { pool, borrower } = await deployLendingFixture();
+
+    await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
+    await time.increase(Number(MAX_REPORT_AGE) + 1);
+
+    await expect(
+      pool.connect(borrower).withdrawCollateral(1n * PRICE_SCALE)
+    ).to.be.revertedWith("LendingPool: stale oracle data");
+  });
+
+  it("does NOT block liquidate() on stale data -- liquidating on last-known data beats not liquidating at all", async function () {
+    const { pool, positionToken, creForwarder, borrower, liquidator } = await deployLendingFixture();
+
+    await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
+    await pool.connect(borrower).borrow((INITIAL_DEPOSIT * 5_000n) / BPS); // TIER_LOW LTV cap
+
+    // Underwater report, then let it go stale past MAX_REPORT_AGE.
+    await report(positionToken, creForwarder, (ENTRY_PRICE * 9000n) / 10_000n);
+    await time.increase(Number(MAX_REPORT_AGE) + 1);
+
+    const age = BigInt(await time.latest()) - (await positionToken.lastReportTimestamp());
+    expect(age).to.be.greaterThan(MAX_REPORT_AGE); // the data really is stale for this call
+
+    const debt = await pool.currentDebt(borrower.address);
+    await pool.connect(liquidator).liquidate(borrower.address, debt / 2n); // does not revert
+  });
+
+  it("does NOT block healthFactor() on stale data -- liquidate() depends on it staying callable", async function () {
+    const { pool, borrower } = await deployLendingFixture();
+
+    await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
+    await pool.connect(borrower).borrow(1n * PRICE_SCALE);
+    await time.increase(Number(MAX_REPORT_AGE) + 1);
+
+    await expect(pool.healthFactor(borrower.address)).to.not.be.reverted;
   });
 });

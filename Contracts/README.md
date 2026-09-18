@@ -85,13 +85,7 @@ the position stays liquidatable) but nothing repairs the vault's books afterward
 protocols use an insurance fund or governance write-offs. Out of scope for hackathon timeline.
 **The vault is not loss-proof.**
 
-**2. No stale-oracle guard.** `LendingPool.healthFactor()` trusts `markPrice` however old it is. It
-does not check `PositionToken.lastReportTimestamp`. This is the same report-latency risk the
-conservative LTV is partly sized for, showing up in a second place — the interface exposes
-`lastReportTimestamp()` so the guard is a small change when the policy is decided, but the policy
-(block? degrade to maximally-risky? what age?) is genuinely undecided, so nothing was assumed here.
-
-**3. Leverage above 20× is not covered by the tier table.** `LendingPool._riskTierFor` has three
+**2. Leverage above 20× is not covered by the tier table.** `LendingPool._riskTierFor` has three
 brackets (1–5×, 6–10×, 11–20×) and no upper bound check — a position above 20× silently falls
 through to the 11–20× tier rather than reverting or getting its own bracket. Not a live problem
 today because `PositionToken` creation currently keeps leverage within that range, but nothing in
@@ -99,14 +93,37 @@ today because `PositionToken` creation currently keeps leverage within that rang
 leverage. Revisit then; `test/Lending.js` documents the current fall-through behavior explicitly
 rather than leaving it implicit.
 
-**4. `DUST_THRESHOLD_USD` assumes a 6-decimal USDG.** It is `50e6` per spec. If USDG ships with 18
+**3. `DUST_THRESHOLD_USD` assumes a 6-decimal USDG.** It is `50e6` per spec. If USDG ships with 18
 decimals (as `MockUSDG` does) the constant is effectively zero and the force-full-liquidation dust
 rule never fires. Harmless in testing, re-scale before mainnet.
 
-**5. Duplicate pools per token are allowed.** `createPool` does not reject a `PositionToken` that
+**4. Duplicate pools per token are allowed.** `createPool` does not reject a `PositionToken` that
 already has a pool. Because risk parameters resolve deterministically from the collateral's own
 leverage, duplicates are a liquidity-fragmentation inefficiency, not a safety hole —
 `factory.primaryPool()` gives the UI one canonical answer.
+
+**5. `MAX_REPORT_AGE` (15 minutes) is a starting guess, not tuned against real CRE cadence.** See
+"Oracle staleness guard" below for what it does and doesn't cover — the gap here is purely the
+number itself, which needs revisiting once the off-chain reporting workflow's actual interval is
+known.
+
+---
+
+## Oracle staleness guard
+
+`LendingPool.borrow()` and `withdrawCollateral()` are gated by a `freshOracle` modifier: both
+revert if `block.timestamp - PositionToken.lastReportTimestamp() > MAX_REPORT_AGE` (15 minutes).
+Both are actions that *open* new risk against a live collateral read, so both need that read to be
+recent.
+
+`liquidate()` and `healthFactor()` are deliberately **not** gated, and this is not an oversight.
+Multiple/whitelisted CRE nodes don't fix this either way — a DON reaching consensus protects
+against one node lying about the data (an integrity problem), not against how long ago the last
+successful report was (a recency problem); every node calls the same backend endpoint, so more
+nodes just means more agreement on the same stale number. Blocking liquidation during a staleness
+window would trade a small risk (acting on a slightly-old price) for a much bigger one (bad debt
+accumulating unchecked while liquidation sits frozen) — liquidating on last-known data is safer
+than refusing to liquidate at all, so `liquidate()` keeps working exactly as spec'd, unguarded.
 
 ---
 
