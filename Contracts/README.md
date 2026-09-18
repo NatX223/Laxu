@@ -102,19 +102,20 @@ already has a pool. Because risk parameters resolve deterministically from the c
 leverage, duplicates are a liquidity-fragmentation inefficiency, not a safety hole —
 `factory.primaryPool()` gives the UI one canonical answer.
 
-**5. `MAX_REPORT_AGE` (15 minutes) is a starting guess, not tuned against real CRE cadence.** See
-"Oracle staleness guard" below for what it does and doesn't cover — the gap here is purely the
-number itself, which needs revisiting once the off-chain reporting workflow's actual interval is
-known.
+**5. `MAX_REPORT_AGE` (7 minutes) still wants real-world validation.** It is not an independent
+guess — it is the CRE workflow's 5-minute deviation+heartbeat write policy (see
+`cre-workflow-spec.md`) plus a buffer for normal execution/confirmation lag — but that buffer is
+sized on paper, not against an observed live lag. See "Oracle staleness guard" below for what the
+guard does and doesn't cover.
 
 ---
 
 ## Oracle staleness guard
 
 `LendingPool.borrow()` and `withdrawCollateral()` are gated by a `freshOracle` modifier: both
-revert if `block.timestamp - PositionToken.lastReportTimestamp() > MAX_REPORT_AGE` (15 minutes).
-Both are actions that *open* new risk against a live collateral read, so both need that read to be
-recent.
+revert if `block.timestamp - PositionToken.lastReportTimestamp() > MAX_REPORT_AGE` (7 minutes —
+the CRE workflow's 5-minute heartbeat plus a lag buffer, not a round-number guess). Both are
+actions that *open* new risk against a live collateral read, so both need that read to be recent.
 
 `liquidate()` and `healthFactor()` are deliberately **not** gated, and this is not an oversight.
 Multiple/whitelisted CRE nodes don't fix this either way — a DON reaching consensus protects

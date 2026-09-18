@@ -20,10 +20,10 @@ contract PositionTokenFactory is Ownable {
     address public positionTokenImplementation; // logic contract, deployed once, cloned many times
 
     /// @dev Gated caller for {createPosition}. Same real-world address as PositionToken's
-    /// `backendOperator`, but named differently here on purpose: in this Factory its only job is
+    /// `arcusOperator`, but named differently here on purpose: in this Factory its only job is
     /// deploying position tokens, while inside PositionToken the same address gates fulfilling
     /// requests and closing positions -- meaningfully more than deploying. Do not rename
-    /// PositionToken's `backendOperator` to match this for consistency; that would erase a real
+    /// PositionToken's `arcusOperator` to match this for consistency; that would erase a real
     /// distinction, not just tidy up naming.
     address public deployer;
     address public creForwarder; // CRE forwarder address, passed to every new clone
@@ -87,7 +87,7 @@ contract PositionTokenFactory is Ownable {
             arcusPositionId,
             usdg,
             creForwarder,
-            deployer, // passed through -- becomes `backendOperator` on the receiving side
+            deployer, // passed through -- becomes `arcusOperator` on the receiving side
             creatorFeeBps
         );
 

@@ -101,12 +101,14 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
      * integrity problem), not against how long ago the last successful report was (a recency
      * problem) -- every node calls the same backend endpoint, so they'd all faithfully agree on
      * the same stale number. A timestamp check against {IPositionToken-lastReportTimestamp} is
-     * the actual fix, applied via {freshOracle}.
+     * the actual fix, applied via {freshOracle}, paired on the workflow side with a
+     * deviation+heartbeat write policy rather than a slow fixed clock (see cre-workflow-spec.md).
      *
-     * A starting guess, not tuned against real CRE report cadence yet -- revisit once the
-     * off-chain workflow is live and its actual interval is known.
+     * Sized directly off that heartbeat: the CRE workflow writes at least every 5 minutes, so 7
+     * is that heartbeat plus a buffer for normal execution/confirmation lag, not an independent
+     * guess. Still worth revisiting once the live workflow's actual lag is observed.
      */
-    uint256 public constant MAX_REPORT_AGE = 15 minutes;
+    uint256 public constant MAX_REPORT_AGE = 7 minutes;
 
     // ---------------------------------------------------------------------
     // Wiring -- set once at clone time

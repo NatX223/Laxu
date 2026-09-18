@@ -572,7 +572,7 @@ describe("LendingPool", function () {
 });
 
 describe("LendingPool oracle freshness", function () {
-  const MAX_REPORT_AGE = 15n * 60n; // matches LendingPool.MAX_REPORT_AGE
+  const MAX_REPORT_AGE = 7n * 60n; // matches LendingPool.MAX_REPORT_AGE
 
   it("exposes the same MAX_REPORT_AGE this suite tests against", async function () {
     const { pool } = await deployLendingFixture();

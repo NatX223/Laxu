@@ -18,7 +18,7 @@ interface IPositionToken {
         bytes32 _arcusPositionId,
         address _asset,
         address _creForwarder,
-        address _backendOperator,
+        address _arcusOperator,
         uint256 _creatorFeeBps
     ) external;
 
@@ -46,8 +46,9 @@ interface IPositionToken {
             bool closed_
         );
 
-    /// @dev Timestamp of the last CRE price/funding report. Exposed for staleness checks -- see
-    /// the open stale-oracle decision noted in {LendingPool-healthFactor}.
+    /// @dev Timestamp of the last CRE price/funding report. This is what {LendingPool-freshOracle}
+    /// checks `borrow`/`withdrawCollateral` against -- see there for why `liquidate` and
+    /// `healthFactor` deliberately do NOT check it.
     function lastReportTimestamp() external view returns (uint256);
 
     /// @dev True once the underlying Arcus position has been settled; value is then frozen at
