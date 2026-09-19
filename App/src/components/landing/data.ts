@@ -226,16 +226,16 @@ export const ASSET_CLASSES = [
     tags: ["ETH", "BTC", "ARB", "+80 MORE"],
   },
   {
-    pill: "PTOKENS",
-    title: "pTokens",
-    badge: "POOLED",
+    pill: "LTOKENS",
+    title: "lTokens",
+    badge: "PERMISSIONLESS",
     badgeBg: "#0b7a55",
     glow: "radial-gradient(64% 64% at 50% 50%, rgba(15,155,108,0.18) 0%, rgba(255,255,255,0) 72%)",
     dropShadow: "drop-shadow(0 22px 30px rgba(7,61,43,0.24))",
     src: "/laxu/asset-ptokens.png",
-    alt: "pTokens",
-    body: "Arcus's own pooled tokens sit alongside your individual ones. Hold the pool for broad exposure, or mint a single position when you want your own entry.",
-    tags: ["SHARED POOL", "ARCUS NATIVE"],
+    alt: "lTokens",
+    body: "Every lToken is your own position — your entry, your size, your leverage. Mint it, let others buy in, or borrow against it — it's still your trade.",
+    tags: ["SHARED POOL", "LAXU NATIVE"],
   },
 ];
 

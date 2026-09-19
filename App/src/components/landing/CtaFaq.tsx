@@ -151,23 +151,6 @@ export default function CtaFaq() {
                 paddingTop: 18,
               }}
             >
-              {CTA_STATS.map((stat) => (
-                <div
-                  key={stat}
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 700,
-                    letterSpacing: "0.08em",
-                    color: "#4a4038",
-                    background: "rgba(255,255,255,0.6)",
-                    border: "1px solid rgba(26,23,20,0.14)",
-                    padding: "9px 15px",
-                    borderRadius: 99,
-                  }}
-                >
-                  {stat}
-                </div>
-              ))}
             </div>
           )}
         </div>

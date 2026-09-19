@@ -56,7 +56,7 @@ export default function AssetsSection() {
               color: "#16130f",
             }}
           >
-            Three markets, one <i>primitive</i>
+            Old markets, new <i>primitive</i>
           </h2>
           <p
             style={{

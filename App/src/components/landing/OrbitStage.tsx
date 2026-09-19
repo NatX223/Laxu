@@ -125,7 +125,7 @@ export default function OrbitStage() {
                 color: "#5b2fd6",
               }}
             >
-              ONE POSITION, ONE TOKEN
+              YOUR POSITION, TOKENIZED
             </div>
             <div
               style={{
@@ -147,7 +147,7 @@ export default function OrbitStage() {
                 textWrap: "pretty",
               }}
             >
-              Slide to mint. From there it lends, trades and splits like any other token on
+              Tokenize a trade. From there it lends, trades and splits like any other token on
               Robinhood Chain.
             </div>
           </div>

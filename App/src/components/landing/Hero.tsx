@@ -173,7 +173,7 @@ export default function Hero() {
               textTransform: "uppercase",
             }}
           >
-            Built on Robinhood Chain · positions powered by Arcus
+            Built on Robinhood Chain · powered by Arcus
           </div>
         )}
       </div>
