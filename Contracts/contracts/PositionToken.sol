@@ -6,6 +6,7 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC7540} from "@openzeppelin/community-contracts/contracts/token/ERC20/extensions/ERC7540.sol";
 import {ERC7540AdminDeposit} from "@openzeppelin/community-contracts/contracts/token/ERC20/extensions/ERC7540AdminDeposit.sol";
@@ -33,6 +34,7 @@ import {Direction} from "./ILaxuTypes.sol";
  */
 contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem {
     using Math for uint256;
+    using Strings for uint256;
 
     /// @dev Fixed-point scale for entryPrice/markPrice, matching whatever CRE reports in.
     uint256 public constant PRICE_SCALE = 1e18;
@@ -55,6 +57,9 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     /// @dev Actual margin/capital behind the position (not notional) -- minted as shares 1:1 at genesis.
     uint256 public initialDeposit;
     bytes32 public arcusPositionId;
+    /// @dev Optional, set once at `initialize()` and immutable for the life of the contract -- see
+    /// {name} for why there is deliberately no setter, even gated to `creator`.
+    string public nickname;
 
     // ---------------------------------------------------------------------
     // Live oracle state -- written only via `onReport`, gated to `creForwarder`
@@ -116,14 +121,62 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         _disableInitializers();
     }
 
-    /// @dev Real metadata can't live in constructor-set storage (clones skip the constructor), so
-    /// these are computed instead of stored.
-    function name() public pure override(ERC20, IERC20Metadata) returns (string memory) {
-        return "Laxu Position";
+    /**
+     * @dev Real metadata can't live in constructor-set storage (clones skip the constructor), so
+     * these are `view` and derived from each clone's own storage (set via {initialize}), the same
+     * way `entryPrice`/`size`/etc. already work per-clone -- otherwise every clone would
+     * `delegatecall` into the same shared logic bytecode and return an identical hardcoded string.
+     *
+     * The structured part ("Laxu ETH Long 5x #<id>") always leads and is never replaced -- wherever
+     * this token surfaces (Etherscan, a wallet, a third-party marketplace), that's the first thing
+     * shown. `nickname` is strictly an optional suffix, so a self-chosen name like "Official Laxu
+     * Treasury" can only ever render as "Laxu ETH Long 5x #<id> · Official Laxu Treasury" --
+     * obviously self-appointed flavor text, never a credible standalone claim.
+     */
+    function name() public view override(ERC20, IERC20Metadata) returns (string memory) {
+        string memory base = string.concat(
+            "Laxu ",
+            marketLabel(),
+            " ",
+            directionLabel(),
+            " ",
+            leverageLabel(),
+            " #",
+            _bytes32ToString(arcusPositionId)
+        );
+        if (bytes(nickname).length == 0) return base;
+        return string.concat(base, unicode" · ", nickname);
     }
 
-    function symbol() public pure override(ERC20, IERC20Metadata) returns (string memory) {
-        return "LAXU-POS";
+    function symbol() public view override(ERC20, IERC20Metadata) returns (string memory) {
+        return string.concat("l", marketLabel(), "-", leverageLabel(), direction == Direction.Short ? "S" : "L");
+    }
+
+    function marketLabel() internal view returns (string memory) {
+        return _bytes32ToString(market);
+    }
+
+    function directionLabel() internal view returns (string memory) {
+        return direction == Direction.Short ? "Short" : "Long";
+    }
+
+    function leverageLabel() internal view returns (string memory) {
+        return string.concat(leverage.toString(), "x");
+    }
+
+    /// @dev `market` and `arcusPositionId` are both null-padded short ASCII strings (see
+    /// {ethers-encodeBytes32String} on the caller side); trims the trailing null bytes back into a
+    /// normal string.
+    function _bytes32ToString(bytes32 raw) internal pure returns (string memory) {
+        uint256 length;
+        while (length < 32 && raw[length] != 0) {
+            length++;
+        }
+        bytes memory result = new bytes(length);
+        for (uint256 i = 0; i < length; i++) {
+            result[i] = raw[i];
+        }
+        return string(result);
     }
 
     /**
@@ -143,7 +196,8 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         address _asset,
         address _creForwarder,
         address _arcusOperator,
-        uint256 _creatorFeeBps
+        uint256 _creatorFeeBps,
+        string calldata _nickname
     ) external initializer {
         require(_creator != address(0), "PositionToken: zero creator");
         // asset() reads the immutable set at implementation-deploy time (see constructor); this is
@@ -166,6 +220,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         creForwarder = _creForwarder;
         arcusOperator = _arcusOperator;
         creatorFeeBps = _creatorFeeBps;
+        nickname = _nickname; // may be empty string -- that's valid, renders as no suffix
 
         // Bootstrap price = 1: mark == entry means PnL == 0 the instant the vault exists, so
         // totalAssets() == initialDeposit right after the mint below.

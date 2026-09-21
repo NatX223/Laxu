@@ -70,7 +70,8 @@ contract PositionTokenFactory is Ownable {
         uint256 size,
         uint256 initialDeposit,
         bytes32 arcusPositionId,
-        uint256 creatorFeeBps
+        uint256 creatorFeeBps,
+        string calldata nickname // pass "" if the creator doesn't want one
     ) external returns (address positionToken) {
         require(msg.sender == deployer, "not deployer");
 
@@ -88,7 +89,8 @@ contract PositionTokenFactory is Ownable {
             usdg,
             creForwarder,
             deployer, // passed through -- becomes `arcusOperator` on the receiving side
-            creatorFeeBps
+            creatorFeeBps,
+            nickname
         );
 
         allPositions.push(positionToken);

@@ -71,7 +71,8 @@ async function deployLendingFixture({ leverage = RISK_TIERS.low.leverage } = {})
     usdg.target,
     creForwarder.address,
     arcusOperator.address,
-    0n
+    0n,
+    ""
   );
 
   // --- liquidity: the shared vault ---

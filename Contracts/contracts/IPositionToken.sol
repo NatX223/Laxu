@@ -19,7 +19,8 @@ interface IPositionToken {
         address _asset,
         address _creForwarder,
         address _arcusOperator,
-        uint256 _creatorFeeBps
+        uint256 _creatorFeeBps,
+        string calldata _nickname
     ) external;
 
     // -----------------------------------------------------------------------------------------

@@ -55,7 +55,8 @@ async function deployPositionTokenFixture({
       usdg.target,
       creForwarder.address,
       backendOperator.address,
-      creatorFeeBps
+      creatorFeeBps,
+      ""
     );
 
   await usdg.mint(depositor.address, 1_000_000n * PRICE_SCALE);
@@ -130,7 +131,8 @@ describe("PositionToken", function () {
           usdg.target,
           creForwarder.address,
           backendOperator.address,
-          creatorFeeBps
+          creatorFeeBps,
+          ""
         )
       ).to.be.reverted;
     });
@@ -173,7 +175,8 @@ describe("PositionToken", function () {
             wrongAsset.target,
             creForwarder.address,
             backendOperator.address,
-            0n
+            0n,
+            ""
           )
       ).to.be.revertedWith("PositionToken: asset mismatch");
     });
