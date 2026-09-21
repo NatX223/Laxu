@@ -74,3 +74,239 @@ img {
     animation: none !important;
   }
 }
+
+/* --- trade workspace --------------------------------------------------- */
+
+/* The trade screen paints its own dusk-violet ground over the site default. */
+body:has(.laxu-trade-root) {
+  background: #1c1638;
+}
+
+.laxu-trade-root input[type="range"] {
+  accent-color: #9670ff;
+}
+
+@keyframes laxu-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes laxu-rise {
+  from {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes laxu-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* hover states the prototype expressed as `style-hover` */
+
+.laxu-mkt-pill:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.laxu-info-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.laxu-info-close:hover {
+  color: #ffffff;
+}
+
+.laxu-wallet:hover {
+  background: #ffd9a0;
+}
+
+.laxu-mkt-chip:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* wins over the selected row's violet wash, as the prototype's override did */
+.laxu-mkt-row:hover {
+  background: rgba(255, 255, 255, 0.07) !important;
+}
+
+.laxu-size-chip:hover {
+  background: rgba(150, 112, 255, 0.3);
+}
+
+.laxu-submit:hover {
+  transform: translateY(-1px);
+}
+
+.laxu-tokenize:hover {
+  background: #ab8dff !important;
+}
+
+.laxu-mint-cancel:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .laxu-trade-root *,
+  .laxu-trade-root *::before,
+  .laxu-trade-root *::after {
+    animation: none !important;
+  }
+}
+
+/* --- community market -------------------------------------------------- */
+
+/* Like the trade screen, this page paints its own dusk-violet ground. */
+body:has(.laxu-community-root) {
+  background: #1c1638;
+}
+
+.laxu-community-root a {
+  text-decoration: none;
+}
+
+/*
+ * The prototype animated the toast with `translateY` alone, which wipes out
+ * the `translateX(-50%)` that centres it; the shift is folded in here.
+ */
+@keyframes laxu-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.laxu-toast {
+  animation: laxu-toast-in 0.24s ease;
+}
+
+/* hover states the prototype expressed as `style-hover` */
+
+.laxu-nav-link:hover {
+  color: #fdfbf7 !important;
+  background: rgba(255, 255, 255, 0.07) !important;
+}
+
+.laxu-nav-current:hover {
+  color: #ffffff !important;
+}
+
+.laxu-spot-title:hover {
+  color: #ffd9a0 !important;
+}
+
+.laxu-spot-buy:hover {
+  background: #b79dff !important;
+  color: #16130f !important;
+}
+
+.laxu-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.laxu-row-title:hover {
+  color: #d5c6ff !important;
+}
+
+.laxu-row-buy:hover {
+  background: #9670ff !important;
+  color: #fdfbf7 !important;
+}
+
+.laxu-pager:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .laxu-community-root *,
+  .laxu-community-root *::before,
+  .laxu-community-root *::after {
+    animation: none !important;
+  }
+}
+
+/* --- position token screen --------------------------------------------- */
+
+/* Like the market it hangs off, this page paints its own dusk-violet ground. */
+body:has(.laxu-position-root) {
+  background: #1c1638;
+}
+
+.laxu-position-root a {
+  text-decoration: none;
+}
+
+/*
+ * Position state: four cells a row, so the eight balance 4 + 4. The design's
+ * `auto-fit` tracks fitted five at this width and left a ragged 5 + 3.
+ */
+.laxu-state-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 860px) {
+  .laxu-state-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* The prototype's chips and swatches were divs; as buttons they need the reset. */
+.laxu-position-root button {
+  margin: 0;
+  font: inherit;
+  line-height: normal;
+}
+
+/* hover states the prototype expressed as `style-hover` */
+
+.laxu-back:hover {
+  color: #fdfbf7 !important;
+}
+
+.laxu-loan-chip:hover {
+  background: #9670ff !important;
+  color: #fdfbf7 !important;
+}
+
+.laxu-react-add:hover {
+  color: #fdfbf7 !important;
+  border-color: rgba(255, 255, 255, 0.5) !important;
+}
+
+.laxu-react-swatch:hover {
+  background: rgba(150, 112, 255, 0.3) !important;
+}
+
+.laxu-quick:hover {
+  background: rgba(150, 112, 255, 0.28) !important;
+  color: #fdfbf7 !important;
+}
+
+.laxu-buy:not(:disabled):hover {
+  filter: brightness(1.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .laxu-position-root *,
+  .laxu-position-root *::before,
+  .laxu-position-root *::after {
+    animation: none !important;
+  }
+}

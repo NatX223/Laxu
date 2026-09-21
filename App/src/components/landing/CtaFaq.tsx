@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { COPY, CTA_STATS, FAQS } from "./data";
 import { Grain, SERIF } from "./shared";
@@ -90,8 +91,7 @@ export default function CtaFaq() {
             }}
           >
             Open a trade on Arcus, wrap it with Laxu, and it becomes something you can borrow
-            against, sell outright, or open up to other traders. One transaction, no new venue to
-            learn.
+            against, sell outright, or open up to other traders.
           </p>
           <div
             style={{
@@ -102,8 +102,8 @@ export default function CtaFaq() {
               paddingTop: 10,
             }}
           >
-            <a
-              href="#"
+            <Link
+              href="/trade"
               className="laxu-cta-primary"
               style={{
                 fontSize: 15,
@@ -120,7 +120,7 @@ export default function CtaFaq() {
               }}
             >
               {COPY.ctaLabel}
-            </a>
+            </Link>
             <a
               href="#"
               className="laxu-cta-secondary"

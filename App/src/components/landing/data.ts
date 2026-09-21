@@ -194,7 +194,7 @@ export const FLOWS = [
     eyebrow: "03 · SHARE",
     eyebrowInk: "#075c40",
     title: "Let others buy in",
-    body: "Others mint shares of your open position through a standard ERC-4626 deposit and ride the same entry. You keep your stake and earn a fee every time someone joins.",
+    body: "Others mint shares of your open position through a standard ERC-4626 deposit and ride the same entry, not just a call. You keep your stake and earn a fee every time someone joins.",
     src: "/laxu/flow-share.png",
     alt: "Share flow — equity buy-in split",
   },

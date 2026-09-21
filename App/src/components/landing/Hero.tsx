@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { COPY } from "./data";
 import { Grain, SERIF } from "./shared";
 
@@ -40,8 +42,8 @@ export default function Hero() {
             filter: "drop-shadow(0 4px 14px rgba(26,23,20,0.18))",
           }}
         />
-        <a
-          href="#"
+        <Link
+          href="/trade"
           className="laxu-nav-cta"
           style={{
             fontSize: 13,
@@ -57,7 +59,7 @@ export default function Hero() {
           }}
         >
           {COPY.navCtaLabel}
-        </a>
+        </Link>
       </div>
 
       <div
@@ -117,8 +119,8 @@ export default function Hero() {
           position — its own entry, size and leverage.
         </p>
 
-        <a
-          href="#"
+        <Link
+          href="/trade"
           className="laxu-hero-cta"
           style={{
             display: "inline-flex",
@@ -161,7 +163,7 @@ export default function Hero() {
               <polyline points="8 7 17 7 17 16" />
             </svg>
           </span>
-        </a>
+        </Link>
 
         {COPY.showChainCredit && (
           <div
