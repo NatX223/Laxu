@@ -75,7 +75,7 @@ export default function HeroBand({ vals }: { vals: Derived }) {
                 color: "#fdfbf7",
               }}
             >
-              Positions other people <i>minted</i>
+              Positions <i>tokenized</i> by the community
             </h1>
             <div style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500, color: "#c2b6e4", textWrap: "pretty" }}>
               Every token here is one live position — its own entry, size and leverage. Buy in, and you hold a slice of

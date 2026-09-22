@@ -53,7 +53,7 @@ export default function PositionHeader({ vals }: { vals: PositionVals }) {
           >
             <polyline points="15 6 9 12 15 18" />
           </svg>
-          Community market
+          Community tokens
         </Link>
 
         <div
@@ -179,7 +179,7 @@ export default function PositionHeader({ vals }: { vals: PositionVals }) {
                 <span>&middot;</span>
                 <span>{vals.addr}</span>
                 <span>&middot;</span>
-                <span>minted by {vals.creator}</span>
+                <span>created by {vals.creator}</span>
                 <span>&middot;</span>
                 <span>{vals.ageLabel}</span>
               </div>

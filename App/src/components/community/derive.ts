@@ -63,7 +63,7 @@ export function card(t: Token, rank: number): Card {
     initial: t.sym[0],
     accent: t.accent,
     logo: t.logo,
-    creator: "minted by " + t.creator,
+    creator: "created by " + t.creator,
     price: "$" + t.price.toFixed(t.price < 10 ? 3 : 2),
     chg: (up ? "+" : "") + t.chg.toFixed(2) + "%",
     c: up ? "#5fe3a8" : "#ff7d92",
@@ -140,7 +140,7 @@ export function derive(
   return {
     ...WAVES,
     heroStats: [
-      { k: "POSITION TOKENS LIVE", v: String(list.length * 37 + 118), c: "#fdfbf7" },
+      { k: "POSITION TOKENS", v: String(list.length * 37 + 118), c: "#fdfbf7" },
       { k: "VOLUME 24H", v: fmtUsd(totalVol), c: "#ffb765" },
       { k: "UNIQUE HOLDERS", v: fmtNum(totalHold * 6), c: "#5fe3a8" },
     ],

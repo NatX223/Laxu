@@ -5,20 +5,35 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc --outDir .test-build --rootDir src && node --test --test-name-pattern=. .test-build/**/*.test.js && node -e \"require('fs').rmSync('.test-build',{recursive:true,force:true})\"",
+    "postinstall": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:studio": "prisma studio",
+    "db:seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts",
+    "slots:provision": "ts-node-dev --transpile-only --respawn=false scripts/provisionSlots.ts"
+  },
+  "prisma": {
+    "seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts"
   },
   "dependencies": {
     "express": "^4.19.2",
     "dotenv": "^16.4.5",
     "cors": "^2.8.5",
     "axios": "^1.7.7",
-    "viem": "^2.21.0"
+    "viem": "^2.21.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8",
+    "@prisma/client": "^5.19.0"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
     "ts-node-dev": "^2.0.0",
     "@types/node": "^20.14.0",
     "@types/express": "^4.17.21",
-    "@types/cors": "^2.8.17"
+    "@types/cors": "^2.8.17",
+    "@types/ws": "^8.5.12",
+    "prisma": "^5.19.0"
   }
 }

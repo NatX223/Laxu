@@ -20,7 +20,7 @@ export default function TokensView({ engine }: { engine: TradeEngine }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.16em", color: "#ffd9a0" }}>POSITION TOKENS</div>
           <div style={{ fontFamily: SERIF, fontSize: 40, lineHeight: 1, letterSpacing: "-0.02em", color: "#fdfbf7" }}>
-            Your <i>minted</i> positions
+            Your <i>tokenized</i> positions
           </div>
         </div>
         <div style={{ display: "flex", gap: 10 }}>

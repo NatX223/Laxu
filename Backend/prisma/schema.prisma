@@ -1,0 +1,209 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Identity -- wallet address is the auth principal; `tag` is display only.
+// ---------------------------------------------------------------------------
+
+model User {
+  walletAddress String     @id @map("wallet_address")
+  tag           String     @unique
+  createdAt     DateTime   @default(now()) @map("created_at")
+  positions     Position[]
+
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Operator wallet pool -- Arcus caps subaccounts at 10 per wallet address, and
+// an Ed25519 API key binds to exactly one (wallet, accountIndex) pair at
+// creation. So the key lives on the SLOT, never on the wallet.
+// ---------------------------------------------------------------------------
+
+model OperatorWallet {
+  id           String           @id @default(cuid())
+  address      String           @unique
+  /// Name of the secret holding this wallet's EVM private key -- resolved
+  /// through src/config/secrets.ts, never the raw key.
+  evmSignerRef String           @map("evm_signer_ref")
+  status       String           @default("active") // 'active' | 'retired'
+  createdAt    DateTime         @default(now()) @map("created_at")
+  slots        SubaccountSlot[]
+
+  @@map("operator_wallets")
+}
+
+model SubaccountSlot {
+  id               String         @id @default(cuid())
+  operatorWalletId String         @map("operator_wallet_id")
+  operatorWallet   OperatorWallet @relation(fields: [operatorWalletId], references: [id])
+  accountIndex     Int            @map("account_index")
+
+  /// Ed25519 public key -- scoped to this exact (wallet, index) pair.
+  arcusApiKey String @map("arcus_api_key")
+  /// Secret name for the matching Ed25519 private key, not the key itself.
+  arcusApiSecretRef String @map("arcus_api_secret_ref")
+
+  status          String    @default("free") // 'free' | 'reserved' | 'allocated'
+  reservedForUser String?   @map("reserved_for_user")
+  reservedAt      DateTime? @map("reserved_at")
+  /// Set alongside reservedAt; the reclaim sweep frees any slot past it.
+  reservationExpiresAt DateTime? @map("reservation_expires_at")
+
+  positionId String?   @unique @map("position_id")
+  position   Position? @relation(fields: [positionId], references: [id])
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  @@unique([operatorWalletId, accountIndex])
+  @@index([status])
+  @@map("subaccount_slots")
+}
+
+// ---------------------------------------------------------------------------
+// Positions
+// ---------------------------------------------------------------------------
+
+model Position {
+  id String @id @default(cuid())
+
+  /// Null until the deposit confirms and the Factory mints the token -- the
+  /// whole point of the `pending` status is this window.
+  positionTokenAddress String? @unique @map("position_token_address")
+
+  userWalletAddress String @map("user_wallet_address")
+  user              User   @relation(fields: [userWalletAddress], references: [walletAddress])
+
+  subaccountSlot SubaccountSlot?
+
+  /// Arcus exposes no position id of its own; this carries the accepted entry
+  /// order id, which is what the on-chain arcusPositionId bytes32 encodes.
+  arcusPositionId String? @map("arcus_position_id")
+  arcusOrderId    String? @map("arcus_order_id")
+  /// Per-order client id, generated BEFORE placing so a restarted process can
+  /// still recognise its own fill when it re-attaches to the stream.
+  arcusClientId String? @unique @map("arcus_client_id")
+
+  /// bytes32 market key as stored on-chain; joins to Market.laxuMarket.
+  market    String
+  direction String // 'long' | 'short'
+  leverage  Int
+
+  /// Requested collateral, base-unit string in USDG decimals.
+  requestedAmount String @map("requested_amount")
+  /// Confirmed deposit, base units. Set once Arcus reports the DEPOSIT.
+  depositedAmount String? @map("deposited_amount")
+  /// VWAP entry, 1e18 fixed point -- matches PositionToken.PRICE_SCALE.
+  entryPrice String? @map("entry_price")
+  /// Filled size, 1e18 fixed point.
+  size          String?
+  nickname      String @default("")
+  creatorFeeBps Int    @default(0) @map("creator_fee_bps")
+
+  status        String  @default("pending") // 'pending' | 'open' | 'closed' | 'failed'
+  failureReason String? @map("failure_reason")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  closedAt  DateTime? @map("closed_at")
+
+  ledgerEntries LedgerEntry[]
+
+  @@index([status])
+  @@index([userWalletAddress])
+  @@map("positions")
+}
+
+// ---------------------------------------------------------------------------
+// Ledger -- arcusStatus is what makes crash recovery possible. Always write
+// `pending` BEFORE calling Arcus; flip to `confirmed` only after Arcus confirms,
+// so a restart mid-flight knows where it left off instead of guessing.
+// ---------------------------------------------------------------------------
+
+model LedgerEntry {
+  id         String   @id @default(cuid())
+  positionId String   @map("position_id")
+  position   Position @relation(fields: [positionId], references: [id])
+
+  type String // 'deposit' | 'margin_add' | 'margin_remove' | 'close'
+  /// String, not float -- avoids precision drift on money. USDG base units.
+  amount String
+
+  arcusStatus String @default("pending") @map("arcus_status") // 'pending' | 'confirmed' | 'reversed'
+
+  /// On-chain request correlation for the margin flows.
+  onchainRequestId String? @map("onchain_request_id")
+  controller       String?
+  /// Set once the matching fulfill* call lands, so the recovery sweep can tell
+  /// a finished entry from one stranded mid-flight.
+  onchainFulfilledAt DateTime? @map("onchain_fulfilled_at")
+
+  arcusRequestId String?  @map("arcus_request_id")
+  note           String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([positionId, type])
+  @@index([arcusStatus])
+  @@map("ledger_entries")
+}
+
+// ---------------------------------------------------------------------------
+// Market mapping. Not cosmetic: order signing converts human prices and sizes
+// into the integer ticks and quantums the Ed25519 payload is built from, and
+// that conversion needs tickSize/stepSize. No row here means no trading.
+// ---------------------------------------------------------------------------
+
+model Market {
+  /// bytes32 of the Laxu symbol, right-padded -- what PositionToken stores.
+  laxuMarket String @id @map("laxu_market")
+  /// Laxu-side display symbol, e.g. "TSLA".
+  symbol String @unique
+
+  arcusMarketId Int? @unique @map("arcus_market_id")
+  /// Arcus display name, e.g. "TSLA-USD".
+  arcusDisplayName String? @map("arcus_display_name")
+
+  tickSize     String? @map("tick_size")
+  stepSize     String? @map("step_size")
+  minOrderSize String? @map("min_order_size")
+  maxOrderSize String? @map("max_order_size")
+  status       String  @default("UNRESOLVED") // 'ONLINE' | 'OFFLINE' | 'UNRESOLVED'
+  maxLeverage  Int?    @map("max_leverage")
+
+  refreshedAt DateTime? @map("refreshed_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("markets")
+}
+
+// ---------------------------------------------------------------------------
+// Indexer cursors -- durable per-stream block position. Polling getLogs from a
+// stored cursor (rather than a live subscription) is what lets a restart resume
+// exactly where it stopped instead of silently skipping the gap.
+// ---------------------------------------------------------------------------
+
+model IndexerCursor {
+  name               String   @id
+  lastProcessedBlock BigInt   @map("last_processed_block")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@map("indexer_cursors")
+}
+
+// ---------------------------------------------------------------------------
+// SIWE nonces -- single-use, short-lived.
+// ---------------------------------------------------------------------------
+
+model AuthNonce {
+  nonce     String    @id
+  issuedAt  DateTime  @default(now()) @map("issued_at")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+
+  @@map("auth_nonces")
+}
