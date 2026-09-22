@@ -72,12 +72,16 @@ export const config = {
   indexerPollIntervalMs: num("INDEXER_POLL_INTERVAL_MS", 5_000),
   indexerBlockBatchSize: num("INDEXER_BLOCK_BATCH_SIZE", 2_000),
   indexerConfirmations: num("INDEXER_CONFIRMATIONS", 1),
+  /// How often the reporting job checks every allocated position's price/funding
+  /// against what's on-chain.
+  reporterIntervalMs: num("REPORTER_INTERVAL_MS", 60_000),
 
   // --- Background workers --------------------------------------------------
   // Off by default so `npm run dev` gives a plain API server; flip on where the
   // orchestration is meant to actually run.
   enableIndexer: bool("ENABLE_INDEXER", false),
   enableReconciler: bool("ENABLE_RECONCILER", false),
+  enableReporter: bool("ENABLE_REPORTER", false),
 
   // --- Auth ----------------------------------------------------------------
   siweDomain: optional("SIWE_DOMAIN", "localhost:3000"),

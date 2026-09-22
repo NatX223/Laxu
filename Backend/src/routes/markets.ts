@@ -13,6 +13,7 @@ marketsRouter.get(
       markets: markets.map((market) => ({
         symbol: market.symbol,
         laxuMarket: market.laxuMarket,
+        assetClass: market.assetClass,
         arcusMarketId: market.arcusMarketId,
         arcusDisplayName: market.arcusDisplayName,
         tickSize: market.tickSize,

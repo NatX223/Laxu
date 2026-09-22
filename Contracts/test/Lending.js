@@ -35,7 +35,7 @@ const LIQUIDATION_BONUS_BPS = RISK_TIERS.low.liquidationBonusBps;
 // `leverage` is a fixture parameter (default 5, the TIER_LOW boundary) precisely because the
 // pool's risk tier is resolved from it at pool-creation time -- see the "risk tiering" suite.
 async function deployLendingFixture({ leverage = RISK_TIERS.low.leverage } = {}) {
-  const [deployer, creator, creForwarder, arcusOperator, lender, borrower, liquidator] =
+  const [deployer, creator, arcusOperator, lender, borrower, liquidator] =
     await ethers.getSigners();
 
   const MockUSDG = await ethers.getContractFactory("MockUSDG");
@@ -69,7 +69,6 @@ async function deployLendingFixture({ leverage = RISK_TIERS.low.leverage } = {})
     INITIAL_DEPOSIT,
     ethers.encodeBytes32String("arcus-1"),
     usdg.target,
-    creForwarder.address,
     arcusOperator.address,
     0n,
     ""
@@ -121,7 +120,6 @@ async function deployLendingFixture({ leverage = RISK_TIERS.low.leverage } = {})
     defaultDebtCeiling,
     deployer,
     creator,
-    creForwarder,
     arcusOperator,
     lender,
     borrower,
@@ -129,18 +127,14 @@ async function deployLendingFixture({ leverage = RISK_TIERS.low.leverage } = {})
   };
 }
 
-// Pushes a new mark price through the CRE reporting path, which is the only way collateral
+// Pushes a new mark price through the backend's reporting path, which is the only way collateral
 // value moves.
-async function report(positionToken, creForwarder, markPrice) {
+async function report(positionToken, arcusOperator, markPrice) {
   // Timestamps the report at "now" (current chain time), not merely one tick past the previous
   // report -- freshOracle compares against block.timestamp, so a report backdated to just after
   // the last one would still read as stale after a time.increase() in between.
   const ts = BigInt(await time.latest()) + 1n;
-  const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
-    ["uint256", "int256", "uint256"],
-    [markPrice, 0n, ts]
-  );
-  await positionToken.connect(creForwarder).onReport("0x", encoded);
+  await positionToken.connect(arcusOperator).applyReport(markPrice, 0n, ts);
 }
 
 describe("LendingVault", function () {
@@ -299,14 +293,14 @@ describe("LendingPool risk tiering", function () {
   });
 
   it("resolved tier is immutable for the pool's lifetime, not re-derived from live state", async function () {
-    const { pool, positionToken, creForwarder } = await deployLendingFixture({
+    const { pool, positionToken, arcusOperator } = await deployLendingFixture({
       leverage: RISK_TIERS.low.leverage,
     });
     const before = await pool.ltvBps();
 
     // Push the position deep into loss; leverage itself never changes, but prove the pool
     // doesn't re-read positionInfo() and drift its tier off of anything live.
-    await report(positionToken, creForwarder, (ENTRY_PRICE * 5000n) / 10_000n);
+    await report(positionToken, arcusOperator, (ENTRY_PRICE * 5000n) / 10_000n);
 
     expect(await pool.ltvBps()).to.equal(before);
   });
@@ -323,13 +317,13 @@ describe("LendingPool risk tiering", function () {
 describe("LendingPool", function () {
   describe("collateral and borrowing", function () {
     it("prices collateral live off the position token", async function () {
-      const { pool, positionToken, creForwarder, borrower } = await deployLendingFixture();
+      const { pool, positionToken, arcusOperator, borrower } = await deployLendingFixture();
 
       await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
       expect(await pool.collateralValue(borrower.address)).to.equal(INITIAL_DEPOSIT);
 
       // +10% on a 5x long -> position NAV rises by 5x that on the deposit
-      await report(positionToken, creForwarder, (ENTRY_PRICE * 110n) / 100n);
+      await report(positionToken, arcusOperator, (ENTRY_PRICE * 110n) / 100n);
       // rounds down by a wei against totalAssets -- ERC-4626 virtual shares, as intended
       expect(await pool.collateralValue(borrower.address)).to.be.closeTo(
         await positionToken.totalAssets(),
@@ -353,12 +347,12 @@ describe("LendingPool", function () {
     });
 
     it("hands the borrower more headroom automatically when the position gains value", async function () {
-      const { pool, positionToken, creForwarder, borrower } = await deployLendingFixture();
+      const { pool, positionToken, arcusOperator, borrower } = await deployLendingFixture();
 
       await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
       const before = await pool.availableToBorrow(borrower.address);
 
-      await report(positionToken, creForwarder, (ENTRY_PRICE * 110n) / 100n);
+      await report(positionToken, arcusOperator, (ENTRY_PRICE * 110n) / 100n);
 
       const after = await pool.availableToBorrow(borrower.address);
       expect(after).to.be.greaterThan(before);
@@ -378,7 +372,7 @@ describe("LendingPool", function () {
     });
 
     it("allows full collateral withdrawal once debt is cleared", async function () {
-      const { pool, positionToken, creForwarder, borrower } = await deployLendingFixture();
+      const { pool, positionToken, arcusOperator, borrower } = await deployLendingFixture();
 
       await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
       await pool.connect(borrower).borrow(100n * PRICE_SCALE);
@@ -388,7 +382,7 @@ describe("LendingPool", function () {
       expect(await pool.currentDebt(borrower.address)).to.equal(0n);
       // withdrawCollateral is freshOracle-gated; the hour of time.increase above pushed the
       // position's own report past MAX_REPORT_AGE, so a fresh report is needed first.
-      await report(positionToken, creForwarder, ENTRY_PRICE);
+      await report(positionToken, arcusOperator, ENTRY_PRICE);
       await pool.connect(borrower).withdrawCollateral(INITIAL_DEPOSIT);
       expect(await positionToken.balanceOf(borrower.address)).to.equal(INITIAL_DEPOSIT);
     });
@@ -474,12 +468,12 @@ describe("LendingPool", function () {
     });
 
     it("liquidates at 50% close factor and pays the 8% bonus in shares", async function () {
-      const { pool, positionToken, creForwarder, borrower, liquidator } =
+      const { pool, positionToken, arcusOperator, borrower, liquidator } =
         await underwaterFixture();
 
       // -3.8% on a 5x long => NAV -19% => 810 collateral against 500 debt => HF ~0.97:
       // under water, but not past the 0.95 trigger, so the 50% close factor still applies.
-      await report(positionToken, creForwarder, (ENTRY_PRICE * 9620n) / 10_000n);
+      await report(positionToken, arcusOperator, (ENTRY_PRICE * 9620n) / 10_000n);
 
       const hf = await pool.healthFactor(borrower.address);
       expect(hf).to.be.lessThan(WAD);
@@ -508,9 +502,9 @@ describe("LendingPool", function () {
     });
 
     it("raises the close factor to 100% once the health factor falls below 0.95", async function () {
-      const { pool, positionToken, creForwarder, borrower } = await underwaterFixture();
+      const { pool, positionToken, arcusOperator, borrower } = await underwaterFixture();
 
-      await report(positionToken, creForwarder, (ENTRY_PRICE * 9000n) / 10_000n);
+      await report(positionToken, arcusOperator, (ENTRY_PRICE * 9000n) / 10_000n);
 
       expect(await pool.healthFactor(borrower.address)).to.be.lessThan((95n * WAD) / 100n);
       expect(await pool.maxLiquidatableDebt(borrower.address)).to.equal(
@@ -519,14 +513,13 @@ describe("LendingPool", function () {
     });
 
     it("is permissionless -- an address holding no protocol role can liquidate", async function () {
-      const { pool, vault, positionToken, creForwarder, borrower, liquidator, factory } =
+      const { pool, vault, positionToken, arcusOperator, borrower, liquidator, factory } =
         await underwaterFixture();
 
-      await report(positionToken, creForwarder, (ENTRY_PRICE * 9000n) / 10_000n);
+      await report(positionToken, arcusOperator, (ENTRY_PRICE * 9000n) / 10_000n);
 
       // the liquidator holds nothing privileged anywhere in the system
       expect(await positionToken.arcusOperator()).to.not.equal(liquidator.address);
-      expect(await positionToken.creForwarder()).to.not.equal(liquidator.address);
       expect(await vault.owner()).to.not.equal(liquidator.address);
       expect(await factory.owner()).to.not.equal(liquidator.address);
       expect(await vault.registrar()).to.not.equal(liquidator.address);
@@ -540,10 +533,10 @@ describe("LendingPool", function () {
     });
 
     it("transfers shares rather than routing through the async redeem path", async function () {
-      const { pool, positionToken, creForwarder, borrower, liquidator } =
+      const { pool, positionToken, arcusOperator, borrower, liquidator } =
         await underwaterFixture();
 
-      await report(positionToken, creForwarder, (ENTRY_PRICE * 9000n) / 10_000n);
+      await report(positionToken, arcusOperator, (ENTRY_PRICE * 9000n) / 10_000n);
       const debt = await pool.currentDebt(borrower.address);
 
       await expect(pool.connect(liquidator).liquidate(borrower.address, debt)).to.not.emit(
@@ -556,11 +549,11 @@ describe("LendingPool", function () {
     });
 
     it("caps the seizure at the collateral actually held when the position is deeply underwater", async function () {
-      const { pool, positionToken, creForwarder, borrower, liquidator } =
+      const { pool, positionToken, arcusOperator, borrower, liquidator } =
         await underwaterFixture();
 
       // -18% on a 5x long => NAV -90%, collateral worth far less than the debt
-      await report(positionToken, creForwarder, (ENTRY_PRICE * 8200n) / 10_000n);
+      await report(positionToken, arcusOperator, (ENTRY_PRICE * 8200n) / 10_000n);
 
       const held = await pool.collateralBalance(borrower.address);
       const debt = await pool.currentDebt(borrower.address);
@@ -592,7 +585,7 @@ describe("LendingPool oracle freshness", function () {
   });
 
   it("allows borrow() again once a fresh report lands", async function () {
-    const { pool, positionToken, creForwarder, borrower } = await deployLendingFixture();
+    const { pool, positionToken, arcusOperator, borrower } = await deployLendingFixture();
 
     await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
     await time.increase(Number(MAX_REPORT_AGE) + 1);
@@ -600,7 +593,7 @@ describe("LendingPool oracle freshness", function () {
       "LendingPool: stale oracle data"
     );
 
-    await report(positionToken, creForwarder, ENTRY_PRICE);
+    await report(positionToken, arcusOperator, ENTRY_PRICE);
     await pool.connect(borrower).borrow(1n * PRICE_SCALE); // no longer reverts
   });
 
@@ -616,13 +609,13 @@ describe("LendingPool oracle freshness", function () {
   });
 
   it("does NOT block liquidate() on stale data -- liquidating on last-known data beats not liquidating at all", async function () {
-    const { pool, positionToken, creForwarder, borrower, liquidator } = await deployLendingFixture();
+    const { pool, positionToken, arcusOperator, borrower, liquidator } = await deployLendingFixture();
 
     await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
     await pool.connect(borrower).borrow((INITIAL_DEPOSIT * 5_000n) / BPS); // TIER_LOW LTV cap
 
     // Underwater report, then let it go stale past MAX_REPORT_AGE.
-    await report(positionToken, creForwarder, (ENTRY_PRICE * 9000n) / 10_000n);
+    await report(positionToken, arcusOperator, (ENTRY_PRICE * 9000n) / 10_000n);
     await time.increase(Number(MAX_REPORT_AGE) + 1);
 
     const age = BigInt(await time.latest()) - (await positionToken.lastReportTimestamp());

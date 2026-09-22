@@ -17,19 +17,29 @@ const log = createLogger("seed");
  * Symbols mirror the frontend catalogue in App/src/components/trade/data.ts.
  * `arcusDisplayName` is only needed where Arcus does not name the market
  * `<SYMBOL>-USD`; leave it null and the refresh will guess that form.
+ *
+ * `assetClass` is Arcus's own category for each market (CRYPTO / EQUITIES /
+ * COMMODITIES / INDICES) -- assigned by hand here since `GET /v1/markets`
+ * doesn't echo it back; keep it in sync with Arcus's own listing if a market's
+ * category ever changes.
  */
-const MARKETS: Array<{ symbol: string; arcusDisplayName?: string; maxLeverage: number }> = [
-  { symbol: "TSLA", maxLeverage: 10 },
-  { symbol: "ETH", maxLeverage: 20 },
-  { symbol: "BTC", maxLeverage: 40 },
-  { symbol: "NVDA", maxLeverage: 10 },
-  { symbol: "CRCL", maxLeverage: 10 },
-  { symbol: "XRP", maxLeverage: 20 },
-  { symbol: "SOL", maxLeverage: 20 },
-  { symbol: "USO", maxLeverage: 20 },
-  { symbol: "GOLD", maxLeverage: 25 },
-  { symbol: "QQQ", maxLeverage: 25 },
-  { symbol: "SPX", maxLeverage: 25 },
+const MARKETS: Array<{
+  symbol: string;
+  arcusDisplayName?: string;
+  maxLeverage: number;
+  assetClass: "CRYPTO" | "EQUITIES" | "COMMODITIES" | "INDICES";
+}> = [
+  { symbol: "TSLA", maxLeverage: 10, assetClass: "EQUITIES" },
+  { symbol: "ETH", maxLeverage: 20, assetClass: "CRYPTO" },
+  { symbol: "BTC", maxLeverage: 40, assetClass: "CRYPTO" },
+  { symbol: "NVDA", maxLeverage: 10, assetClass: "EQUITIES" },
+  { symbol: "CRCL", maxLeverage: 10, assetClass: "EQUITIES" },
+  { symbol: "XRP", maxLeverage: 20, assetClass: "CRYPTO" },
+  { symbol: "SOL", maxLeverage: 20, assetClass: "CRYPTO" },
+  { symbol: "USO", maxLeverage: 20, assetClass: "COMMODITIES" },
+  { symbol: "GOLD", maxLeverage: 25, assetClass: "COMMODITIES" },
+  { symbol: "QQQ", maxLeverage: 25, assetClass: "INDICES" },
+  { symbol: "SPX", maxLeverage: 25, assetClass: "INDICES" },
 ];
 
 async function main(): Promise<void> {
@@ -40,12 +50,14 @@ async function main(): Promise<void> {
       create: {
         laxuMarket,
         symbol: market.symbol,
+        assetClass: market.assetClass,
         arcusDisplayName: market.arcusDisplayName ?? null,
         maxLeverage: market.maxLeverage,
         status: "UNRESOLVED",
       },
       update: {
         symbol: market.symbol,
+        assetClass: market.assetClass,
         maxLeverage: market.maxLeverage,
         ...(market.arcusDisplayName ? { arcusDisplayName: market.arcusDisplayName } : {}),
       },

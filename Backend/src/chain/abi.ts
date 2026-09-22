@@ -253,6 +253,39 @@ export const positionTokenAbi = [
     inputs: [],
     outputs: [{ name: "", type: "bytes32" }],
   },
+
+  // --- Price/funding reporting --------------------------------------------
+  {
+    type: "function",
+    name: "applyReport",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "newMarkPrice", type: "uint256" },
+      { name: "newFunding", type: "int256" },
+      { name: "reportTimestamp", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "getLastReport",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "markPrice", type: "uint256" },
+      { name: "funding", type: "int256" },
+      { name: "timestamp", type: "uint256" },
+    ],
+  },
+  {
+    type: "event",
+    name: "FundingUpdated",
+    inputs: [
+      { name: "markPrice", type: "uint256", indexed: false },
+      { name: "fundingAccrued", type: "int256", indexed: false },
+      { name: "timestamp", type: "uint256", indexed: false },
+    ],
+  },
 ] as const;
 
 /**

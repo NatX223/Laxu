@@ -22,9 +22,9 @@ import {IPositionToken} from "./IPositionToken.sol";
  *
  * Collateral is priced LIVE off the position token on every read -- nothing is cached here, ever.
  * That is what makes "position gains value -> borrower gets more headroom, with no interaction
- * from anybody" fall out for free, and it is also why a stale CRE report is a real risk rather
- * than a theoretical one: see {freshOracle} for the guard, and {liquidate} for why that guard
- * deliberately does not cover every function.
+ * from anybody" fall out for free, and it is also why a stale price/funding report is a real risk
+ * rather than a theoretical one: see {freshOracle} for the guard, and {liquidate} for why that
+ * guard deliberately does not cover every function.
  */
 contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     using Math for uint256;
@@ -52,7 +52,7 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     // WORSE as leverage climbs: (1) if the underlying Arcus position is liquidated the token's
     // value does not drift down, it steps down in one move as close() locks a much-reduced
     // finalNavValue -- higher leverage means a bigger step for the same underlying move; (2)
-    // markPrice arrives in periodic CRE reports, not continuously, and for the same real-world
+    // markPrice arrives in periodic backend reports, not continuously, and for the same real-world
     // price move a 20x position's value swings ~4x faster than a 5x position's -- so between two
     // report intervals, a higher-leverage position has a meaningfully higher chance of gapping
     // straight through its liquidation threshold before this pool can react. A flat ratio is
@@ -96,17 +96,16 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
 
     /**
      * @dev Resolves the report-latency gap risk cited throughout the risk-parameter reasoning
-     * above -- not a duplicate of it. Multiple/whitelisted CRE nodes don't help here: a DON
-     * reaching consensus across nodes protects against one node lying about the data (an
-     * integrity problem), not against how long ago the last successful report was (a recency
-     * problem) -- every node calls the same backend endpoint, so they'd all faithfully agree on
-     * the same stale number. A timestamp check against {IPositionToken-lastReportTimestamp} is
-     * the actual fix, applied via {freshOracle}, paired on the workflow side with a
-     * deviation+heartbeat write policy rather than a slow fixed clock (see cre-workflow-spec.md).
+     * above -- not a duplicate of it. There is a single source for this data (the backend's
+     * `arcusOperator` wallet), so nothing here protects against that source lying (an integrity
+     * problem) -- only against how long ago its last successful report was (a recency problem). A
+     * timestamp check against {IPositionToken-lastReportTimestamp} is the actual fix, applied via
+     * {freshOracle}, paired on the backend side with a deviation+heartbeat write policy rather than
+     * a slow fixed clock (see the reporting job in the backend's `services/reporter.ts`).
      *
-     * Sized directly off that heartbeat: the CRE workflow writes at least every 5 minutes, so 7
-     * is that heartbeat plus a buffer for normal execution/confirmation lag, not an independent
-     * guess. Still worth revisiting once the live workflow's actual lag is observed.
+     * Sized directly off that heartbeat: the backend's reporting job writes at least every 5
+     * minutes, so 7 is that heartbeat plus a buffer for normal execution/confirmation lag, not an
+     * independent guess. Still worth revisiting once the live job's actual lag is observed.
      */
     uint256 public constant MAX_REPORT_AGE = 7 minutes;
 

@@ -164,6 +164,11 @@ model Market {
   /// Laxu-side display symbol, e.g. "TSLA".
   symbol String @unique
 
+  /// Arcus's own four market categories, straight through -- no translation
+  /// layer, no separate "pTokens" bucket (that's a different Arcus product,
+  /// not a market category). Drives the discovery page's filter tabs.
+  assetClass String @map("asset_class") // 'CRYPTO' | 'EQUITIES' | 'COMMODITIES' | 'INDICES'
+
   arcusMarketId Int? @unique @map("arcus_market_id")
   /// Arcus display name, e.g. "TSLA-USD".
   arcusDisplayName String? @map("arcus_display_name")

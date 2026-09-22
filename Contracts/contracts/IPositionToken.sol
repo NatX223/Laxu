@@ -17,7 +17,6 @@ interface IPositionToken {
         uint256 _initialDeposit,
         bytes32 _arcusPositionId,
         address _asset,
-        address _creForwarder,
         address _arcusOperator,
         uint256 _creatorFeeBps,
         string calldata _nickname
@@ -26,7 +25,7 @@ interface IPositionToken {
     // -----------------------------------------------------------------------------------------
     // Valuation -- inherited from the ERC-4626 side of PositionToken. These are the LIVE price of
     // the position: `convertToAssets` walks totalAssets()/totalSupply(), which tracks markPrice
-    // and funding as CRE reports them. Nothing here is cached by the caller, by design.
+    // and funding as the backend reports them. Nothing here is cached by the caller, by design.
     // -----------------------------------------------------------------------------------------
 
     function convertToAssets(uint256 shares) external view returns (uint256);
@@ -47,7 +46,7 @@ interface IPositionToken {
             bool closed_
         );
 
-    /// @dev Timestamp of the last CRE price/funding report. This is what {LendingPool-freshOracle}
+    /// @dev Timestamp of the last price/funding report. This is what {LendingPool-freshOracle}
     /// checks `borrow`/`withdrawCollateral` against -- see there for why `liquidate` and
     /// `healthFactor` deliberately do NOT check it.
     function lastReportTimestamp() external view returns (uint256);
@@ -55,4 +54,12 @@ interface IPositionToken {
     /// @dev True once the underlying Arcus position has been settled; value is then frozen at
     /// `finalNavValue` rather than tracking a live mark.
     function closed() external view returns (bool);
+
+    // -----------------------------------------------------------------------------------------
+    // Price/funding reporting -- the surface the backend's scheduled reporting job calls.
+    // -----------------------------------------------------------------------------------------
+
+    function applyReport(uint256 markPrice, int256 funding, uint256 timestamp) external;
+
+    function getLastReport() external view returns (uint256 markPrice, int256 funding, uint256 timestamp);
 }

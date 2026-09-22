@@ -105,7 +105,7 @@ function positionTokenFromReceipt(logs: readonly { data: `0x${string}`; topics: 
 
 async function operatorWrite(
   address: Address,
-  functionName: "fulfillDepositRequest" | "fulfillRedeemRequest" | "close",
+  functionName: "fulfillDepositRequest" | "fulfillRedeemRequest" | "close" | "applyReport",
   args: readonly unknown[],
 ): Promise<Hash> {
   const wallet = arcusOperatorWallet();
@@ -173,6 +173,25 @@ export async function closePosition(params: {
   ]);
 }
 
+/// Pushes a new mark price/funding onto a live position. Gated to `arcusOperator`
+/// on-chain -- the same wallet that already fulfils deposits/redeems and closes.
+export async function applyReport(params: {
+  positionToken: Address;
+  /// 1e18 fixed point.
+  markPrice: bigint;
+  /// USDG base units, signed.
+  funding: bigint;
+  /// Unix seconds; must be strictly greater than the position's current
+  /// lastReportTimestamp or the call reverts.
+  timestamp: bigint;
+}): Promise<Hash> {
+  return operatorWrite(params.positionToken, "applyReport", [
+    params.markPrice,
+    params.funding,
+    params.timestamp,
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // Reads used by the fulfilment flows
 // ---------------------------------------------------------------------------
@@ -217,6 +236,19 @@ export async function pendingRedeem(positionToken: Address, controller: Address)
   })) as bigint;
 }
 
+/// Combined read the reporting job uses to decide whether a position's price has
+/// moved enough (or gone stale enough) to be worth a fresh {applyReport} call.
+export async function getLastReport(
+  positionToken: Address,
+): Promise<{ markPrice: bigint; funding: bigint; timestamp: bigint }> {
+  const [markPrice, funding, timestamp] = (await publicClient().readContract({
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "getLastReport",
+  })) as [bigint, bigint, bigint];
+  return { markPrice, funding, timestamp };
+}
+
 export async function isClosed(positionToken: Address): Promise<boolean> {
   return (await publicClient().readContract({
     address: positionToken,
@@ -258,6 +290,14 @@ export async function creatorHoldsEntireSupply(positionToken: Address): Promise<
   })) as bigint;
 
   return { ok: totalSupply > 0n && creatorBalance === totalSupply, creator, creatorBalance, totalSupply };
+}
+
+export async function totalSupply(positionToken: Address): Promise<bigint> {
+  return (await publicClient().readContract({
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "totalSupply",
+  })) as bigint;
 }
 
 export async function positionSizeOnChain(positionToken: Address): Promise<bigint> {

@@ -1,7 +1,9 @@
 import type { Address } from "viem";
 
-import { adjustIsolatedMargin } from "../arcus/client";
+import { adjustIsolatedMargin, getPositions, placeOrder } from "../arcus/client";
+import { getArcusStream } from "../arcus/ws";
 import { db } from "../config/db";
+import { config } from "../config/env";
 import { usdgDecimals } from "../chain/clients";
 import {
   fulfillDepositRequest,
@@ -9,8 +11,18 @@ import {
   navPerShare,
   pendingDeposit,
   pendingRedeem,
+  totalSupply,
 } from "../chain/writes";
-import { fromBaseUnits, negateDecimal } from "../lib/decimal";
+import {
+  applyBps,
+  ceilToStep,
+  compareDecimal,
+  floorToStep,
+  formatDecimal,
+  fromBaseUnits,
+  negateDecimal,
+  parseDecimal,
+} from "../lib/decimal";
 import { createLogger, errorFields } from "../lib/logger";
 import { credentialsFor, getSlotForPosition } from "./allocator";
 import {
@@ -20,7 +32,7 @@ import {
   markReversed,
   recordPending,
 } from "./ledger";
-import { requireMarket } from "./markets";
+import { markPriceFor, requireMarket, type ResolvedMarket } from "./markets";
 
 const log = createLogger("margin");
 
@@ -36,6 +48,14 @@ const log = createLogger("margin");
  * The middle step is the one that can succeed while the last one fails: the
  * user may have reclaimed their request after the on-chain timeout, in which
  * case the fulfil reverts and the Arcus-side move has to be undone.
+ *
+ * A redeem is NOT a plain margin withdrawal, though: pulling margin alone
+ * while the Arcus position size stays fixed would raise effective leverage
+ * for every remaining holder without their consent. So a redeem additionally
+ * places a `reduceOnly` order first, sized to exactly the redeemer's
+ * fractional share of the position (shares / totalSupply at request time) --
+ * see {reducePositionProportionally}. Size and margin shrink together, so the
+ * leverage ratio stays identical for everyone who stays in.
  */
 
 type Direction = "add" | "remove";
@@ -112,6 +132,17 @@ async function handleMarginRequest(direction: Direction, event: RequestEvent): P
     note: `on-chain ${direction === "add" ? "requestDeposit" : "requestRedeem"} ${event.requestId}`,
   });
 
+  // Shrink the real Arcus position by the same fraction BEFORE pulling margin,
+  // so the two move together and leverage for remaining holders is unchanged.
+  if (direction === "remove") {
+    await reducePositionProportionally({
+      credentials,
+      market,
+      shares: event.amount,
+      positionToken: event.positionTokenAddress as Address,
+    });
+  }
+
   const dollars = fromBaseUnits(assets, decimals);
   const amount = direction === "add" ? dollars : negateDecimal(dollars);
 
@@ -126,6 +157,113 @@ async function handleMarginRequest(direction: Direction, event: RequestEvent): P
   });
 
   await completeOnChain(direction, event, entry.id);
+}
+
+/**
+ * Shrink the live Arcus position by exactly the redeemer's fractional share
+ * (`shares / totalSupply()`), via a `reduceOnly` order on the opposite side --
+ * the same mechanism {closePosition.ts} uses for a full exit, just sized to a
+ * fraction instead of 100%. `totalSupply()` is read now, before the
+ * fulfil/burn later in this same flow, so it is still the pre-redeem
+ * denominator the fraction is defined against.
+ *
+ * If there is no live leg (or it floors to zero at the market's step size)
+ * there is nothing to reduce -- e.g. the position notional is already so
+ * small relative to the redeem that the step grid swallows it. That is safe
+ * to skip: the margin-only withdrawal that follows does not change leverage
+ * when there is no notional behind it.
+ */
+async function reducePositionProportionally(params: {
+  credentials: ReturnType<typeof credentialsFor>;
+  market: ResolvedMarket;
+  /// Redeemed shares, same base-unit scale as PositionToken.totalSupply().
+  shares: bigint;
+  positionToken: Address;
+}): Promise<void> {
+  const { credentials, market, shares, positionToken } = params;
+
+  const supply = await totalSupply(positionToken);
+  if (supply === 0n) return;
+
+  const openPositions = await getPositions(credentials.address, credentials.accountIndex);
+  const leg = openPositions.find((entry) => entry.marketId === market.arcusMarketId);
+  if (!leg || compareDecimal(leg.size, "0") <= 0) {
+    log.warn("redeem: no live Arcus leg to reduce, skipping the reduceOnly step", {
+      positionToken,
+      marketId: market.arcusMarketId,
+    });
+    return;
+  }
+
+  // leg.size * (shares / supply), kept exact via bigint math at leg.size's own
+  // decimal precision before flooring to the market's step size.
+  const legSize = parseDecimal(leg.size);
+  const rawQuantity = formatDecimal({ units: (legSize.units * shares) / supply, scale: legSize.scale });
+  const quantity = floorToStep(rawQuantity, market.stepSize);
+
+  if (compareDecimal(quantity, "0") <= 0) {
+    log.warn("redeem: proportional size floors to zero at the market step size, skipping", {
+      positionToken,
+      rawQuantity,
+      stepSize: market.stepSize,
+    });
+    return;
+  }
+
+  const side = leg.side === "BUY" ? "SELL" : "BUY";
+  const mark = await markPriceFor(market);
+  const bound =
+    side === "BUY"
+      ? applyBps(mark, config.arcusSlippageBps, 18)
+      : applyBps(mark, -config.arcusSlippageBps, 18);
+  const price = side === "BUY" ? floorToStep(bound, market.tickSize) : ceilToStep(bound, market.tickSize);
+
+  const clientId = `r${positionToken.slice(2, 10)}${Date.now().toString(36)}`.slice(0, 36);
+
+  const stream = getArcusStream();
+  await stream.ensureSubscribed(credentials.address, credentials.accountIndex);
+  const waiter = stream.expectOrder({
+    address: credentials.address,
+    accountIndex: credentials.accountIndex,
+    clientId,
+  });
+
+  let result;
+  try {
+    result = await placeOrder(credentials, {
+      marketId: market.arcusMarketId,
+      side,
+      orderType: "MARKET",
+      timeInForce: "IOC",
+      quantity,
+      price,
+      reduceOnly: true,
+      clientId,
+      tickSize: market.tickSize,
+      stepSize: market.stepSize,
+    });
+  } catch (error) {
+    waiter.cancel();
+    throw error;
+  }
+
+  waiter.bindOrderId(result.orderId);
+  const outcome = await waiter.outcome;
+
+  if (outcome.unfilled) {
+    throw new Error(
+      `Proportional reduce-only order did not fill (${outcome.status}${
+        outcome.cancelReason ? `: ${outcome.cancelReason}` : ""
+      })`,
+    );
+  }
+
+  log.info("redeem: reduced Arcus position proportionally", {
+    positionToken,
+    quantity,
+    filledSize: outcome.filledSize,
+    price: outcome.averagePrice,
+  });
 }
 
 /**

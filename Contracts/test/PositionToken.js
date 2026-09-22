@@ -13,7 +13,7 @@ async function deployPositionTokenFixture({
   initialDeposit = 1000n * PRICE_SCALE,
   creatorFeeBps = 100n, // 1%
 } = {}) {
-  const [deployer, creator, creForwarder, backendOperator, depositor, otherAccount] =
+  const [deployer, creator, backendOperator, depositor, otherAccount] =
     await ethers.getSigners();
 
   const MockUSDG = await ethers.getContractFactory("MockUSDG");
@@ -53,7 +53,6 @@ async function deployPositionTokenFixture({
       initialDeposit,
       arcusPositionId,
       usdg.target,
-      creForwarder.address,
       backendOperator.address,
       creatorFeeBps,
       ""
@@ -68,7 +67,6 @@ async function deployPositionTokenFixture({
     positionToken,
     deployer,
     creator,
-    creForwarder,
     backendOperator,
     depositor,
     otherAccount,
@@ -83,12 +81,8 @@ async function deployPositionTokenFixture({
   };
 }
 
-async function reportPrice(positionToken, creForwarder, markPrice, funding, timestamp) {
-  const report = ethers.AbiCoder.defaultAbiCoder().encode(
-    ["uint256", "int256", "uint256"],
-    [markPrice, funding, timestamp]
-  );
-  return positionToken.connect(creForwarder).onReport("0x", report);
+async function reportPrice(positionToken, backendOperator, markPrice, funding, timestamp) {
+  return positionToken.connect(backendOperator).applyReport(markPrice, funding, timestamp);
 }
 
 describe("PositionToken", function () {
@@ -115,7 +109,7 @@ describe("PositionToken", function () {
     });
 
     it("cannot be initialized twice", async function () {
-      const { positionToken, creator, market, direction, leverage, entryPrice, size, initialDeposit, arcusPositionId, usdg, creForwarder, backendOperator, creatorFeeBps } =
+      const { positionToken, creator, market, direction, leverage, entryPrice, size, initialDeposit, arcusPositionId, usdg, backendOperator, creatorFeeBps } =
         await deployPositionTokenFixture();
 
       await expect(
@@ -129,7 +123,6 @@ describe("PositionToken", function () {
           initialDeposit,
           arcusPositionId,
           usdg.target,
-          creForwarder.address,
           backendOperator.address,
           creatorFeeBps,
           ""
@@ -138,7 +131,7 @@ describe("PositionToken", function () {
     });
 
     it("rejects an asset that doesn't match the implementation's immutable asset", async function () {
-      const [deployer, creator, creForwarder, backendOperator] = await ethers.getSigners();
+      const [deployer, creator, backendOperator] = await ethers.getSigners();
 
       const MockUSDG = await ethers.getContractFactory("MockUSDG");
       const usdg = await MockUSDG.deploy();
@@ -173,7 +166,6 @@ describe("PositionToken", function () {
             1000n * PRICE_SCALE,
             ethers.encodeBytes32String("arcus-1"),
             wrongAsset.target,
-            creForwarder.address,
             backendOperator.address,
             0n,
             ""
@@ -182,20 +174,20 @@ describe("PositionToken", function () {
     });
   });
 
-  describe("onReport", function () {
-    it("only the CRE forwarder can report", async function () {
+  describe("applyReport", function () {
+    it("only arcusOperator can report", async function () {
       const { positionToken, otherAccount } = await deployPositionTokenFixture();
 
       await expect(
         reportPrice(positionToken, otherAccount, 2100n * PRICE_SCALE, 0n, (await ethers.provider.getBlock("latest")).timestamp + 1000)
-      ).to.be.revertedWith("PositionToken: not CRE forwarder");
+      ).to.be.revertedWith("PositionToken: not arcusOperator");
     });
 
     it("updates markPrice/funding and moves totalAssets with PnL (Long)", async function () {
-      const { positionToken, creForwarder, initialDeposit } = await deployPositionTokenFixture();
+      const { positionToken, backendOperator, initialDeposit } = await deployPositionTokenFixture();
 
       const ts = (await ethers.provider.getBlock("latest")).timestamp + 1000;
-      await reportPrice(positionToken, creForwarder, 2100n * PRICE_SCALE, 0n, ts);
+      await reportPrice(positionToken, backendOperator, 2100n * PRICE_SCALE, 0n, ts);
 
       expect(await positionToken.markPrice()).to.equal(2100n * PRICE_SCALE);
       // size = 2.5e18, entry=2000, mark=2100 -> pnl = 2.5 * 100 = 250
@@ -203,31 +195,31 @@ describe("PositionToken", function () {
     });
 
     it("moves totalAssets the opposite way for Short", async function () {
-      const { positionToken, creForwarder, initialDeposit } = await deployPositionTokenFixture({
+      const { positionToken, backendOperator, initialDeposit } = await deployPositionTokenFixture({
         direction: Direction.Short,
       });
 
       const ts = (await ethers.provider.getBlock("latest")).timestamp + 1000;
-      await reportPrice(positionToken, creForwarder, 2100n * PRICE_SCALE, 0n, ts);
+      await reportPrice(positionToken, backendOperator, 2100n * PRICE_SCALE, 0n, ts);
 
       expect(await positionToken.totalAssets()).to.equal(initialDeposit - 250n * PRICE_SCALE);
     });
 
     it("includes signed funding", async function () {
-      const { positionToken, creForwarder, initialDeposit, entryPrice } = await deployPositionTokenFixture();
+      const { positionToken, backendOperator, initialDeposit, entryPrice } = await deployPositionTokenFixture();
 
       const ts = (await ethers.provider.getBlock("latest")).timestamp + 1000;
-      await reportPrice(positionToken, creForwarder, entryPrice, -50n * PRICE_SCALE, ts);
+      await reportPrice(positionToken, backendOperator, entryPrice, -50n * PRICE_SCALE, ts);
 
       expect(await positionToken.totalAssets()).to.equal(initialDeposit - 50n * PRICE_SCALE);
     });
 
     it("rejects a stale (non-increasing) report timestamp", async function () {
-      const { positionToken, creForwarder } = await deployPositionTokenFixture();
+      const { positionToken, backendOperator } = await deployPositionTokenFixture();
 
       const lastReportTimestamp = await positionToken.lastReportTimestamp();
       await expect(
-        reportPrice(positionToken, creForwarder, 2100n * PRICE_SCALE, 0n, lastReportTimestamp)
+        reportPrice(positionToken, backendOperator, 2100n * PRICE_SCALE, 0n, lastReportTimestamp)
       ).to.be.revertedWith("PositionToken: stale report");
     });
   });
@@ -395,13 +387,13 @@ describe("PositionToken", function () {
       );
     });
 
-    it("rejects onReport after closure", async function () {
-      const { positionToken, backendOperator, creForwarder, entryPrice } = await deployPositionTokenFixture();
+    it("rejects applyReport after closure", async function () {
+      const { positionToken, backendOperator, entryPrice } = await deployPositionTokenFixture();
 
       await positionToken.connect(backendOperator).close(entryPrice, 0n, false);
 
       const ts = (await ethers.provider.getBlock("latest")).timestamp + 1000;
-      await expect(reportPrice(positionToken, creForwarder, entryPrice, 0n, ts)).to.be.revertedWith(
+      await expect(reportPrice(positionToken, backendOperator, entryPrice, 0n, ts)).to.be.revertedWith(
         "PositionToken: position closed"
       );
     });
@@ -421,10 +413,10 @@ describe("PositionToken", function () {
     });
 
     it("currentPnLBps reflects live PnL relative to initialDeposit", async function () {
-      const { positionToken, creForwarder } = await deployPositionTokenFixture();
+      const { positionToken, backendOperator } = await deployPositionTokenFixture();
 
       const ts = (await ethers.provider.getBlock("latest")).timestamp + 1000;
-      await reportPrice(positionToken, creForwarder, 2100n * PRICE_SCALE, 0n, ts);
+      await reportPrice(positionToken, backendOperator, 2100n * PRICE_SCALE, 0n, ts);
 
       // 250 profit / 1000 deposit = 25% = 2500 bps
       expect(await positionToken.currentPnLBps()).to.equal(2500n);

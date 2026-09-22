@@ -15,6 +15,7 @@ import { usersRouter } from "./routes/users";
 import { verifySlotCredentials } from "./services/allocator";
 import { refreshMarkets } from "./services/markets";
 import { startReconciler } from "./services/reconciler";
+import { startReportingJob } from "./services/reporter";
 
 const log = createLogger("server");
 
@@ -46,7 +47,7 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 const stopWorkers: Array<() => void> = [];
 
 async function start(): Promise<void> {
-  if (config.enableIndexer || config.enableReconciler) {
+  if (config.enableIndexer || config.enableReconciler || config.enableReporter) {
     assertOrchestrationConfig();
 
     // A slot whose stored public key does not match its secret fails with a 401
@@ -73,11 +74,13 @@ async function start(): Promise<void> {
 
   if (config.enableIndexer) stopWorkers.push(startIndexer());
   if (config.enableReconciler) stopWorkers.push(startReconciler());
+  if (config.enableReporter) stopWorkers.push(startReportingJob());
 
   const server = app.listen(config.port, () => {
     log.info(`Laxu backend listening on port ${config.port}`, {
       indexer: config.enableIndexer,
       reconciler: config.enableReconciler,
+      reporter: config.enableReporter,
     });
   });
 

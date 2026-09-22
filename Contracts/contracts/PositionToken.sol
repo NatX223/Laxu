@@ -25,18 +25,16 @@ import {Direction} from "./ILaxuTypes.sol";
  * matches this vault's real-world constraint -- a request can only become claimable after the
  * backend has actually moved margin on Arcus, not on a timer or a price tick.
  *
- * Two separate off-chain trust roles, kept visibly distinct even though one team runs both today:
- * - {creForwarder}: Chainlink CRE's forwarder. Reports price/funding only via {onReport}. Never
- *   moves capital.
- * - {arcusOperator}: confirms real capital movement on Arcus before a request becomes claimable,
- *   via {fulfillDepositRequest} / {fulfillRedeemRequest}, and closes the position via {close}.
- *   Never sets price.
+ * `arcusOperator` is the one off-chain trust role: it reports price/funding via {applyReport},
+ * confirms real capital movement on Arcus before a request becomes claimable (via
+ * {fulfillDepositRequest} / {fulfillRedeemRequest}), and closes the position via {close}. All the
+ * same backend wallet, same trust level as everything else it already does.
  */
 contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem {
     using Math for uint256;
     using Strings for uint256;
 
-    /// @dev Fixed-point scale for entryPrice/markPrice, matching whatever CRE reports in.
+    /// @dev Fixed-point scale for entryPrice/markPrice, matching whatever the backend reports in.
     uint256 public constant PRICE_SCALE = 1e18;
 
     uint256 public constant BPS_DENOMINATOR = 10_000;
@@ -62,7 +60,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     string public nickname;
 
     // ---------------------------------------------------------------------
-    // Live oracle state -- written only via `onReport`, gated to `creForwarder`
+    // Live oracle state -- written only via `applyReport`, gated to `arcusOperator`
     // ---------------------------------------------------------------------
 
     uint256 public markPrice;
@@ -70,10 +68,9 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     uint256 public lastReportTimestamp;
 
     // ---------------------------------------------------------------------
-    // Off-chain trust roles
+    // Off-chain trust role
     // ---------------------------------------------------------------------
 
-    address public creForwarder;
     address public arcusOperator;
 
     // ---------------------------------------------------------------------
@@ -194,7 +191,6 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         uint256 _initialDeposit,
         bytes32 _arcusPositionId,
         address _asset,
-        address _creForwarder,
         address _arcusOperator,
         uint256 _creatorFeeBps,
         string calldata _nickname
@@ -203,7 +199,6 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         // asset() reads the immutable set at implementation-deploy time (see constructor); this is
         // a sanity check that the Factory is wiring up the asset it thinks it is, not a live setter.
         require(_asset == asset(), "PositionToken: asset mismatch");
-        require(_creForwarder != address(0), "PositionToken: zero forwarder");
         require(_arcusOperator != address(0), "PositionToken: zero operator");
         require(_entryPrice > 0, "PositionToken: zero entry price");
         require(_initialDeposit > 0, "PositionToken: zero deposit");
@@ -217,7 +212,6 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         size = _size;
         initialDeposit = _initialDeposit;
         arcusPositionId = _arcusPositionId;
-        creForwarder = _creForwarder;
         arcusOperator = _arcusOperator;
         creatorFeeBps = _creatorFeeBps;
         nickname = _nickname; // may be empty string -- that's valid, renders as no suffix
@@ -247,7 +241,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         }
 
         // TODO(liquidation): if this ever computes <= 0 while `closed` is still false, the
-        // backend/CRE path should have already called close(..., wasLiquidated: true) -- a
+        // backend should have already called close(..., wasLiquidated: true) -- a
         // zero-value-but-still-"open" position is a misleading state. Clamping to zero here is a
         // defensive backstop, not the primary liquidation mechanism (see spec's open decision #3).
         int256 value = _computeValue(markPrice, fundingAccrued);
@@ -262,17 +256,12 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     }
 
     // ---------------------------------------------------------------------
-    // CRE reporting -- price/funding only, never capital movement
+    // Price/funding reporting -- backend only, never capital movement
     // ---------------------------------------------------------------------
 
-    function onReport(bytes calldata metadata, bytes calldata report) external {
-        require(msg.sender == creForwarder, "PositionToken: not CRE forwarder");
+    function applyReport(uint256 newMarkPrice, int256 newFunding, uint256 reportTimestamp) external {
+        require(msg.sender == arcusOperator, "PositionToken: not arcusOperator");
         require(!closed, "PositionToken: position closed");
-
-        (uint256 newMarkPrice, int256 newFunding, uint256 reportTimestamp) = abi.decode(
-            report,
-            (uint256, int256, uint256)
-        );
         require(reportTimestamp > lastReportTimestamp, "PositionToken: stale report");
 
         markPrice = newMarkPrice;
@@ -280,6 +269,12 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         lastReportTimestamp = reportTimestamp;
 
         emit FundingUpdated(newMarkPrice, newFunding, reportTimestamp);
+    }
+
+    /// @dev One combined read so the backend's reporting job is not making three separate calls
+    /// per position to decide whether a report has moved enough to be worth pushing an update for.
+    function getLastReport() external view returns (uint256, int256, uint256) {
+        return (markPrice, fundingAccrued, lastReportTimestamp);
     }
 
     // ---------------------------------------------------------------------

@@ -26,7 +26,6 @@ contract PositionTokenFactory is Ownable {
     /// PositionToken's `arcusOperator` to match this for consistency; that would erase a real
     /// distinction, not just tidy up naming.
     address public deployer;
-    address public creForwarder; // CRE forwarder address, passed to every new clone
     address public usdg; // shared underlying asset address across all positions
 
     address[] public allPositions;
@@ -41,17 +40,14 @@ contract PositionTokenFactory is Ownable {
         uint256 leverage
     );
     event DeployerUpdated(address newDeployer);
-    event CreForwarderUpdated(address newForwarder);
 
     constructor(
         address _implementation,
         address _deployer,
-        address _creForwarder,
         address _usdg
     ) Ownable(msg.sender) {
         positionTokenImplementation = _implementation;
         deployer = _deployer;
-        creForwarder = _creForwarder;
         usdg = _usdg;
     }
 
@@ -87,7 +83,6 @@ contract PositionTokenFactory is Ownable {
             initialDeposit,
             arcusPositionId,
             usdg,
-            creForwarder,
             deployer, // passed through -- becomes `arcusOperator` on the receiving side
             creatorFeeBps,
             nickname
@@ -123,11 +118,6 @@ contract PositionTokenFactory is Ownable {
     function setDeployer(address newDeployer) external onlyOwner {
         deployer = newDeployer;
         emit DeployerUpdated(newDeployer);
-    }
-
-    function setCreForwarder(address newForwarder) external onlyOwner {
-        creForwarder = newForwarder;
-        emit CreForwarderUpdated(newForwarder);
     }
 
     /// @dev Affects FUTURE clones only -- existing clones keep their original logic pointer.
