@@ -112,10 +112,36 @@ model Position {
   closedAt  DateTime? @map("closed_at")
 
   ledgerEntries LedgerEntry[]
+  reports       PositionReport[]
 
   @@index([status])
   @@index([userWalletAddress])
   @@map("positions")
+}
+
+// ---------------------------------------------------------------------------
+// Position reports -- full mark price / funding history, not just the latest.
+// `Position` only ever holds the current state; this is what the NAV chart
+// replays. Written on every `FundingUpdated` from the indexer.
+// ---------------------------------------------------------------------------
+
+model PositionReport {
+  id         String   @id @default(cuid())
+  positionId String   @map("position_id")
+  position   Position @relation(fields: [positionId], references: [id])
+
+  /// String, same reasoning as ledger_entries.amount -- avoid precision drift.
+  markPrice String @map("mark_price")
+  funding   String
+
+  timestamp DateTime
+  createdAt DateTime @default(now()) @map("created_at")
+
+  /// Doubles as the dedupe guard: applyReport() on-chain requires strictly
+  /// increasing timestamps per position, so a re-delivered or re-backfilled
+  /// FundingUpdated just hits this constraint and is silently skipped.
+  @@unique([positionId, timestamp])
+  @@map("position_reports")
 }
 
 // ---------------------------------------------------------------------------
@@ -187,17 +213,18 @@ model Market {
 }
 
 // ---------------------------------------------------------------------------
-// Indexer cursors -- durable per-stream block position. Polling getLogs from a
-// stored cursor (rather than a live subscription) is what lets a restart resume
-// exactly where it stopped instead of silently skipping the gap.
+// Indexer checkpoint -- durable block position, singleton row (id always 1).
+// Backfill (getLogs) resumes from here on boot; live delivery is a
+// watchContractEvent subscription, not polling, so this only bounds a
+// restart's backfill window rather than being required for correctness.
 // ---------------------------------------------------------------------------
 
-model IndexerCursor {
-  name               String   @id
+model IndexerCheckpoint {
+  id                 Int      @id @default(1)
   lastProcessedBlock BigInt   @map("last_processed_block")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  @@map("indexer_cursors")
+  @@map("indexer_checkpoint")
 }
 
 // ---------------------------------------------------------------------------

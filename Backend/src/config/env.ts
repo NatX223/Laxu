@@ -35,6 +35,10 @@ export const config = {
   rpcUrl: optional("RPC_URL"),
   chainId: num("CHAIN_ID", 0),
   positionTokenFactoryAddress: optional("POSITION_TOKEN_FACTORY_ADDRESS"),
+  /// Backfill start point when the indexer checkpoint doesn't exist yet.
+  /// Kept as a string and parsed with BigInt() at the call site -- a block
+  /// number can exceed Number's safe integer range on some chains.
+  positionTokenFactoryDeployBlock: optional("POSITION_TOKEN_FACTORY_DEPLOY_BLOCK", "0"),
   usdgAddress: optional("USDG_ADDRESS"),
   /// Gated to createPosition() on the Factory.
   deployerPrivateKey: optional("DEPLOYER_PRIVATE_KEY"),
@@ -69,9 +73,10 @@ export const config = {
   reconcileIntervalMs: num("RECONCILE_INTERVAL_MS", 3 * 60_000),
   /// Absolute USD drift tolerated between ledger and Arcus equity before alert.
   reconcileDriftTolerance: optional("RECONCILE_DRIFT_TOLERANCE", "1"),
-  indexerPollIntervalMs: num("INDEXER_POLL_INTERVAL_MS", 5_000),
-  indexerBlockBatchSize: num("INDEXER_BLOCK_BATCH_SIZE", 2_000),
-  indexerConfirmations: num("INDEXER_CONFIRMATIONS", 1),
+  /// How often the live indexer re-writes its checkpoint to the latest block
+  /// seen. Not required for correctness (event handlers are idempotent), just
+  /// bounds a restart's backfill window.
+  indexerCheckpointIntervalMs: num("INDEXER_CHECKPOINT_INTERVAL_MS", 60_000),
   /// How often the reporting job checks every allocated position's price/funding
   /// against what's on-chain.
   reporterIntervalMs: num("REPORTER_INTERVAL_MS", 60_000),

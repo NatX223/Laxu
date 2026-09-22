@@ -3,8 +3,10 @@ import {
   createWalletClient,
   defineChain,
   http,
+  webSocket,
   type Address,
   type PublicClient,
+  type Transport,
   type WalletClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -24,6 +26,13 @@ function chain() {
   });
 }
 
+/// ws/wss gets a real `eth_subscribe` transport, which is what lets the
+/// indexer's watchContractEvent calls push instead of poll; anything else
+/// falls back to http, where watchContractEvent polls under the hood.
+function readTransport(): Transport {
+  return /^wss?:\/\//i.test(config.rpcUrl) ? webSocket(config.rpcUrl) : http(config.rpcUrl);
+}
+
 let publicClientInstance: PublicClient | undefined;
 
 export function publicClient(): PublicClient {
@@ -31,7 +40,7 @@ export function publicClient(): PublicClient {
     if (!config.rpcUrl) throw new Error("RPC_URL is not configured");
     publicClientInstance = createPublicClient({
       chain: chain(),
-      transport: http(config.rpcUrl),
+      transport: readTransport(),
     }) as PublicClient;
   }
   return publicClientInstance;
