@@ -62,6 +62,18 @@ export async function requireMarketBySymbol(symbol: string): Promise<ResolvedMar
   return assertResolved(row);
 }
 
+/// Accepts the Laxu symbol ("ETH") or the Arcus display name ("ETH-USD").
+export async function requireMarketByName(name: string): Promise<ResolvedMarket> {
+  const upper = name.toUpperCase();
+  const row =
+    (await db.market.findUnique({ where: { symbol: upper } })) ??
+    (await db.market.findFirst({ where: { arcusDisplayName: upper } }));
+  if (!row) {
+    throw badRequest(`Unknown market ${name}`, "UNKNOWN_MARKET");
+  }
+  return assertResolved(row);
+}
+
 function safeSymbol(laxuMarket: string): string {
   try {
     return bytes32ToSymbol(laxuMarket);

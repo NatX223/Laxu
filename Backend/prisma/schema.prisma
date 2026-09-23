@@ -8,11 +8,15 @@ datasource db {
 }
 
 // ---------------------------------------------------------------------------
-// Identity -- wallet address is the auth principal; `tag` is display only.
+// Identity -- wallet address is identity; backend calls authenticate with a
+// verified Privy access token, which proves `privyUserId`. The wallet is read
+// from Privy's own record of that user, never from a request body. `tag` is
+// display only.
 // ---------------------------------------------------------------------------
 
 model User {
   walletAddress String     @id @map("wallet_address")
+  privyUserId   String     @unique @map("privy_user_id")
   tag           String     @unique
   createdAt     DateTime   @default(now()) @map("created_at")
   positions     Position[]
@@ -46,14 +50,15 @@ model SubaccountSlot {
   accountIndex     Int            @map("account_index")
 
   /// Ed25519 public key -- scoped to this exact (wallet, index) pair.
-  arcusApiKey String @map("arcus_api_key")
+  arcusApiKey       String @map("arcus_api_key")
   /// Secret name for the matching Ed25519 private key, not the key itself.
   arcusApiSecretRef String @map("arcus_api_secret_ref")
 
-  status          String    @default("free") // 'free' | 'reserved' | 'allocated'
-  reservedForUser String?   @map("reserved_for_user")
-  reservedAt      DateTime? @map("reserved_at")
-  /// Set alongside reservedAt; the reclaim sweep frees any slot past it.
+  status               String    @default("free") // 'free' | 'reserved' | 'allocated'
+  reservedForUser      String?   @map("reserved_for_user")
+  reservedAt           DateTime? @map("reserved_at")
+  /// Set alongside reservedAt; the reclaim sweep frees a slot past it only while
+  /// its open request is still awaiting payment. Cleared once payment arrives.
   reservationExpiresAt DateTime? @map("reservation_expires_at")
 
   positionId String?   @unique @map("position_id")
@@ -72,9 +77,12 @@ model SubaccountSlot {
 model Position {
   id String @id @default(cuid())
 
-  /// Null until the deposit confirms and the Factory mints the token -- the
-  /// whole point of the `pending` status is this window.
+  /// Set at creation: a positions row only exists once the Factory has minted
+  /// the token (PositionOpenRequest covers everything before that).
   positionTokenAddress String? @unique @map("position_token_address")
+  /// The token's LendingPool. Null only while createPool keeps failing -- the
+  /// reporter's minute tick retries it, and Borrow stays disabled until set.
+  lendingPoolAddress   String? @map("lending_pool_address")
 
   userWalletAddress String @map("user_wallet_address")
   user              User   @relation(fields: [userWalletAddress], references: [walletAddress])
@@ -87,7 +95,7 @@ model Position {
   arcusOrderId    String? @map("arcus_order_id")
   /// Per-order client id, generated BEFORE placing so a restarted process can
   /// still recognise its own fill when it re-attaches to the stream.
-  arcusClientId String? @unique @map("arcus_client_id")
+  arcusClientId   String? @unique @map("arcus_client_id")
 
   /// bytes32 market key as stored on-chain; joins to Market.laxuMarket.
   market    String
@@ -95,20 +103,33 @@ model Position {
   leverage  Int
 
   /// Requested collateral, base-unit string in USDG decimals.
-  requestedAmount String @map("requested_amount")
-  /// Confirmed deposit, base units. Set once Arcus reports the DEPOSIT.
+  requestedAmount String  @map("requested_amount")
+  /// What Arcus credited, base units -- the token's initialDeposit.
   depositedAmount String? @map("deposited_amount")
   /// VWAP entry, 1e18 fixed point -- matches PositionToken.PRICE_SCALE.
-  entryPrice String? @map("entry_price")
-  /// Filled size, 1e18 fixed point.
-  size          String?
-  nickname      String @default("")
-  creatorFeeBps Int    @default(0) @map("creator_fee_bps")
+  entryPrice      String? @map("entry_price")
+  /// Filled size in USDG base units per unit of the asset -- the scale
+  /// PositionToken's `size * (mark - entry) / 1e18` needs to land in USDG.
+  size            String?
 
-  status        String  @default("pending") // 'pending' | 'open' | 'closed' | 'failed'
+  /// Set by the creator's on-chain `list(nickname)`, mirrored by the indexer.
+  /// Discovery shows listed positions only. The buy-in fee is the contract's
+  /// 2% constant, so there is no fee column.
+  listed   Boolean @default(false)
+  nickname String  @default("")
+
+  status        String  @default("open") // 'open' | 'closed'
   failureReason String? @map("failure_reason")
 
+  /// Distinguishes a normal close from an Arcus-side liquidation -- on-chain
+  /// `PositionClosed.wasLiquidated` carries the same bit, but there was
+  /// otherwise no way to tell the two apart from the DB alone.
+  liquidated Boolean @default(false)
+
   createdAt DateTime  @default(now()) @map("created_at")
+  /// When the token minted and the position went `open`. The charts' entry
+  /// marker and NAV baseline sit here.
+  openedAt  DateTime? @map("opened_at")
   closedAt  DateTime? @map("closed_at")
 
   ledgerEntries LedgerEntry[]
@@ -116,7 +137,62 @@ model Position {
 
   @@index([status])
   @@index([userWalletAddress])
+  @@index([liquidated])
+  @@index([listed])
   @@map("positions")
+}
+
+// ---------------------------------------------------------------------------
+// One open-position attempt, start to finish. The frontend polls `status` for
+// its progress screen.
+//
+//   awaiting_payment -> payment_received -> deposited -> order_filled -> minted
+//                    or -> refunded / failed
+//
+// The creator pays the slot's internal Arcus wallet with a plain USDG transfer;
+// that wallet then deposits into the reserved subaccount itself, because Arcus's
+// deposit proxy requires `owner` to be the signer. Everything the flow learns
+// along the way is written here first, so a restart resumes from the row rather
+// than repeating a step that moves money.
+// ---------------------------------------------------------------------------
+
+model PositionOpenRequest {
+  id                 String  @id @default(cuid())
+  userWalletAddress  String  @map("user_wallet_address") // the creator
+  slotId             String  @map("slot_id") // internal Arcus subaccount used
+  marketId           String  @map("market_id") // Market.laxuMarket
+  direction          String // 'long' | 'short'
+  leverage           Int
+  amount             String // USDG base units
+  paymentTxHash      String? @unique @map("payment_tx_hash") // creator -> internal wallet transfer
+  arcusDepositTxHash String? @map("arcus_deposit_tx_hash") // internal wallet -> initiateDeposit
+  creditedAmount     String? @map("credited_amount") // what Arcus actually credited, base units
+  status             String  @default("awaiting_payment")
+
+  /// Written before the order is placed, so a restart can recognise its own
+  /// fill instead of placing a second order.
+  arcusClientId String? @unique @map("arcus_client_id")
+  arcusOrderId  String? @map("arcus_order_id")
+  /// The actual fill, human-readable decimals, kept so createPosition can be
+  /// retried after a restart.
+  entryPrice    String? @map("entry_price")
+  filledSize    String? @map("filled_size")
+
+  positionTokenAddress String? @map("position_token_address")
+  lendingPoolAddress   String? @map("lending_pool_address")
+
+  /// Refund progress: the Arcus withdrawal back to the internal wallet (only
+  /// when the deposit already happened), then the on-chain transfer home.
+  refundWithdrawalId String? @map("refund_withdrawal_id")
+  refundTxHash       String? @map("refund_tx_hash")
+
+  error     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([slotId])
+  @@map("position_open_requests")
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +209,15 @@ model PositionReport {
   /// String, same reasoning as ledger_entries.amount -- avoid precision drift.
   markPrice String @map("mark_price")
   funding   String
+
+  /// The contract's own totalAssets()/totalSupply() at the report's block,
+  /// read rather than recomputed so the NAV chart can never drift from the
+  /// contract's accounting. Base-unit strings.
+  totalAssets String  @map("total_assets")
+  totalSupply String  @map("total_supply")
+  /// The single point written from `PositionClosed` -- totalAssets is then
+  /// `finalNavValue`, and the NAV series ends here.
+  isFinal     Boolean @default(false) @map("is_final")
 
   timestamp DateTime
   createdAt DateTime @default(now()) @map("created_at")
@@ -155,15 +240,22 @@ model LedgerEntry {
   positionId String   @map("position_id")
   position   Position @relation(fields: [positionId], references: [id])
 
-  type String // 'deposit' | 'margin_add' | 'margin_remove' | 'close'
+  type   String // 'deposit' | 'margin_add' | 'margin_remove' | 'close' | 'cancel'
   /// String, not float -- avoids precision drift on money. USDG base units.
   amount String
 
-  arcusStatus String @default("pending") @map("arcus_status") // 'pending' | 'confirmed' | 'reversed'
+  /// 'pending' | 'confirmed' | 'reversed' | 'cancelled'. `cancelled`: the user
+  /// took the request back on-chain (cancelDepositRequest/cancelRedeemRequest)
+  /// before it was fulfilled, and any Arcus-side move was undone.
+  arcusStatus String @default("pending") @map("arcus_status")
 
-  /// On-chain request correlation for the margin flows.
-  onchainRequestId String? @map("onchain_request_id")
-  controller       String?
+  /// On-chain request correlation for the margin flows. `requestId` is always
+  /// 0 on PositionToken, so it cannot tell requests apart -- the emitting log's
+  /// (txHash, logIndex) is what dedupes request, close and cancel events.
+  onchainRequestId   String?   @map("onchain_request_id")
+  txHash             String?   @map("tx_hash")
+  logIndex           Int?      @map("log_index")
+  controller         String?
   /// Set once the matching fulfill* call lands, so the recovery sweep can tell
   /// a finished entry from one stranded mid-flight.
   onchainFulfilledAt DateTime? @map("onchain_fulfilled_at")
@@ -173,6 +265,7 @@ model LedgerEntry {
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
+  @@unique([txHash, logIndex])
   @@index([positionId, type])
   @@index([arcusStatus])
   @@map("ledger_entries")
@@ -188,14 +281,14 @@ model Market {
   /// bytes32 of the Laxu symbol, right-padded -- what PositionToken stores.
   laxuMarket String @id @map("laxu_market")
   /// Laxu-side display symbol, e.g. "TSLA".
-  symbol String @unique
+  symbol     String @unique
 
   /// Arcus's own four market categories, straight through -- no translation
   /// layer, no separate "pTokens" bucket (that's a different Arcus product,
   /// not a market category). Drives the discovery page's filter tabs.
   assetClass String @map("asset_class") // 'CRYPTO' | 'EQUITIES' | 'COMMODITIES' | 'INDICES'
 
-  arcusMarketId Int? @unique @map("arcus_market_id")
+  arcusMarketId    Int?    @unique @map("arcus_market_id")
   /// Arcus display name, e.g. "TSLA-USD".
   arcusDisplayName String? @map("arcus_display_name")
 
@@ -213,6 +306,34 @@ model Market {
 }
 
 // ---------------------------------------------------------------------------
+// Lending-side liquidation bot -- every LendingPool discovered off
+// LendingPoolFactory.PoolCreated, and every wallet seen borrowing against one.
+// Mirrors the PositionToken discovery pattern: chain events are the source of
+// truth, these tables just bound the health-check loop's watch list.
+// ---------------------------------------------------------------------------
+
+model LendingPool {
+  id                   String     @id @default(cuid())
+  poolAddress          String     @unique @map("pool_address")
+  positionTokenAddress String     @map("position_token_address")
+  createdAt            DateTime   @default(now()) @map("created_at")
+  borrowers            Borrower[]
+
+  @@map("lending_pools")
+}
+
+model Borrower {
+  id            String      @id @default(cuid())
+  lendingPoolId String      @map("lending_pool_id")
+  lendingPool   LendingPool @relation(fields: [lendingPoolId], references: [id])
+  address       String
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  @@unique([lendingPoolId, address])
+  @@map("borrowers")
+}
+
+// ---------------------------------------------------------------------------
 // Indexer checkpoint -- durable block position, singleton row (id always 1).
 // Backfill (getLogs) resumes from here on boot; live delivery is a
 // watchContractEvent subscription, not polling, so this only bounds a
@@ -225,17 +346,4 @@ model IndexerCheckpoint {
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("indexer_checkpoint")
-}
-
-// ---------------------------------------------------------------------------
-// SIWE nonces -- single-use, short-lived.
-// ---------------------------------------------------------------------------
-
-model AuthNonce {
-  nonce     String    @id
-  issuedAt  DateTime  @default(now()) @map("issued_at")
-  expiresAt DateTime  @map("expires_at")
-  usedAt    DateTime? @map("used_at")
-
-  @@map("auth_nonces")
 }

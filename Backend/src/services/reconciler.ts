@@ -1,18 +1,15 @@
-import type { Address } from "viem";
-
 import { getAccount } from "../arcus/client";
 import { db } from "../config/db";
 import { config } from "../config/env";
 import { usdgDecimals } from "../chain/clients";
-import { pendingDeposit, pendingRedeem } from "../chain/writes";
-import { absDecimal, compareDecimal, fromBaseUnits, subtractDecimal } from "../lib/decimal";
+import { absDecimal, compareDecimal, subtractDecimal } from "../lib/decimal";
 import { alert, createLogger, errorFields } from "../lib/logger";
 import { startWorker } from "../lib/async";
-import { credentialsFor, reclaimExpiredReservations, getSlotForPosition } from "./allocator";
-import { expectedMargin, markReversed } from "./ledger";
-import { requireMarket } from "./markets";
-import { adjustIsolatedMargin } from "../arcus/client";
-import { fromBaseUnits as toDollars, negateDecimal } from "../lib/decimal";
+import { reclaimExpiredReservations } from "./allocator";
+import { expectedMargin } from "./ledger";
+import { retryFulfil } from "./margin";
+import { resumeOpenRequests } from "./openPosition";
+import { fromBaseUnits as toDollars } from "../lib/decimal";
 
 const log = createLogger("reconciler");
 
@@ -29,6 +26,9 @@ const log = createLogger("reconciler");
  *      process died between writing the row and hearing back from Arcus; a
  *      `confirmed` row with no on-chain fulfilment means it died between the two
  *      legs. Both resolve the same way the cancellation race does.
+ *
+ *   3. Resume open-position requests left mid-flight (restart, a slow Arcus
+ *      credit, createPosition failing, a refund waiting on its withdrawal).
  */
 
 export interface ReconcileReport {
@@ -37,6 +37,7 @@ export interface ReconcileReport {
   strandedPending: number;
   strandedConfirmed: number;
   reclaimedReservations: number;
+  resumedOpenRequests: number;
 }
 
 export async function reconcileOnce(): Promise<ReconcileReport> {
@@ -46,9 +47,11 @@ export async function reconcileOnce(): Promise<ReconcileReport> {
     strandedPending: 0,
     strandedConfirmed: 0,
     reclaimedReservations: 0,
+    resumedOpenRequests: 0,
   };
 
   report.reclaimedReservations = await reclaimExpiredReservations();
+  report.resumedOpenRequests = await resumeOpenRequests();
 
   const decimals = await usdgDecimals();
 
@@ -140,6 +143,7 @@ export async function reconcileOnce(): Promise<ReconcileReport> {
     strandedPending: report.strandedPending,
     strandedConfirmed: report.strandedConfirmed,
     reclaimedReservations: report.reclaimedReservations,
+    resumedOpenRequests: report.resumedOpenRequests,
   });
 
   return report;
@@ -147,56 +151,13 @@ export async function reconcileOnce(): Promise<ReconcileReport> {
 
 /**
  * A `confirmed` entry with no on-chain fulfilment: margin moved on Arcus, but
- * the vault side never landed. Same resolution as the cancellation race in the
- * margin flow -- if the on-chain request is gone, undo the Arcus move; if it is
- * still pending, the margin handler will retry it on the next indexer pass.
+ * the vault side never landed. The margin flow's own on-chain leg sorts it
+ * out -- fulfils if the request is still pending, recognises a fulfil that
+ * already landed, or (if the user cancelled) marks it cancelled and undoes the
+ * Arcus move.
  */
 async function resolveConfirmedButUnfulfilled(entryId: string): Promise<void> {
-  const entry = await db.ledgerEntry.findUnique({
-    where: { id: entryId },
-    include: { position: true },
-  });
-  if (!entry || !entry.position.positionTokenAddress || !entry.controller) return;
-
-  const positionToken = entry.position.positionTokenAddress as Address;
-  const controller = entry.controller as Address;
-
-  const stillPending =
-    entry.type === "margin_add"
-      ? await pendingDeposit(positionToken, controller)
-      : await pendingRedeem(positionToken, controller);
-
-  if (stillPending > 0n) {
-    log.info("stranded entry still has a live on-chain request; leaving it to the margin handler", {
-      entryId,
-      positionId: entry.positionId,
-    });
-    return;
-  }
-
-  const slot = await getSlotForPosition(entry.positionId);
-  if (!slot) {
-    alert("stranded entry has no slot to reverse against", { entryId });
-    return;
-  }
-
-  const market = await requireMarket(entry.position.market);
-  const decimals = await usdgDecimals();
-  const dollars = fromBaseUnits(BigInt(entry.amount), decimals);
-  const amount = entry.type === "margin_add" ? negateDecimal(dollars) : dollars;
-
-  await adjustIsolatedMargin(credentialsFor(slot), {
-    marketId: market.arcusMarketId,
-    amount,
-  });
-  await markReversed(entryId, `Reversed by reconciler (${amount}): on-chain request no longer pending`);
-
-  alert("reversed a stranded margin move", {
-    entryId,
-    positionId: entry.positionId,
-    type: entry.type,
-    amount,
-  });
+  await retryFulfil(entryId);
 }
 
 export function startReconciler(): () => void {

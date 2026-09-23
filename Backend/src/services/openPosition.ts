@@ -1,13 +1,20 @@
-import type { Position } from "@prisma/client";
-import type { Address } from "viem";
+import type { PositionOpenRequest } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { Address, Hash } from "viem";
 
-import { getAccountTransferUpdates, placeOrder, setLeverage } from "../arcus/client";
+import { getPositions, placeOrder, setLeverage } from "../arcus/client";
 import { getArcusStream, type OrderOutcome } from "../arcus/ws";
-import type { ArcusCredentials } from "../arcus/types";
 import { db } from "../config/db";
 import { config } from "../config/env";
-import { usdgDecimals } from "../chain/clients";
-import { createPosition } from "../chain/writes";
+import { usdgAddress, usdgDecimals } from "../chain/clients";
+import {
+  createPosition,
+  ensureLendingPool,
+  findExistingPositionToken,
+  transferUsdg,
+  usdgBalanceOf,
+  usdgTransfersIn,
+} from "../chain/writes";
 import { sleep } from "../lib/async";
 import {
   applyBps,
@@ -20,371 +27,532 @@ import {
   parseDecimal,
   toBaseUnits,
 } from "../lib/decimal";
-import { badRequest, notFound } from "../lib/errors";
-import { createLogger, errorFields } from "../lib/logger";
+import { badRequest, conflict, forbidden, notFound } from "../lib/errors";
+import { alert, createLogger, errorFields } from "../lib/logger";
 import {
   credentialsFor,
-  getSlotForPosition,
+  getSlot,
   markAllocated,
   releaseSlot,
   reserveSlot,
   type SlotWithWallet,
 } from "./allocator";
-import { markConfirmed, recordPending } from "./ledger";
-import { markPriceFor, requireMarketBySymbol, type ResolvedMarket } from "./markets";
-import { ensureUser } from "./users";
+import {
+  depositToSubaccount,
+  findCredit,
+  waitForCredit,
+  waitForWithdrawal,
+  walletForSlot,
+  withdrawToInternalWallet,
+} from "./arcusFunding";
+import { markPriceFor, requireMarket, requireMarketByName, type ResolvedMarket } from "./markets";
+import { requireRegisteredUser } from "./users";
 import { sweepSubaccount } from "./sweep";
 
 const log = createLogger("open-position");
 
 /**
- * Opening a position, first-time funding.
+ * Opening a position.
  *
- * There is no PositionToken yet to lock funds into, so this first deposit
- * bypasses the on-chain vault entirely and goes straight to Arcus. The token is
- * minted afterwards, from the confirmed fill -- which is why the whole flow is
- * asynchronous and the HTTP request only hands back a deposit target.
+ *   1. The creator pays the reserved slot's internal Arcus wallet (a plain USDG
+ *      transfer from their Privy wallet), then reports the tx hash.
+ *   2. That internal wallet deposits the USDG into the reserved subaccount via
+ *      Arcus's deposit proxy, and trades with the slot's API key.
+ *   3. The operator mints the PositionToken to the creator from the confirmed
+ *      fill, then creates its LendingPool.
+ *
+ * Two kinds of wallet, and they never swap roles: the creator pays and owns the
+ * PositionToken; the internal wallets receive, deposit and hold the trade, and
+ * never appear in Laxu's contracts.
+ *
+ * Every step writes what it learned to the PositionOpenRequest row before
+ * moving on, and each step checks the row (and Arcus) before acting, so a
+ * restart resumes rather than repeating a step that moves money. The creator
+ * must never be left with money stuck in Laxu's wallets: anything that fails
+ * before the fill is refunded.
  */
 
+// Every status a request can be in. `refunding` sits between a failure and
+// `refunded` so a refund interrupted by a restart is picked up again.
+export type OpenRequestStatus =
+  | "awaiting_payment"
+  | "payment_received"
+  | "deposited"
+  | "order_filled"
+  | "minted"
+  | "refunding"
+  | "refunded"
+  | "failed";
+
+const TERMINAL: OpenRequestStatus[] = ["minted", "refunded", "failed"];
+
+/// Arcus rejects withdrawals under $1, which is how a post-deposit refund
+/// travels -- anything smaller could not be returned.
+const MIN_OPEN_AMOUNT = "1";
+
+const CREATE_POOL_ATTEMPTS = 3;
+const CREATE_POOL_RETRY_MS = 3_000;
+const CREATE_POSITION_ATTEMPTS = 5;
+
+// ---------------------------------------------------------------------------
+// Step 1 -- the creator opens a position on Laxu
+// ---------------------------------------------------------------------------
+
 export interface OpenPositionRequest {
+  /// Always the logged-in user (`req.user.walletAddress`), never the body.
   userWalletAddress: string;
-  symbol: string;
+  /// Laxu symbol ("ETH") or Arcus name ("ETH-USD").
+  market: string;
   direction: "long" | "short";
   leverage: number;
-  /// Collateral the user intends to send, in USDG base units.
+  /// Human USDG, e.g. "500".
   amount: string;
-  nickname?: string;
 }
 
 export interface OpenPositionReservation {
-  positionId: string;
-  /// Where the user's Privy wallet should send USDG.
-  deposit: {
-    address: string;
-    accountIndex: number;
-    amount: string;
-    /// Human-readable, for display.
-    amountDisplay: string;
-  };
+  openRequestId: string;
+  /// The slot's internal Arcus wallet -- where the creator sends USDG.
+  payTo: string;
+  usdg: string;
+  /// USDG base units.
+  amount: string;
   expiresAt: string;
-  market: { symbol: string; arcusDisplayName: string };
 }
 
-export async function requestOpenPosition(
-  request: OpenPositionRequest,
-): Promise<OpenPositionReservation> {
-  const market = await requireMarketBySymbol(request.symbol);
+export async function requestOpenPosition(request: OpenPositionRequest): Promise<OpenPositionReservation> {
+  const market = await requireMarketByName(request.market);
 
-  if (request.leverage < 1) throw badRequest("Leverage must be at least 1", "INVALID_LEVERAGE");
+  if (!Number.isInteger(request.leverage) || request.leverage < 1) {
+    throw badRequest("Leverage must be a whole number of at least 1", "INVALID_LEVERAGE");
+  }
   if (market.maxLeverage && request.leverage > market.maxLeverage) {
-    throw badRequest(
-      `${market.symbol} caps leverage at ${market.maxLeverage}x`,
-      "LEVERAGE_TOO_HIGH",
-    );
-  }
-  if (!/^\d+$/.test(request.amount) || BigInt(request.amount) <= 0n) {
-    throw badRequest("Amount must be a positive integer string in USDG base units", "INVALID_AMOUNT");
+    throw badRequest(`${market.symbol} caps leverage at ${market.maxLeverage}x`, "LEVERAGE_TOO_HIGH");
   }
 
-  const user = await ensureUser(request.userWalletAddress);
-
-  const position = await db.position.create({
-    data: {
-      userWalletAddress: user.walletAddress,
-      market: market.laxuMarket,
-      direction: request.direction,
-      leverage: request.leverage,
-      requestedAmount: request.amount,
-      nickname: request.nickname?.slice(0, 64) ?? "",
-      creatorFeeBps: config.creatorFeeBps,
-      status: "pending",
-    },
-  });
-
-  let slot: SlotWithWallet;
+  const decimals = await usdgDecimals();
+  let amount: bigint;
   try {
-    slot = await reserveSlot({
-      userWalletAddress: user.walletAddress,
-      positionId: position.id,
+    amount = toBaseUnits(request.amount, decimals);
+  } catch {
+    throw badRequest("Amount must be a decimal USDG amount, e.g. \"500\"", "INVALID_AMOUNT");
+  }
+  if (compareDecimal(request.amount, MIN_OPEN_AMOUNT) < 0) {
+    throw badRequest(`Amount must be at least ${MIN_OPEN_AMOUNT} USDG`, "INVALID_AMOUNT");
+  }
+  if (fromBaseUnits(amount, decimals) !== formatDecimal(parseDecimal(request.amount))) {
+    throw badRequest(`Amount has more than ${decimals} decimal places`, "INVALID_AMOUNT");
+  }
+
+  const user = await requireRegisteredUser(request.userWalletAddress);
+
+  const { slot, result: openRequest } = await reserveSlot(
+    { userWalletAddress: user.walletAddress },
+    (tx, slotId) =>
+      tx.positionOpenRequest.create({
+        data: {
+          userWalletAddress: user.walletAddress,
+          slotId,
+          marketId: market.laxuMarket,
+          direction: request.direction,
+          leverage: request.leverage,
+          amount: amount.toString(),
+        },
+      }),
+  );
+
+  return {
+    openRequestId: openRequest.id,
+    payTo: slot.operatorWallet.address,
+    usdg: usdgAddress(),
+    amount: amount.toString(),
+    expiresAt: (slot.reservationExpiresAt ?? new Date(Date.now() + config.reservationTimeoutMs)).toISOString(),
+  };
+}
+
+/**
+ * The creator reports their payment transaction. Saves the hash (one payment
+ * can never open two positions -- the column is unique), then runs the rest in
+ * the background.
+ *
+ * A payment reported after the reservation already timed out is still
+ * verified and refunded: the money is on the internal wallet either way.
+ */
+export async function reportPayment(params: {
+  openRequestId: string;
+  callerWalletAddress: string;
+  txHash: Hash;
+}): Promise<PositionOpenRequest> {
+  const request = await requireOwnRequest(params.openRequestId, params.callerWalletAddress);
+
+  if (request.paymentTxHash) {
+    if (request.paymentTxHash.toLowerCase() !== params.txHash.toLowerCase()) {
+      throw conflict("A different payment is already recorded for this request", "PAYMENT_ALREADY_RECORDED");
+    }
+    return request;
+  }
+
+  const lateButPaid = request.status === "failed";
+  if (request.status !== "awaiting_payment" && !lateButPaid) {
+    throw conflict(`Request is ${request.status}, not awaiting payment`, "NOT_AWAITING_PAYMENT");
+  }
+
+  let updated: PositionOpenRequest;
+  try {
+    updated = await db.positionOpenRequest.update({
+      where: { id: request.id },
+      data: { paymentTxHash: params.txHash.toLowerCase(), error: null },
     });
   } catch (error) {
-    await db.position.update({
-      where: { id: position.id },
-      data: { status: "failed", failureReason: "No free subaccount slot available" },
-    });
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      throw conflict("That payment has already been used for another position", "PAYMENT_REUSED");
+    }
     throw error;
   }
 
-  // The deposit row goes in as `pending` now, before anything moves, so a crash
-  // between here and the deposit landing leaves a record of what was expected
-  // rather than nothing at all.
-  await recordPending({
-    positionId: position.id,
-    type: "deposit",
-    amount: request.amount,
-    note: `Awaiting direct USDG deposit to ${slot.operatorWallet.address} index ${slot.accountIndex}`,
-  });
+  kick(updated.id);
+  return updated;
+}
 
-  const decimals = await usdgDecimals();
-  const expiresAt = slot.reservationExpiresAt ?? new Date(Date.now() + config.reservationTimeoutMs);
+export async function getOpenRequest(openRequestId: string, callerWalletAddress: string) {
+  return requireOwnRequest(openRequestId, callerWalletAddress);
+}
 
-  // Drive the rest in the background: the deposit wait alone runs to the
-  // reservation timeout, which no HTTP request should hold open.
-  void driveOpenPosition(position.id).catch((error) => {
-    log.error("open-position orchestration failed", {
-      positionId: position.id,
-      ...errorFields(error),
-    });
-  });
-
-  return {
-    positionId: position.id,
-    deposit: {
-      address: slot.operatorWallet.address,
-      accountIndex: slot.accountIndex,
-      amount: request.amount,
-      amountDisplay: fromBaseUnits(BigInt(request.amount), decimals),
-    },
-    expiresAt: expiresAt.toISOString(),
-    market: { symbol: market.symbol, arcusDisplayName: market.arcusDisplayName },
-  };
+async function requireOwnRequest(id: string, caller: string): Promise<PositionOpenRequest> {
+  const request = await db.positionOpenRequest.findUnique({ where: { id } });
+  if (!request) throw notFound(`Open request ${id} not found`);
+  if (request.userWalletAddress.toLowerCase() !== caller.toLowerCase()) {
+    throw forbidden("Not your open request");
+  }
+  return request;
 }
 
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
-export async function driveOpenPosition(positionId: string): Promise<void> {
-  const position = await db.position.findUnique({ where: { id: positionId } });
-  if (!position) throw notFound(`Position ${positionId} not found`);
-  if (position.status !== "pending") {
-    log.info("position is no longer pending; nothing to drive", {
-      positionId,
-      status: position.status,
+/// Requests this process is currently driving -- a resume tick never starts a
+/// second driver for one already in flight.
+const inFlight = new Set<string>();
+
+function kick(id: string): void {
+  if (inFlight.has(id)) return;
+  inFlight.add(id);
+  void driveOpenRequest(id)
+    .catch((error) => log.error("open-position orchestration failed", { openRequestId: id, ...errorFields(error) }))
+    .finally(() => inFlight.delete(id));
+}
+
+/**
+ * Pick up every request left mid-flight -- after a restart, or a step that
+ * gave up waiting (Arcus credit slow, createPosition failing). Called from the
+ * reconciler tick and once at boot.
+ */
+export async function resumeOpenRequests(): Promise<number> {
+  const stuck = await db.positionOpenRequest.findMany({
+    where: {
+      OR: [
+        { status: { in: ["payment_received", "deposited", "order_filled", "refunding"] } },
+        { status: { in: ["awaiting_payment", "failed"] }, paymentTxHash: { not: null }, refundTxHash: null },
+      ],
+    },
+    select: { id: true, status: true, paymentTxHash: true },
+  });
+
+  let kicked = 0;
+  for (const row of stuck) {
+    // A failed request with a payment is a late payment awaiting its refund --
+    // unless the failure came after the refund was already sent.
+    if (inFlight.has(row.id)) continue;
+    kick(row.id);
+    kicked += 1;
+  }
+  return kicked;
+}
+
+async function load(id: string): Promise<PositionOpenRequest> {
+  const request = await db.positionOpenRequest.findUnique({ where: { id } });
+  if (!request) throw notFound(`Open request ${id} not found`);
+  return request;
+}
+
+async function update(id: string, data: Prisma.PositionOpenRequestUpdateInput): Promise<PositionOpenRequest> {
+  return db.positionOpenRequest.update({ where: { id }, data });
+}
+
+/**
+ * Advance one request as far as it will go. Each branch re-reads the row, so
+ * this is safe to call on a request in any state.
+ */
+export async function driveOpenRequest(id: string): Promise<void> {
+  for (;;) {
+    const request = await load(id);
+    const status = request.status as OpenRequestStatus;
+    const slot = await getSlot(request.slotId);
+
+    try {
+      if (status === "awaiting_payment") {
+        if (!request.paymentTxHash) return; // nothing reported yet
+        if (!(await confirmPayment(request, slot))) return;
+      } else if (status === "failed") {
+        // Only reached for a payment reported after the reservation expired.
+        if (!request.paymentTxHash || request.refundTxHash) return;
+        if (!(await confirmPayment(request, slot, { late: true }))) return;
+        await refund(await load(id), slot, "Payment arrived after the reservation had expired");
+        return;
+      } else if (status === "payment_received") {
+        if (!(await depositPayment(request, slot))) return;
+      } else if (status === "deposited") {
+        await placeEntry(request, slot);
+      } else if (status === "order_filled") {
+        await mintPositionToken(request, slot);
+      } else if (status === "refunding") {
+        await refund(request, slot, request.error ?? "refund resumed");
+        return;
+      } else {
+        return; // minted / refunded
+      }
+    } catch (error) {
+      if (error instanceof RefundableError) {
+        log.warn("open request failed before the fill; refunding", {
+          openRequestId: id,
+          status,
+          reason: error.message,
+        });
+        await refund(await load(id), slot, error.message);
+        return;
+      }
+      await update(id, { error: (error instanceof Error ? error.message : String(error)).slice(0, 500) });
+      throw error;
+    }
+  }
+}
+
+/// A failure the creator must be refunded for: anything before the fill.
+class RefundableError extends Error {}
+
+// ---------------------------------------------------------------------------
+// Step 2a -- confirm the creator paid
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the payment receipt and find the USDG Transfer in it: succeeded,
+ * emitted by the USDG contract, from the creator, to this slot's internal
+ * wallet, for exactly the requested amount.
+ *
+ * A mismatch clears the hash (so the creator can report the right one) and
+ * leaves the request awaiting payment until the reservation expires.
+ */
+async function confirmPayment(
+  request: PositionOpenRequest,
+  slot: SlotWithWallet,
+  options: { late?: boolean } = {},
+): Promise<boolean> {
+  const txHash = request.paymentTxHash as Hash;
+  const { status, transfers } = await usdgTransfersIn(txHash);
+
+  const expected = BigInt(request.amount);
+  const payment = transfers.find(
+    (transfer) =>
+      transfer.from.toLowerCase() === request.userWalletAddress.toLowerCase() &&
+      transfer.to.toLowerCase() === slot.operatorWallet.address.toLowerCase(),
+  );
+
+  let problem: string | undefined;
+  if (status !== "success") problem = "the payment transaction reverted";
+  else if (!payment) problem = `no USDG transfer from your wallet to ${slot.operatorWallet.address} in that transaction`;
+  else if (payment.value !== expected) problem = `paid ${payment.value} base units, expected ${expected}`;
+
+  if (problem) {
+    log.warn("payment did not match the open request", { openRequestId: request.id, txHash, problem });
+    // Keep a wrong-amount payment on record so it is refunded rather than lost.
+    const keep = status === "success" && payment !== undefined;
+    await update(request.id, {
+      paymentTxHash: keep ? txHash : null,
+      error: `Payment rejected: ${problem}`,
+      ...(keep ? { status: "refunding", amount: payment.value.toString() } : {}),
     });
-    return;
+    if (keep) await refund(await load(request.id), slot, `Payment rejected: ${problem}`);
+    return false;
   }
 
-  const slot = await getSlotForPosition(positionId);
-  if (!slot) throw new Error(`Position ${positionId} has no reserved slot`);
+  if (options.late) return true;
 
-  const market = await requireMarketBySymbol(
-    (await db.market.findUnique({ where: { laxuMarket: position.market } }))?.symbol ?? "",
-  );
+  // The reservation may have expired while the receipt was awaited. Taking the
+  // slot's row lock (the same one the reclaim sweep takes) makes the two
+  // mutually exclusive: either this claims the payment and clears the expiry,
+  // or the sweep got there first and the payment is refunded as late.
+  const claimed = await db.$transaction(async (tx) => {
+    await lockSlotRow(tx, slot.id);
+    const moved = await tx.positionOpenRequest.updateMany({
+      where: { id: request.id, status: "awaiting_payment" },
+      data: { status: "payment_received", error: null },
+    });
+    if (moved.count === 0) return false;
+    await tx.subaccountSlot.update({ where: { id: slot.id }, data: { reservationExpiresAt: null } });
+    return true;
+  });
+
+  if (!claimed) {
+    await refund(await load(request.id), slot, "Payment arrived after the reservation had expired");
+    return false;
+  }
+  log.info("payment received", { openRequestId: request.id, txHash, amount: expected.toString() });
+  return true;
+}
+
+async function lockSlotRow(tx: Prisma.TransactionClient, slotId: string): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM subaccount_slots WHERE id = ${slotId} FOR UPDATE`;
+}
+
+// ---------------------------------------------------------------------------
+// Step 2b -- the internal wallet deposits into the reserved subaccount
+// ---------------------------------------------------------------------------
+
+/**
+ * `initiateDeposit(owner = internal wallet, slot.accountIndex, USDG, amount)`,
+ * then wait for the credit on that exact index.
+ *
+ * Resume-safe: a credit already on the feed since the request began means the
+ * deposit happened (even if the process died before saving its hash), and a
+ * saved deposit hash means only the credit is outstanding. A slow credit is
+ * not a failure -- the money is in flight to Arcus, so an on-chain refund now
+ * could pay twice. The request stays put and the resume tick keeps waiting.
+ */
+async function depositPayment(request: PositionOpenRequest, slot: SlotWithWallet): Promise<boolean> {
+  const since = request.createdAt;
+  const existing = await findCredit(slot, since);
+
+  if (!existing && !request.arcusDepositTxHash) {
+    let txHash: Hash;
+    try {
+      txHash = await depositToSubaccount(slot, BigInt(request.amount));
+    } catch (error) {
+      // Nothing left the internal wallet: refund on-chain.
+      throw new RefundableError(`Arcus deposit failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await update(request.id, { arcusDepositTxHash: txHash });
+  }
+
+  try {
+    const { credited } = existing
+      ? { credited: toBaseUnits(existing.amount, await usdgDecimals()) }
+      : await waitForCredit(slot, since);
+
+    await update(request.id, { status: "deposited", creditedAmount: credited.toString(), error: null });
+    log.info("deposit credited", {
+      openRequestId: request.id,
+      accountIndex: slot.accountIndex,
+      credited: credited.toString(),
+    });
+    return true;
+  } catch (error) {
+    await update(request.id, { error: (error instanceof Error ? error.message : String(error)).slice(0, 500) });
+    alert("Arcus deposit not credited yet; will keep checking", {
+      openRequestId: request.id,
+      accountIndex: slot.accountIndex,
+      depositTx: request.arcusDepositTxHash,
+    });
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Step 2c -- place the trade with the slot's API key
+// ---------------------------------------------------------------------------
+
+async function placeEntry(request: PositionOpenRequest, slot: SlotWithWallet): Promise<void> {
+  const market = await requireMarket(request.marketId);
   const credentials = credentialsFor(slot);
   const decimals = await usdgDecimals();
 
-  try {
-    // --- 1. Wait for the deposit ------------------------------------------
-    const deposited = await waitForDeposit({
-      credentials,
-      expected: BigInt(position.requestedAmount),
-      decimals,
-      deadline: slot.reservationExpiresAt ?? new Date(Date.now() + config.reservationTimeoutMs),
-    });
-
-    await markAllocated(slot.id);
-    await db.position.update({
-      where: { id: positionId },
-      data: { depositedAmount: deposited.baseUnits.toString() },
-    });
-
-    const depositEntry = await db.ledgerEntry.findFirst({
-      where: { positionId, type: "deposit" },
-      orderBy: { createdAt: "asc" },
-    });
-    if (depositEntry) {
-      await db.ledgerEntry.update({
-        where: { id: depositEntry.id },
-        data: { amount: deposited.baseUnits.toString() },
+  // A client id on file means an order may already have gone out before a
+  // restart. If the leg exists, that order filled -- use it rather than trade
+  // twice. (IOC orders resolve immediately, so no leg means it did not fill.)
+  if (request.arcusClientId) {
+    const leg = (await getPositions(credentials.address, credentials.accountIndex)).find(
+      (entry) => entry.marketId === market.arcusMarketId,
+    );
+    if (leg && !isZeroDecimal(leg.size)) {
+      await recordFill(request, {
+        orderId: request.arcusOrderId ?? request.arcusClientId,
+        averagePrice: leg.averageEntryPrice,
+        filledSize: leg.size,
       });
-      await markConfirmed(depositEntry.id, {
-        arcusRequestId: deposited.transferId,
-        note: `Arcus DEPOSIT ${deposited.transferId} applied`,
-      });
+      return;
     }
+  }
 
-    // --- 2. Isolated margin at the requested leverage ----------------------
-    // Set before the order so the engine opens the leg in isolated mode. The
-    // margin-add path in the buy-in flow depends on this: adjustIsolatedMargin
-    // rejects an account/market pair that is not already isolated.
+  let outcome: OrderOutcome;
+  try {
+    // Isolated at the requested leverage, set before the order so the engine
+    // opens the leg isolated -- adjustIsolatedMargin (buy-ins) rejects an
+    // account/market pair that is not already isolated.
     await setLeverage(credentials, {
       marketId: market.arcusMarketId,
-      leverage: position.leverage,
+      leverage: request.leverage,
       isolated: true,
     });
 
-    // --- 3. Place the entry order -----------------------------------------
-    const outcome = await placeEntryOrder({
-      position,
+    const clientId = `o${request.id}${Date.now().toString(36)}`.slice(0, 36);
+    await update(request.id, { arcusClientId: clientId });
+
+    outcome = await placeEntryOrder({
+      direction: request.direction as "long" | "short",
+      leverage: request.leverage,
       market,
       credentials,
-      collateral: deposited.display,
-    });
-
-    if (outcome.unfilled) {
-      throw new Error(
-        `Entry order did not fill (${outcome.status}${
-          outcome.cancelReason ? `: ${outcome.cancelReason}` : ""
-        })`,
-      );
-    }
-
-    // --- 4. Mint the PositionToken from the confirmed fill ------------------
-    const entryPrice = toBaseUnits(outcome.averagePrice, 18);
-    const size = toBaseUnits(outcome.filledSize, 18);
-
-    const { positionToken, txHash } = await createPosition({
-      creator: position.userWalletAddress as Address,
-      market: position.market as `0x${string}`,
-      direction: position.direction as "long" | "short",
-      leverage: position.leverage,
-      entryPrice,
-      size,
-      initialDeposit: deposited.baseUnits,
-      arcusOrderId: outcome.orderId,
-      creatorFeeBps: position.creatorFeeBps,
-      nickname: position.nickname,
-    });
-
-    await db.position.update({
-      where: { id: positionId },
-      data: {
-        status: "open",
-        positionTokenAddress: positionToken.toLowerCase(),
-        arcusOrderId: outcome.orderId,
-        arcusPositionId: outcome.orderId,
-        entryPrice: entryPrice.toString(),
-        size: size.toString(),
-      },
-    });
-
-    log.info("position open", {
-      positionId,
-      positionToken,
-      txHash,
-      entryPrice: outcome.averagePrice,
-      size: outcome.filledSize,
+      collateral: fromBaseUnits(BigInt(request.creditedAmount as string), decimals),
+      clientId,
     });
   } catch (error) {
-    await failOpenPosition(positionId, slot, error);
-    throw error;
-  }
-}
-
-async function failOpenPosition(
-  positionId: string,
-  slot: SlotWithWallet,
-  error: unknown,
-): Promise<void> {
-  const reason = error instanceof Error ? error.message : String(error);
-  log.error("open-position failed", { positionId, reason });
-
-  await db.position.update({
-    where: { id: positionId },
-    data: { status: "failed", failureReason: reason.slice(0, 500) },
-  });
-
-  // Anything the user already sent is still sitting on the subaccount. Sweep it
-  // back to index 0 before recycling the slot, or the next user's balance check
-  // would see someone else's money.
-  try {
-    await sweepSubaccount(slot);
-  } catch (sweepError) {
-    log.error("sweep after failed open did not complete; slot held back", {
-      positionId,
-      slotId: slot.id,
-      ...errorFields(sweepError),
-    });
-    return;
+    throw new RefundableError(`Entry order failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
-  await releaseSlot(slot.id);
-}
-
-// ---------------------------------------------------------------------------
-// Deposit detection
-// ---------------------------------------------------------------------------
-
-interface DepositResult {
-  transferId: string;
-  baseUnits: bigint;
-  display: string;
-}
-
-async function waitForDeposit(params: {
-  credentials: ArcusCredentials;
-  expected: bigint;
-  decimals: number;
-  deadline: Date;
-}): Promise<DepositResult> {
-  const seen = new Set<string>();
-  const expectedDisplay = fromBaseUnits(params.expected, params.decimals);
-
-  while (Date.now() < params.deadline.getTime()) {
-    const updates = await getAccountTransferUpdates(
-      params.credentials.address,
-      params.credentials.accountIndex,
-      { limit: 50 },
+  // A partial fill counts, at the size that filled.
+  if (outcome.unfilled) {
+    throw new RefundableError(
+      `Entry order did not fill (${outcome.status}${outcome.cancelReason ? `: ${outcome.cancelReason}` : ""})`,
     );
-
-    for (const update of updates) {
-      if (seen.has(update.id)) continue;
-      seen.add(update.id);
-
-      if (update.type !== "DEPOSIT") continue;
-      // A rejected transfer reports the pre-op balance and moved nothing.
-      if (update.status !== "APPLIED") continue;
-      // Spot-asset deposits carry a size in the asset's own units, not USD.
-      if (update.spotAssetId && update.spotAssetId > 0) continue;
-      // Deposits are reported against the index they landed on, but the filter
-      // is re-checked here because a stale page could carry another subaccount.
-      if (update.accountIndex !== params.credentials.accountIndex) continue;
-
-      // Accept at or above the expected amount: users overshoot, and refusing a
-      // larger deposit would strand it on a slot about to be recycled.
-      if (compareDecimal(update.amount, expectedDisplay) < 0) {
-        log.warn("deposit smaller than expected, still waiting", {
-          accountIndex: params.credentials.accountIndex,
-          received: update.amount,
-          expected: expectedDisplay,
-        });
-        continue;
-      }
-
-      return {
-        transferId: update.id,
-        baseUnits: toBaseUnits(update.amount, params.decimals),
-        display: update.amount,
-      };
-    }
-
-    await sleep(config.depositPollIntervalMs);
   }
 
-  throw new Error(
-    `No matching DEPOSIT on index ${params.credentials.accountIndex} before the reservation timed out`,
-  );
+  await recordFill(request, outcome);
 }
 
-// ---------------------------------------------------------------------------
-// Entry order
-// ---------------------------------------------------------------------------
+async function recordFill(
+  request: PositionOpenRequest,
+  fill: { orderId: string; averagePrice: string; filledSize: string },
+): Promise<void> {
+  await update(request.id, {
+    status: "order_filled",
+    arcusOrderId: fill.orderId,
+    entryPrice: fill.averagePrice,
+    filledSize: fill.filledSize,
+    error: null,
+  });
+  log.info("entry filled", {
+    openRequestId: request.id,
+    orderId: fill.orderId,
+    price: fill.averagePrice,
+    size: fill.filledSize,
+  });
+}
 
 async function placeEntryOrder(params: {
-  position: Position;
+  direction: "long" | "short";
+  leverage: number;
   market: ResolvedMarket;
-  credentials: ArcusCredentials;
+  credentials: ReturnType<typeof credentialsFor>;
   /// Confirmed collateral, human-readable USD.
   collateral: string;
+  clientId: string;
 }): Promise<OrderOutcome> {
-  const { market, credentials, position } = params;
-  const side = position.direction === "long" ? "BUY" : "SELL";
+  const { market, credentials, clientId } = params;
+  const side = params.direction === "long" ? "BUY" : "SELL";
 
   const mark = await markPriceFor(market);
   const { price, quantity } = sizeEntry({
     collateral: params.collateral,
-    leverage: position.leverage,
+    leverage: params.leverage,
     mark,
     side,
     market,
@@ -400,10 +568,6 @@ async function placeEntryOrder(params: {
       `Computed size ${quantity} exceeds ${market.symbol}'s maximum order size ${market.maxOrderSize}`,
     );
   }
-
-  // clientId charset is [A-Za-z0-9_-], max 36 -- cuid fits without munging.
-  const clientId = position.id.slice(0, 36);
-  await db.position.update({ where: { id: position.id }, data: { arcusClientId: clientId } });
 
   // The listener has to be subscribed and acknowledged BEFORE the REST call:
   // placeOrder answers 202 ACK with no fill data, and the execution arrives only
@@ -439,7 +603,7 @@ async function placeEntryOrder(params: {
 }
 
 /**
- * Size the entry from the collateral actually received.
+ * Size the entry from the collateral actually credited.
  *
  * With isolated margin at `leverage`, the initial margin requirement is
  * notional / leverage -- so putting the whole deposit to work means a notional
@@ -486,11 +650,300 @@ export function sizeEntry(params: {
   return { price, quantity, notional };
 }
 
-export async function getPositionView(positionId: string) {
-  const position = await db.position.findUnique({
-    where: { id: positionId },
-    include: { subaccountSlot: { include: { operatorWallet: true } }, ledgerEntries: true },
-  });
-  if (!position) throw notFound(`Position ${positionId} not found`);
-  return position;
+/**
+ * The filled size in the unit PositionToken's value math needs. The contract
+ * computes pnl as `size * (mark - entry) / 1e18` in USDG base units, with
+ * prices at 1e18 -- so `size` must carry the asset quantity scaled by USDG's
+ * own decimals, not by 1e18.
+ */
+export function onChainSize(filledSize: string, usdgDecimalPlaces: number): bigint {
+  return toBaseUnits(filledSize, usdgDecimalPlaces);
 }
+
+// ---------------------------------------------------------------------------
+// Step 3 -- PositionToken, then its LendingPool
+// ---------------------------------------------------------------------------
+
+/**
+ * The trade is open on Arcus, so the token must exist: createPosition is
+ * retried rather than ever releasing the slot or unwinding the trade. The
+ * token address is saved the moment it is known, and before any retry the
+ * Factory is asked whether this trade already has a token, so a crash can
+ * never mint two.
+ */
+async function mintPositionToken(request: PositionOpenRequest, slot: SlotWithWallet): Promise<void> {
+  const creator = request.userWalletAddress as Address;
+  const decimals = await usdgDecimals();
+  const orderId = request.arcusOrderId as string;
+
+  // --- 3a. createPosition -------------------------------------------------
+  let positionToken = request.positionTokenAddress as Address | null;
+  if (!positionToken) {
+    positionToken = (await findExistingPositionToken(creator, orderId)) ?? null;
+  }
+  if (!positionToken) {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        ({ positionToken } = await createPosition({
+          creator,
+          market: request.marketId as `0x${string}`,
+          direction: request.direction as "long" | "short",
+          leverage: request.leverage,
+          entryPrice: toBaseUnits(request.entryPrice as string, 18),
+          size: onChainSize(request.filledSize as string, decimals),
+          initialDeposit: BigInt(request.creditedAmount as string),
+          arcusOrderId: orderId,
+        }));
+        break;
+      } catch (error) {
+        log.error("createPosition failed; the Arcus trade is open, retrying", {
+          openRequestId: request.id,
+          attempt,
+          ...errorFields(error),
+        });
+        if (attempt >= CREATE_POSITION_ATTEMPTS) {
+          alert("createPosition keeps failing for an open Arcus trade", {
+            openRequestId: request.id,
+            accountIndex: slot.accountIndex,
+          });
+          throw error; // left `order_filled`; the resume tick tries again
+        }
+        await sleep(CREATE_POOL_RETRY_MS * attempt);
+        const minted = await findExistingPositionToken(creator, orderId);
+        if (minted) {
+          positionToken = minted;
+          break;
+        }
+      }
+    }
+  }
+
+  // Saved before anything else, so a crash from here on resumes instead of
+  // minting a second token for the same trade.
+  await update(request.id, { positionTokenAddress: positionToken.toLowerCase() });
+
+  // --- 3b. createPool, straight after createPosition confirmed ------------
+  const pool = await createPoolWithRetry(positionToken);
+
+  // --- 3c. Ledger + finish ------------------------------------------------
+  const tokenAddress = positionToken.toLowerCase();
+  const position = await db.$transaction(async (tx) => {
+    const row = await tx.position.upsert({
+      where: { positionTokenAddress: tokenAddress },
+      create: {
+        positionTokenAddress: tokenAddress,
+        lendingPoolAddress: pool?.toLowerCase() ?? null,
+        userWalletAddress: request.userWalletAddress,
+        arcusPositionId: orderId,
+        arcusOrderId: orderId,
+        arcusClientId: request.arcusClientId,
+        market: request.marketId,
+        direction: request.direction,
+        leverage: request.leverage,
+        requestedAmount: request.amount,
+        depositedAmount: request.creditedAmount,
+        entryPrice: toBaseUnits(request.entryPrice as string, 18).toString(),
+        size: onChainSize(request.filledSize as string, decimals).toString(),
+        status: "open",
+        openedAt: new Date(),
+      },
+      update: pool ? { lendingPoolAddress: pool.toLowerCase() } : {},
+    });
+
+    const hasDeposit = await tx.ledgerEntry.findFirst({ where: { positionId: row.id, type: "deposit" } });
+    if (!hasDeposit) {
+      await tx.ledgerEntry.create({
+        data: {
+          positionId: row.id,
+          type: "deposit",
+          amount: request.creditedAmount as string,
+          arcusStatus: "confirmed",
+          note: `Creator payment ${request.paymentTxHash} -> initiateDeposit ${request.arcusDepositTxHash ?? "(recovered)"}`,
+        },
+      });
+    }
+
+    if (pool) {
+      await tx.lendingPool.upsert({
+        where: { poolAddress: pool.toLowerCase() },
+        create: { poolAddress: pool.toLowerCase(), positionTokenAddress: tokenAddress },
+        update: {},
+      });
+    }
+    return row;
+  });
+
+  await markAllocated(slot.id, position.id);
+  await update(request.id, {
+    status: "minted",
+    lendingPoolAddress: pool?.toLowerCase() ?? null,
+    error: pool ? null : "Lending pool not created yet; retried every minute",
+  });
+
+  log.info("position open", {
+    openRequestId: request.id,
+    positionId: position.id,
+    positionToken: tokenAddress,
+    lendingPool: pool,
+  });
+}
+
+/**
+ * Up to three attempts a few seconds apart. Failing all of them is not fatal:
+ * the position is real and tradeable, only borrowing waits on the pool, and
+ * {ensureMissingLendingPools} keeps retrying it every minute.
+ */
+async function createPoolWithRetry(positionToken: Address): Promise<Address | null> {
+  for (let attempt = 1; attempt <= CREATE_POOL_ATTEMPTS; attempt += 1) {
+    try {
+      return await ensureLendingPool(positionToken);
+    } catch (error) {
+      log.warn("createPool failed", { positionToken, attempt, ...errorFields(error) });
+      if (attempt < CREATE_POOL_ATTEMPTS) await sleep(CREATE_POOL_RETRY_MS);
+    }
+  }
+  alert("lending pool not created; will retry every minute", { positionToken });
+  return null;
+}
+
+/// Run by the reporter's minute tick: any open position still without a pool.
+export async function ensureMissingLendingPools(): Promise<void> {
+  const missing = await db.position.findMany({
+    where: { status: "open", lendingPoolAddress: null, positionTokenAddress: { not: null } },
+    select: { id: true, positionTokenAddress: true },
+  });
+
+  for (const position of missing) {
+    try {
+      const pool = (await ensureLendingPool(position.positionTokenAddress as Address)).toLowerCase();
+      await db.$transaction([
+        db.position.update({ where: { id: position.id }, data: { lendingPoolAddress: pool } }),
+        db.lendingPool.upsert({
+          where: { poolAddress: pool },
+          create: { poolAddress: pool, positionTokenAddress: position.positionTokenAddress as string },
+          update: {},
+        }),
+        db.positionOpenRequest.updateMany({
+          where: { positionTokenAddress: position.positionTokenAddress },
+          data: { lendingPoolAddress: pool, error: null },
+        }),
+      ]);
+      log.info("lending pool created on retry", { positionId: position.id, pool });
+    } catch (error) {
+      log.error("lending pool retry failed", { positionId: position.id, ...errorFields(error) });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Refunds -- the creator is never left with money stuck in Laxu's wallets
+// ---------------------------------------------------------------------------
+
+/**
+ * Two shapes, by where the money is:
+ *
+ *   - Still on the internal wallet (no deposit went out): transfer it back.
+ *   - Already on Arcus: withdraw it to the internal wallet, wait for it to
+ *     land on-chain, then transfer it back.
+ *
+ * Each stage is recorded (`refundWithdrawalId`, `refundTxHash`) so a restart
+ * picks up where it stopped. Afterwards the slot is swept and freed.
+ */
+async function refund(request: PositionOpenRequest, slot: SlotWithWallet, reason: string): Promise<void> {
+  if (request.refundTxHash) return;
+  if (request.status !== "refunding") {
+    request = await update(request.id, { status: "refunding", error: reason.slice(0, 500) });
+  }
+
+  const creator = request.userWalletAddress as Address;
+  const wallet = walletForSlot(slot);
+  const walletAddress = slot.operatorWallet.address as Address;
+
+  try {
+    // Did this request's money reach Arcus? A saved deposit hash or credit
+    // says so. Failing those, a credit on the feed counts only while the slot
+    // is still this creator's -- a recycled slot's credits are someone else's.
+    const current = await getSlot(slot.id);
+    const slotStillOurs =
+      current.status === "reserved" && current.reservedForUser === request.userWalletAddress.toLowerCase();
+    const deposited =
+      Boolean(request.arcusDepositTxHash) ||
+      Boolean(request.creditedAmount) ||
+      (slotStillOurs && Boolean(await findCredit(slot, request.createdAt)));
+
+    let owed = BigInt(request.amount);
+    if (deposited) {
+      if (!request.refundWithdrawalId) {
+        const credited = BigInt(request.creditedAmount ?? request.amount);
+        const { withdrawalId } = await withdrawToInternalWallet(slot, credited);
+        request = await update(request.id, { refundWithdrawalId: withdrawalId });
+      }
+      owed = await waitForWithdrawal(slot, request.refundWithdrawalId as string, request.createdAt);
+      await waitForOnChainArrival(walletAddress, owed, request.id);
+    }
+
+    const txHash = await transferUsdg(wallet, creator, owed);
+    await update(request.id, { status: "refunded", refundTxHash: txHash, error: reason.slice(0, 500) });
+    log.info("open request refunded", {
+      openRequestId: request.id,
+      creator,
+      amount: owed.toString(),
+      txHash,
+    });
+  } catch (error) {
+    await update(request.id, {
+      error: `Refund in progress (${reason}); last attempt: ${
+        error instanceof Error ? error.message : String(error)
+      }`.slice(0, 500),
+    });
+    alert("refund did not complete; the resume tick will retry", {
+      openRequestId: request.id,
+      ...errorFields(error),
+    });
+    return;
+  }
+
+  // Leftover dust (e.g. rounding) goes to index 0 before the slot is reused.
+  // Only the slot this request still holds -- a late payment's slot may have
+  // been recycled to someone else already.
+  const current = await getSlot(slot.id);
+  if (current.status === "reserved" && current.reservedForUser === request.userWalletAddress.toLowerCase()) {
+    try {
+      await sweepSubaccount(current);
+      await releaseSlot(slot.id);
+    } catch (error) {
+      log.error("sweep after refund failed; slot held back", { slotId: slot.id, ...errorFields(error) });
+    }
+  }
+}
+
+/**
+ * Withdrawals land on-chain asynchronously. The internal wallet also holds
+ * other creators' payments that have not been deposited yet, so the refund
+ * waits until its balance covers those AND this refund -- never paying one
+ * creator out of another's money.
+ */
+async function waitForOnChainArrival(wallet: Address, owed: bigint, openRequestId: string): Promise<void> {
+  const deadline = Date.now() + config.arcusWithdrawalTimeoutMs;
+
+  while (Date.now() < deadline) {
+    const held = await db.positionOpenRequest.findMany({
+      where: {
+        id: { not: openRequestId },
+        status: "payment_received",
+        arcusDepositTxHash: null,
+        slotId: { in: (await db.subaccountSlot.findMany({
+          where: { operatorWallet: { address: { equals: wallet, mode: "insensitive" } } },
+          select: { id: true },
+        })).map((row) => row.id) },
+      },
+      select: { amount: true },
+    });
+    const reserved = held.reduce((sum, row) => sum + BigInt(row.amount), 0n);
+    if ((await usdgBalanceOf(wallet)) >= reserved + owed) return;
+    await sleep(config.depositPollIntervalMs * 2);
+  }
+  throw new Error(`Withdrawn USDG has not reached ${wallet} yet`);
+}
+
+export { TERMINAL as TERMINAL_OPEN_STATUSES };

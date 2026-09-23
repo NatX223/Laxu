@@ -8,9 +8,9 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
-import {ERC7540} from "@openzeppelin/community-contracts/contracts/token/ERC20/extensions/ERC7540.sol";
-import {ERC7540AdminDeposit} from "@openzeppelin/community-contracts/contracts/token/ERC20/extensions/ERC7540AdminDeposit.sol";
-import {ERC7540AdminRedeem} from "@openzeppelin/community-contracts/contracts/token/ERC20/extensions/ERC7540AdminRedeem.sol";
+import {ERC7540} from "./vendor/ERC7540.sol";
+import {ERC7540AdminDeposit} from "./vendor/ERC7540AdminDeposit.sol";
+import {ERC7540AdminRedeem} from "./vendor/ERC7540AdminRedeem.sol";
 import {Direction} from "./ILaxuTypes.sol";
 
 /**
@@ -20,15 +20,20 @@ import {Direction} from "./ILaxuTypes.sol";
  * set once via {initialize}, not a constructor.
  *
  * Built on OpenZeppelin community-contracts' {ERC7540} base combined with the
- * {ERC7540AdminDeposit} / {ERC7540AdminRedeem} fulfillment strategies: `arcusOperator` explicitly
- * transitions a controller's pending request to claimable, providing the exact exchange rate. That
- * matches this vault's real-world constraint -- a request can only become claimable after the
- * backend has actually moved margin on Arcus, not on a timer or a price tick.
+ * {ERC7540AdminDeposit} / {ERC7540AdminRedeem} fulfillment strategies (vendored under ./vendor/ so
+ * {cancelDepositRequest} / {cancelRedeemRequest} can reach the pending-request state):
+ * `arcusOperator` explicitly fulfils a controller's pending request, providing the exact exchange
+ * rate, and the request settles in the same transaction. That matches this vault's real-world
+ * constraint -- a request can only settle after the backend has actually moved margin on Arcus,
+ * not on a timer or a price tick.
  *
  * `arcusOperator` is the one off-chain trust role: it reports price/funding via {applyReport},
- * confirms real capital movement on Arcus before a request becomes claimable (via
- * {fulfillDepositRequest} / {fulfillRedeemRequest}), and closes the position via {close}. All the
- * same backend wallet, same trust level as everything else it already does.
+ * confirms real capital movement on Arcus before a request settles (via
+ * {fulfillDepositRequest} / {fulfillRedeemRequest}), and closes the position via {close}. It is the
+ * same backend wallet as the Factory's `deployer`, same trust level as everything else it does.
+ *
+ * The creator controls two moments: {list} opens the position to buy-ins (and sets the nickname),
+ * and {requestClose} asks the backend to unwind an unlisted position they wholly own.
  */
 contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem {
     using Math for uint256;
@@ -39,8 +44,13 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
 
     uint256 public constant BPS_DENOMINATOR = 10_000;
 
-    /// @dev Sanity cap so a misconfigured Factory call can't set an unreasonable/broken fee.
-    uint256 public constant MAX_CREATOR_FEE_BPS = 2_000; // 20%
+    uint256 public constant BUY_IN_FEE_BPS = 200; // 2%, protocol-wide, paid to the creator
+
+    uint256 public constant MAX_NICKNAME_LENGTH = 32; // bytes
+
+    /// @dev How long a request must sit unfulfilled before its controller can cancel it and take
+    /// the money back -- the escape hatch if the backend is down or the Arcus leg fails.
+    uint256 public constant REQUEST_CANCEL_TIMEOUT = 20 minutes;
 
     // ---------------------------------------------------------------------
     // Position identity -- set once via `initialize`
@@ -55,9 +65,17 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     /// @dev Actual margin/capital behind the position (not notional) -- minted as shares 1:1 at genesis.
     uint256 public initialDeposit;
     bytes32 public arcusPositionId;
-    /// @dev Optional, set once at `initialize()` and immutable for the life of the contract -- see
-    /// {name} for why there is deliberately no setter, even gated to `creator`.
+    /// @dev Optional, empty until {list}, which sets it once and for good -- see {name} for why
+    /// there is deliberately no other setter, even gated to `creator`.
     string public nickname;
+
+    // ---------------------------------------------------------------------
+    // Listing -- the creator decides when others can buy in
+    // ---------------------------------------------------------------------
+
+    /// @dev One-way, flipped by {list}. Before listing only the creator can deposit (e.g. topping up
+    /// margin); after, anyone can buy in, and the creator exits by redeeming rather than {requestClose}.
+    bool public listed;
 
     // ---------------------------------------------------------------------
     // Live oracle state -- written only via `applyReport`, gated to `arcusOperator`
@@ -74,12 +92,13 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     address public arcusOperator;
 
     // ---------------------------------------------------------------------
-    // Fees
+    // Request timestamps -- start the {REQUEST_CANCEL_TIMEOUT} clock
     // ---------------------------------------------------------------------
 
-    /// @dev TODO(fee-mechanic): flat only for now (meaningfully less code). A performance/carry
-    /// fee would need a per-depositor high-water-mark; see spec.
-    uint256 public creatorFeeBps;
+    /// @dev The library sums a controller's requests into one pending amount, so any new request
+    /// restarts that controller's clock.
+    mapping(address => uint256) public lastDepositRequestAt;
+    mapping(address => uint256) public lastRedeemRequestAt;
 
     // ---------------------------------------------------------------------
     // Lifecycle
@@ -92,6 +111,8 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     }
 
     bool public closed;
+    /// @dev Set by the creator via {requestClose}; {close} requires it unless recording a liquidation.
+    bool public closeRequested;
     /// @dev Locked in once `closed = true`; redemptions after closure use this fixed value
     /// instead of a live (now meaningless) mark price.
     uint256 public finalNavValue;
@@ -105,6 +126,10 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     event RedeemFulfilled(uint256 requestId, uint256 fulfillmentPrice);
     event CreatorFeeCollected(uint256 amount);
     event PositionClosed(uint256 finalNavValue, bool wasLiquidated);
+    event Listed(string nickname);
+    event CloseRequested(address indexed creator);
+    event DepositRequestCancelled(address indexed controller, uint256 assets);
+    event RedeemRequestCancelled(address indexed controller, uint256 shares);
 
     /**
      * @dev Implementation-contract constructor only -- clones never run this. `asset_` becomes an
@@ -191,9 +216,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         uint256 _initialDeposit,
         bytes32 _arcusPositionId,
         address _asset,
-        address _arcusOperator,
-        uint256 _creatorFeeBps,
-        string calldata _nickname
+        address _arcusOperator
     ) external initializer {
         require(_creator != address(0), "PositionToken: zero creator");
         // asset() reads the immutable set at implementation-deploy time (see constructor); this is
@@ -202,7 +225,6 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         require(_arcusOperator != address(0), "PositionToken: zero operator");
         require(_entryPrice > 0, "PositionToken: zero entry price");
         require(_initialDeposit > 0, "PositionToken: zero deposit");
-        require(_creatorFeeBps <= MAX_CREATOR_FEE_BPS, "PositionToken: fee too high");
 
         creator = _creator;
         market = _market;
@@ -213,8 +235,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         initialDeposit = _initialDeposit;
         arcusPositionId = _arcusPositionId;
         arcusOperator = _arcusOperator;
-        creatorFeeBps = _creatorFeeBps;
-        nickname = _nickname; // may be empty string -- that's valid, renders as no suffix
+        // `nickname` stays empty until {list}.
 
         // Bootstrap price = 1: mark == entry means PnL == 0 the instant the vault exists, so
         // totalAssets() == initialDeposit right after the mint below.
@@ -278,14 +299,30 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     }
 
     // ---------------------------------------------------------------------
+    // Listing
+    // ---------------------------------------------------------------------
+
+    /// @dev One-way. The nickname is set here, once, and never again. Pass "" for no nickname.
+    function list(string calldata _nickname) external {
+        require(msg.sender == creator, "PositionToken: not creator");
+        require(!listed, "PositionToken: already listed");
+        require(!closed, "PositionToken: position closed");
+        require(bytes(_nickname).length <= MAX_NICKNAME_LENGTH, "PositionToken: nickname too long");
+        listed = true;
+        nickname = _nickname;
+        emit Listed(_nickname);
+    }
+
+    // ---------------------------------------------------------------------
     // Deposit / redeem -- async, with a real off-chain leg
     // ---------------------------------------------------------------------
 
     /**
-     * @dev Skims the flat creator fee from `assets` before the request enters the pending-deposit
-     * queue: the depositor's wallet is debited `assets` total, but only `assets - fee` becomes
-     * their claimable position (fee taken from assets, not shares -- the depositor bears the cost
-     * up front rather than receiving fewer shares later).
+     * @dev Skims the flat {BUY_IN_FEE_BPS} from `assets` before the request enters the
+     * pending-deposit queue: the depositor's wallet is debited `assets` total, but only
+     * `assets - fee` becomes their position (fee taken from assets, not shares -- the depositor
+     * bears the cost up front rather than receiving fewer shares later). The creator topping up
+     * their own position pays no fee to themselves.
      */
     function requestDeposit(
         uint256 assets,
@@ -293,11 +330,19 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         address owner
     ) public override returns (uint256 requestId) {
         require(!closed, "PositionToken: position closed");
+        // Auto-settle mints to whoever asked, so the caller must be both payer and recipient.
+        require(
+            controller == msg.sender && owner == msg.sender,
+            "PositionToken: caller must be owner and controller"
+        );
+        // Before listing, only the creator can add to their own position (e.g. topping up margin).
+        require(listed || msg.sender == creator, "PositionToken: not listed");
 
-        uint256 fee = assets.mulDiv(creatorFeeBps, BPS_DENOMINATOR);
+        uint256 fee = msg.sender == creator ? 0 : assets.mulDiv(BUY_IN_FEE_BPS, BPS_DENOMINATOR);
         uint256 netAssets = assets - fee;
 
         requestId = super.requestDeposit(netAssets, controller, owner);
+        lastDepositRequestAt[controller] = block.timestamp;
 
         if (fee > 0) {
             SafeERC20.safeTransferFrom(IERC20(asset()), owner, creator, fee);
@@ -309,7 +354,12 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
 
     function requestRedeem(uint256 shares, address controller, address owner) public override returns (uint256 requestId) {
         require(!closed, "PositionToken: position closed");
+        require(
+            controller == msg.sender && owner == msg.sender,
+            "PositionToken: caller must be owner and controller"
+        );
         requestId = super.requestRedeem(shares, controller, owner);
+        lastRedeemRequestAt[controller] = block.timestamp;
         emit RedeemRequested(controller, shares, requestId);
     }
 
@@ -337,8 +387,9 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     /**
      * @dev Called AFTER the backend confirms the Arcus margin-add succeeded. Fulfills the
      * controller's entire pending deposit at `fulfillmentPrice` (NAV per share, in PRICE_SCALE
-     * fixed-point -- matching the genesis bootstrap price of `PRICE_SCALE` == 1:1), moving it from
-     * pending to claimable.
+     * fixed-point -- matching the genesis bootstrap price of `PRICE_SCALE` == 1:1), and settles it
+     * in the same transaction: the shares are minted straight to the buyer, so nothing is ever left
+     * claimable-but-unclaimed and there is no claim step.
      *
      * NOTE: the base {ERC7540AdminDeposit} strategy tracks pending/claimable state per-controller
      * only (all requests share `requestId = 0`), not in a per-request queue, so `controller` is
@@ -356,14 +407,20 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         uint256 shares = assets.mulDiv(PRICE_SCALE, fulfillmentPrice);
         _fulfillDeposit(assets, shares, controller);
 
+        // Auto-settle: mint the shares straight to the buyer ({requestDeposit} guarantees
+        // controller == the address that requested).
+        uint256 minted = _consumeClaimableDeposit(assets, controller);
+        _deposit(controller, controller, assets, minted);
+
         emit DepositFulfilled(requestId, fulfillmentPrice);
     }
 
     /**
      * @dev Called AFTER the backend confirms the Arcus margin-reduction succeeded AND has sent the
      * freed USDG back into this contract. Fulfills the controller's entire pending redeem at
-     * `fulfillmentPrice` (NAV per share, in PRICE_SCALE fixed-point), moving it from pending to
-     * claimable. See {fulfillDepositRequest} for why `controller` is required alongside `requestId`.
+     * `fulfillmentPrice` (NAV per share, in PRICE_SCALE fixed-point) and pays the USDG straight to
+     * the redeemer in the same transaction. See {fulfillDepositRequest} for why `controller` is
+     * required alongside `requestId`.
      */
     function fulfillRedeemRequest(uint256 requestId, address controller, uint256 fulfillmentPrice) external {
         require(msg.sender == arcusOperator, "PositionToken: not backend operator");
@@ -381,16 +438,84 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
 
         _fulfillRedeem(shares, assets, controller);
 
+        // Auto-settle: send the USDG straight to the redeemer.
+        uint256 paid = _consumeClaimableRedeem(shares, controller);
+        _withdraw(controller, controller, controller, paid, shares);
+
         emit RedeemFulfilled(requestId, fulfillmentPrice);
+    }
+
+    // ---------------------------------------------------------------------
+    // Cancel -- the user's escape hatch when a request is never fulfilled
+    // ---------------------------------------------------------------------
+
+    /**
+     * @dev No separate double-processing guard is needed against the fulfil functions: both sides
+     * require a non-zero pending amount, so whichever transaction lands first wins and the other
+     * reverts. Fulfils settle instantly, so a fulfilled request leaves nothing here to cancel.
+     *
+     * NOTE: the buy-in fee was already paid to the creator at {requestDeposit} and is not refunded.
+     */
+    function cancelDepositRequest() external returns (uint256 assets) {
+        address controller = msg.sender;
+        require(
+            block.timestamp >= lastDepositRequestAt[controller] + REQUEST_CANCEL_TIMEOUT,
+            "PositionToken: too early to cancel"
+        );
+        assets = _deposits[controller].pendingAssets;
+        require(assets > 0, "PositionToken: no pending deposit");
+
+        _deposits[controller].pendingAssets = 0;
+        _totalPendingDepositAssets -= assets;
+        SafeERC20.safeTransfer(IERC20(asset()), controller, assets);
+
+        emit DepositRequestCancelled(controller, assets);
+    }
+
+    function cancelRedeemRequest() external returns (uint256 shares) {
+        address controller = msg.sender;
+        require(
+            block.timestamp >= lastRedeemRequestAt[controller] + REQUEST_CANCEL_TIMEOUT,
+            "PositionToken: too early to cancel"
+        );
+        shares = _redeems[controller].pendingShares;
+        require(shares > 0, "PositionToken: no pending redeem");
+
+        _redeems[controller].pendingShares = 0;
+        _totalPendingRedeemShares -= shares;
+        _mint(controller, shares); // shares were burned at request time; give them back
+
+        emit RedeemRequestCancelled(controller, shares);
     }
 
     // ---------------------------------------------------------------------
     // Position lifecycle
     // ---------------------------------------------------------------------
 
+    /**
+     * @dev What each check covers:
+     * - `!listed`: once listed, the creator exits by redeeming like everyone else.
+     * - full supply: also fails while the creator's tokens are posted as {LendingPool} collateral,
+     *   since the pool holds them -- the creator repays and withdraws before closing.
+     * - no pending deposit: a pending top-up has to settle first.
+     */
+    function requestClose() external {
+        require(msg.sender == creator, "PositionToken: not creator");
+        require(!closed, "PositionToken: already closed");
+        require(!closeRequested, "PositionToken: close already requested");
+        require(!listed, "PositionToken: listed - exit via requestRedeem");
+        require(balanceOf(creator) == totalSupply(), "PositionToken: creator must hold full supply");
+        require(totalPendingDepositAssets() == 0, "PositionToken: deposit pending");
+        closeRequested = true;
+        emit CloseRequested(creator);
+    }
+
     function close(uint256 finalMarkPrice, int256 finalFunding, bool wasLiquidated) external {
         require(msg.sender == arcusOperator, "PositionToken: not backend operator");
         require(!closed, "PositionToken: already closed");
+        // Normal closes need the creator's request. Liquidations don't: Arcus already closed the
+        // position, and the backend is only recording it.
+        require(closeRequested || wasLiquidated, "PositionToken: no close request");
 
         int256 value = _computeValue(finalMarkPrice, finalFunding);
         finalNavValue = value > 0 ? uint256(value) : 0;

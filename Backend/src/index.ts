@@ -7,13 +7,14 @@ import { assertOrchestrationConfig, config } from "./config/env";
 import { HttpError } from "./lib/errors";
 import { createLogger, errorFields } from "./lib/logger";
 import { startIndexer } from "./indexer";
-import { authRouter } from "./routes/auth";
 import { healthRouter } from "./routes/health";
 import { marketsRouter } from "./routes/markets";
 import { positionsRouter } from "./routes/positions";
 import { usersRouter } from "./routes/users";
 import { verifySlotCredentials } from "./services/allocator";
+import { startLiquidationJob } from "./services/liquidator";
 import { refreshMarkets } from "./services/markets";
+import { resumeOpenRequests } from "./services/openPosition";
 import { startReconciler } from "./services/reconciler";
 import { startReportingJob } from "./services/reporter";
 
@@ -24,7 +25,6 @@ app.use(cors());
 app.use(express.json());
 
 app.use("/health", healthRouter);
-app.use("/auth", authRouter);
 app.use("/markets", marketsRouter);
 app.use("/positions", positionsRouter);
 app.use("/users", usersRouter);
@@ -47,7 +47,13 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 const stopWorkers: Array<() => void> = [];
 
 async function start(): Promise<void> {
-  if (config.enableIndexer || config.enableReconciler || config.enableReporter) {
+  // Public routes (discovery, position pages, charts) still work without
+  // these, so warn rather than refuse to boot.
+  if (!config.privyAppId || !config.privyAppSecret) {
+    log.warn("PRIVY_APP_ID / PRIVY_APP_SECRET unset -- every authenticated route will fail");
+  }
+
+  if (config.enableIndexer || config.enableReconciler || config.enableReporter || config.enableLiquidator) {
     assertOrchestrationConfig();
 
     // A slot whose stored public key does not match its secret fails with a 401
@@ -72,15 +78,23 @@ async function start(): Promise<void> {
     }
   }
 
+  // Open-position requests are driven in this process; pick up any a restart
+  // interrupted rather than waiting for the reconciler's first tick.
+  if (config.enableReconciler) {
+    void resumeOpenRequests().catch((error) => log.error("open-request resume at boot failed", errorFields(error)));
+  }
+
   if (config.enableIndexer) stopWorkers.push(startIndexer());
   if (config.enableReconciler) stopWorkers.push(startReconciler());
   if (config.enableReporter) stopWorkers.push(startReportingJob());
+  if (config.enableLiquidator) stopWorkers.push(startLiquidationJob());
 
   const server = app.listen(config.port, () => {
     log.info(`Laxu backend listening on port ${config.port}`, {
       indexer: config.enableIndexer,
       reconciler: config.enableReconciler,
       reporter: config.enableReporter,
+      liquidator: config.enableLiquidator,
     });
   });
 

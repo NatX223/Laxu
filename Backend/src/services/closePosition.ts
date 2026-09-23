@@ -4,7 +4,7 @@ import { getPositions, placeOrder } from "../arcus/client";
 import { getArcusStream } from "../arcus/ws";
 import { db } from "../config/db";
 import { usdgDecimals } from "../chain/clients";
-import { closePosition as closeOnChain, creatorHoldsEntireSupply, isClosed } from "../chain/writes";
+import { closePosition as closeOnChain, isClosed } from "../chain/writes";
 import {
   applyBps,
   ceilToStep,
@@ -14,7 +14,7 @@ import {
   toBaseUnits,
 } from "../lib/decimal";
 import { config } from "../config/env";
-import { badRequest, conflict, notFound } from "../lib/errors";
+import { notFound } from "../lib/errors";
 import { createLogger, errorFields } from "../lib/logger";
 import { credentialsFor, getSlotForPosition, releaseSlot } from "./allocator";
 import { markConfirmed, recordPending } from "./ledger";
@@ -31,63 +31,36 @@ const log = createLogger("close-position");
  * The final price comes from the WS fill, same as the open, and only then does
  * the on-chain `close()` land.
  *
- * Access control mirrors the close-access-control spec: only the creator, and
- * only while they hold 100% of supply. That rule is enforced here because
- * `requestClose()` does not exist on the deployed PositionToken yet -- once it
- * does, the indexer's CloseRequested handler calls straight into
- * `executeClose` and the contract enforces it instead.
+ * Two ways in:
+ *   - The creator calls `requestClose()` on the token. The contract enforces
+ *     who may (creator, unlisted, holding 100% of supply, no deposit pending),
+ *     and the indexer's CloseRequested handler calls straight into here.
+ *   - Arcus liquidated the leg (reporter.ts). `close(..., true)` needs no
+ *     request: the backend is only recording what Arcus already did.
  */
-
-export async function requestClose(params: {
-  positionId: string;
-  /// Authenticated caller, from SIWE.
-  callerWalletAddress: string;
-}): Promise<{ positionId: string; status: string }> {
-  const position = await db.position.findUnique({ where: { id: params.positionId } });
-  if (!position) throw notFound(`Position ${params.positionId} not found`);
-  if (position.status === "closed") throw conflict("Position is already closed", "ALREADY_CLOSED");
-  if (position.status !== "open") {
-    throw conflict(`Position is ${position.status}, not open`, "NOT_OPEN");
-  }
-  if (!position.positionTokenAddress) {
-    throw conflict("Position has no token address yet", "NOT_OPEN");
-  }
-
-  const caller = params.callerWalletAddress.toLowerCase();
-  if (position.userWalletAddress.toLowerCase() !== caller) {
-    throw badRequest("Only the position creator can close it", "NOT_CREATOR");
-  }
-
-  const supply = await creatorHoldsEntireSupply(position.positionTokenAddress as Address);
-  if (!supply.ok) {
-    throw conflict(
-      `Close requires the creator to hold 100% of supply (holds ${supply.creatorBalance} of ${supply.totalSupply})`,
-      "SUPPLY_NOT_HELD",
-    );
-  }
-
-  void executeClose(params.positionId, { wasLiquidated: false }).catch((error) => {
-    log.error("close orchestration failed", {
-      positionId: params.positionId,
-      ...errorFields(error),
-    });
-  });
-
-  return { positionId: params.positionId, status: "closing" };
-}
 
 export async function executeClose(
   positionId: string,
-  options: { wasLiquidated?: boolean } = {},
+  options: {
+    wasLiquidated?: boolean;
+    /// The CloseRequested log that triggered this, recorded on the close
+    /// ledger row as its dedupe key.
+    event?: { txHash: string; logIndex: number };
+  } = {},
 ): Promise<void> {
   const position = await db.position.findUnique({ where: { id: positionId } });
   if (!position) throw notFound(`Position ${positionId} not found`);
-  if (position.status === "closed") return;
   if (!position.positionTokenAddress) throw new Error(`Position ${positionId} has no token address`);
 
   const positionToken = position.positionTokenAddress as Address;
   const slot = await getSlotForPosition(positionId);
-  if (!slot) throw new Error(`Position ${positionId} has no allocated slot`);
+  // The indexer may mark a position closed (PositionClosed backstop) before
+  // this flow reaches its sweep; the slot still being linked is what says the
+  // close has work left to do.
+  if (!slot) {
+    if (position.status === "closed") return;
+    throw new Error(`Position ${positionId} has no allocated slot`);
+  }
 
   const market = await requireMarket(position.market);
   const credentials = credentialsFor(slot);
@@ -108,6 +81,17 @@ export async function executeClose(
       marketId: market.arcusMarketId,
     });
     finalMarkPrice = await markPriceFor(market);
+    if (options.event) {
+      await recordPending({
+        positionId,
+        type: "close",
+        amount: "0",
+        arcusStatus: "confirmed",
+        txHash: options.event.txHash,
+        logIndex: options.event.logIndex,
+        note: "close requested with no live Arcus leg",
+      });
+    }
   } else {
     finalFunding = leg.cumulativeFunding?.sinceOpen ?? "0";
 
@@ -130,6 +114,8 @@ export async function executeClose(
       positionId,
       type: "close",
       amount: toBaseUnits(leg.size, decimals).toString(),
+      txHash: options.event?.txHash,
+      logIndex: options.event?.logIndex,
       note: `reduce-only ${side} ${quantity} on ${market.arcusDisplayName}`,
     });
 
@@ -217,7 +203,11 @@ export async function executeClose(
 
   await db.position.update({
     where: { id: positionId },
-    data: { status: "closed", closedAt: new Date() },
+    data: {
+      status: "closed",
+      closedAt: position.closedAt ?? new Date(),
+      liquidated: options.wasLiquidated ?? position.liquidated,
+    },
   });
 
   log.info("position closed", { positionId, finalMarkPrice, finalFunding });

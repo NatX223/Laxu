@@ -69,9 +69,7 @@ async function deployLendingFixture({ leverage = RISK_TIERS.low.leverage } = {})
     INITIAL_DEPOSIT,
     ethers.encodeBytes32String("arcus-1"),
     usdg.target,
-    arcusOperator.address,
-    0n,
-    ""
+    arcusOperator.address
   );
 
   // --- liquidity: the shared vault ---
@@ -385,6 +383,22 @@ describe("LendingPool", function () {
       await report(positionToken, arcusOperator, ENTRY_PRICE);
       await pool.connect(borrower).withdrawCollateral(INITIAL_DEPOSIT);
       expect(await positionToken.balanceOf(borrower.address)).to.equal(INITIAL_DEPOSIT);
+    });
+
+    it("blocks the creator's requestClose while their shares are posted as collateral", async function () {
+      const { pool, positionToken, creator, borrower } = await deployLendingFixture();
+
+      // Hand the shares back so the creator is the one borrowing against their own position.
+      await positionToken.connect(borrower).transfer(creator.address, INITIAL_DEPOSIT);
+      await positionToken.connect(creator).approve(pool.target, ethers.MaxUint256);
+      await pool.connect(creator).depositCollateral(INITIAL_DEPOSIT);
+
+      await expect(positionToken.connect(creator).requestClose()).to.be.revertedWith(
+        "PositionToken: creator must hold full supply"
+      );
+
+      await pool.connect(creator).withdrawCollateral(INITIAL_DEPOSIT);
+      await expect(positionToken.connect(creator).requestClose()).to.emit(positionToken, "CloseRequested");
     });
   });
 

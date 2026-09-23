@@ -348,3 +348,27 @@ export async function submitInternalTransfer(params: {
     return fail("submitInternalTransfer", error);
   }
 }
+
+/**
+ * Withdraw USDG collateral from a subaccount back on-chain. Withdraw-to-self:
+ * the funds arrive at `ethereumAddress` (the internal wallet). Wallet-signed
+ * with EIP-712, like {submitInternalTransfer}.
+ *
+ * Asynchronous: a 202 means queued as PENDING. The outcome arrives as a
+ * WITHDRAWAL on the transfer feed, correlated on `withdrawalId`.
+ */
+export async function submitWithdrawal(params: {
+  ethereumAddress: string;
+  accountIndex: number;
+  /// Integer quote quantums, as a decimal string (1e9 = $1; minimum $1).
+  amount: string;
+  nonce: string;
+  signature: { r: string; s: string; v: string };
+}): Promise<{ withdrawalId: string; status: string }> {
+  try {
+    const res = await client.post("/v1/withdraw", params);
+    return expectOk("submitWithdrawal", res.status, res.data) as { withdrawalId: string; status: string };
+  } catch (error) {
+    return fail("submitWithdrawal", error);
+  }
+}

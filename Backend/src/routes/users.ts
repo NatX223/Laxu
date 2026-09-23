@@ -1,25 +1,53 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
+import type { User } from "@prisma/client";
 import { z } from "zod";
 
-import { authenticatedWallet, requireAuth } from "../auth/siwe";
+import { authenticatedWallet, requireUser } from "../auth/privy";
 import { asyncHandler } from "../lib/async";
-import { badRequest, notFound } from "../lib/errors";
-import { getUser, updateTag } from "../services/users";
+import { badRequest, notFound, unauthorized } from "../lib/errors";
+import { getUser, updateTag, upsertPrivyUser } from "../services/users";
 
 export const usersRouter = Router();
 
-const tagSchema = z.object({ tag: z.string().min(3).max(31) });
+const serialise = (user: User) => ({
+  walletAddress: user.walletAddress,
+  tag: user.tag,
+  createdAt: user.createdAt.toISOString(),
+});
+
+/// Called once after every login. Creates the row (wallet resolved through
+/// Privy, default tag, gas drip) the first time, returns it unchanged after.
+usersRouter.post(
+  "/me",
+  requireUser,
+  asyncHandler(async (req, res) => {
+    const { user, created } = await upsertPrivyUser(req.privyUserId as string);
+    res.status(created ? 201 : 200).json(serialise(user));
+  }),
+);
+
+usersRouter.get(
+  "/me",
+  requireUser,
+  asyncHandler(async (req: Request, res) => {
+    if (!req.user) throw unauthorized("Call POST /users/me first", "USER_NOT_REGISTERED");
+    res.json(serialise(req.user));
+  }),
+);
+
+const tagSchema = z.object({ tag: z.string().min(1).max(32) });
 
 usersRouter.patch(
   "/me/tag",
-  requireAuth,
+  requireUser,
   asyncHandler(async (req, res) => {
     const parsed = tagSchema.safeParse(req.body);
     if (!parsed.success) {
       throw badRequest("Invalid request body", "INVALID_REQUEST", parsed.error.issues);
     }
+    // updateTag owns the 3-20 [a-z0-9_] rule, after stripping "@" and lowercasing.
     const user = await updateTag(authenticatedWallet(req), parsed.data.tag);
-    res.json({ walletAddress: user.walletAddress, tag: user.tag });
+    res.json(serialise(user));
   }),
 );
 
@@ -30,10 +58,6 @@ usersRouter.get(
   asyncHandler(async (req, res) => {
     const user = await getUser(req.params.address);
     if (!user) throw notFound("No such user");
-    res.json({
-      walletAddress: user.walletAddress,
-      tag: user.tag,
-      createdAt: user.createdAt.toISOString(),
-    });
+    res.json(serialise(user));
   }),
 );

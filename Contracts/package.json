@@ -15,7 +15,6 @@
     "hardhat": "^2.29.1"
   },
   "dependencies": {
-    "@openzeppelin/contracts": "^5.7.0",
-    "@openzeppelin/community-contracts": "github:OpenZeppelin/openzeppelin-community-contracts"
+    "@openzeppelin/contracts": "^5.7.0"
   }
 }

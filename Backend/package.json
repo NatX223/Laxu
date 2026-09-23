@@ -18,22 +18,23 @@
     "seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "dotenv": "^16.4.5",
-    "cors": "^2.8.5",
+    "@prisma/client": "^5.19.0",
+    "@privy-io/node": "^0.35.0",
     "axios": "^1.7.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
     "viem": "^2.21.0",
     "ws": "^8.18.0",
-    "zod": "^3.23.8",
-    "@prisma/client": "^5.19.0"
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "typescript": "^5.5.4",
-    "ts-node-dev": "^2.0.0",
-    "@types/node": "^20.14.0",
-    "@types/express": "^4.17.21",
     "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
     "@types/ws": "^8.5.12",
-    "prisma": "^5.19.0"
+    "prisma": "^5.19.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.5.4"
   }
 }

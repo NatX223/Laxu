@@ -17,9 +17,7 @@ interface IPositionToken {
         uint256 _initialDeposit,
         bytes32 _arcusPositionId,
         address _asset,
-        address _arcusOperator,
-        uint256 _creatorFeeBps,
-        string calldata _nickname
+        address _arcusOperator
     ) external;
 
     // -----------------------------------------------------------------------------------------

@@ -40,15 +40,20 @@ export const config = {
   /// number can exceed Number's safe integer range on some chains.
   positionTokenFactoryDeployBlock: optional("POSITION_TOKEN_FACTORY_DEPLOY_BLOCK", "0"),
   usdgAddress: optional("USDG_ADDRESS"),
-  /// Gated to createPosition() on the Factory.
-  deployerPrivateKey: optional("DEPLOYER_PRIVATE_KEY"),
-  /// Fulfillment + close calls on PositionToken. Distinct key from the deployer
-  /// by policy; note the Factory currently passes `deployer` through as the
-  /// token's `arcusOperator`, so on-chain they must resolve to the same address
-  /// until that wiring is split.
-  arcusOperatorPrivateKey: optional("ARCUS_OPERATOR_PRIVATE_KEY"),
-  /// Creator fee applied by the Factory at mint. Basis points, max 2000.
-  creatorFeeBps: num("CREATOR_FEE_BPS", 0),
+  /// The one backend key for every Laxu contract write: createPosition,
+  /// createPool, applyReport, fulfil*, close. PositionTokenFactory passes its
+  /// `deployer` through as each token's `arcusOperator`, so the two roles are
+  /// always the same address.
+  operatorPrivateKey: optional("OPERATOR_PRIVATE_KEY"),
+
+  lendingPoolFactoryAddress: optional("LENDING_POOL_FACTORY_ADDRESS"),
+  /// Backfill start point for LendingPoolFactory.PoolCreated + per-pool
+  /// CollateralDeposited/Borrowed, same reasoning as the position token
+  /// factory's own deploy-block env var.
+  lendingPoolFactoryDeployBlock: optional("LENDING_POOL_FACTORY_DEPLOY_BLOCK", "0"),
+  /// liquidate() is permissionless -- this wallet holds none of the operator's
+  /// roles, only a USDG balance and pool approvals.
+  liquidatorPrivateKey: optional("LIQUIDATOR_PRIVATE_KEY"),
 
   // --- Arcus ---------------------------------------------------------------
   arcusApiBaseUrl: optional("ARCUS_API_BASE_URL", "https://api.testnet.arcus.xyz"),
@@ -65,10 +70,19 @@ export const config = {
   /// identical to the withdraw domain apart from its `name`.
   arcusRootChainId: num("ARCUS_ROOT_CHAIN_ID", 0),
   arcusBridgeVault: optional("ARCUS_BRIDGE_VAULT"),
+  /// Arcus's PaxosDepositProxy on Robinhood Chain. The slot's internal wallet
+  /// calls `initiateDeposit(owner, accountIndex, USDG, amount)` on it -- Arcus
+  /// requires `owner` to be the signer, which is why users pay the internal
+  /// wallet rather than Arcus. Testnet address changes on every Arcus reset.
+  arcusDepositProxy: optional("ARCUS_DEPOSIT_PROXY"),
 
   // --- Orchestration timings -----------------------------------------------
   reservationTimeoutMs: num("RESERVATION_TIMEOUT_MS", 15 * 60_000),
   depositPollIntervalMs: num("DEPOSIT_POLL_INTERVAL_MS", 5_000),
+  /// How long to wait for Arcus to credit an initiateDeposit (usually < 1 min),
+  /// and for a refund withdrawal to arrive back on-chain.
+  arcusCreditTimeoutMs: num("ARCUS_CREDIT_TIMEOUT_MS", 10 * 60_000),
+  arcusWithdrawalTimeoutMs: num("ARCUS_WITHDRAWAL_TIMEOUT_MS", 60 * 60_000),
   fillTimeoutMs: num("FILL_TIMEOUT_MS", 60_000),
   reconcileIntervalMs: num("RECONCILE_INTERVAL_MS", 3 * 60_000),
   /// Absolute USD drift tolerated between ledger and Arcus equity before alert.
@@ -80,6 +94,10 @@ export const config = {
   /// How often the reporting job checks every allocated position's price/funding
   /// against what's on-chain.
   reporterIntervalMs: num("REPORTER_INTERVAL_MS", 60_000),
+  /// How often the liquidation bot reads healthFactor() for every known
+  /// (pool, borrower) pair. Faster than the reporter's own heartbeat would just
+  /// waste RPC calls on unchanged prices -- see MAX_REPORT_AGE on LendingPool.
+  liquidatorIntervalMs: num("LIQUIDATOR_INTERVAL_MS", 60_000),
 
   // --- Background workers --------------------------------------------------
   // Off by default so `npm run dev` gives a plain API server; flip on where the
@@ -87,12 +105,25 @@ export const config = {
   enableIndexer: bool("ENABLE_INDEXER", false),
   enableReconciler: bool("ENABLE_RECONCILER", false),
   enableReporter: bool("ENABLE_REPORTER", false),
+  enableLiquidator: bool("ENABLE_LIQUIDATOR", false),
 
   // --- Auth ----------------------------------------------------------------
-  siweDomain: optional("SIWE_DOMAIN", "localhost:3000"),
-  siweUri: optional("SIWE_URI", "http://localhost:3000"),
-  sessionSecret: optional("SESSION_SECRET", ""),
-  sessionTtlMs: num("SESSION_TTL_MS", 24 * 60 * 60_000),
+  /// Backend calls carry a Privy access token; these verify it and look the
+  /// user's linked wallet up server-side.
+  privyAppId: optional("PRIVY_APP_ID"),
+  privyAppSecret: optional("PRIVY_APP_SECRET"),
+  /// Optional: the app's JWT verification key from the Privy dashboard. Unset,
+  /// the SDK fetches it over JWKS instead.
+  privyJwtVerificationKey: optional("PRIVY_JWT_VERIFICATION_KEY"),
+
+  // --- Gas faucet ----------------------------------------------------------
+  /// A brand-new embedded wallet holds zero native gas and cannot sign
+  /// anything, so user creation drips it a little. Its own wallet -- none of
+  /// the operator's or the liquidator's roles. Unset, no drip.
+  faucetPrivateKey: optional("FAUCET_PRIVATE_KEY"),
+  /// Human ETH amounts.
+  faucetDripEth: optional("FAUCET_DRIP_ETH", "0.002"),
+  faucetMinBalanceEth: optional("FAUCET_MIN_BALANCE_ETH", "0.001"),
 } as const;
 
 /// Fail loudly at boot for the values the orchestration cannot run without,
@@ -102,17 +133,17 @@ export function assertOrchestrationConfig(): void {
   const missing: string[] = [];
   if (!config.rpcUrl) missing.push("RPC_URL");
   if (!config.positionTokenFactoryAddress) missing.push("POSITION_TOKEN_FACTORY_ADDRESS");
-  if (!config.deployerPrivateKey) missing.push("DEPLOYER_PRIVATE_KEY");
-  if (!config.arcusOperatorPrivateKey) missing.push("ARCUS_OPERATOR_PRIVATE_KEY");
+  if (!config.operatorPrivateKey) missing.push("OPERATOR_PRIVATE_KEY");
+  if (!config.lendingPoolFactoryAddress) missing.push("LENDING_POOL_FACTORY_ADDRESS");
+  if (!config.usdgAddress) missing.push("USDG_ADDRESS");
+  if (!config.arcusDepositProxy) missing.push("ARCUS_DEPOSIT_PROXY");
   if (!config.arcusApiBaseUrl) missing.push("ARCUS_API_BASE_URL");
+  if (config.enableLiquidator && !config.liquidatorPrivateKey) missing.push("LIQUIDATOR_PRIVATE_KEY");
   if (missing.length > 0) {
     throw new Error(`Orchestration enabled but missing env vars: ${missing.join(", ")}`);
   }
   if (config.arcusSlippageBps > 1000) {
     throw new Error("ARCUS_SLIPPAGE_BPS must be <= 1000 (Arcus rejects >10% from mark)");
-  }
-  if (config.creatorFeeBps > 2000) {
-    throw new Error("CREATOR_FEE_BPS must be <= 2000 (PositionToken.MAX_CREATOR_FEE_BPS)");
   }
 }
 

@@ -5,8 +5,8 @@ import { createLogger } from "../lib/logger";
 
 const log = createLogger("ledger");
 
-export type LedgerType = "deposit" | "margin_add" | "margin_remove" | "close";
-export type ArcusStatus = "pending" | "confirmed" | "reversed";
+export type LedgerType = "deposit" | "margin_add" | "margin_remove" | "close" | "cancel";
+export type ArcusStatus = "pending" | "confirmed" | "reversed" | "cancelled";
 
 /**
  * The ordering rule the whole recovery story rests on:
@@ -26,6 +26,11 @@ export async function recordPending(params: {
   amount: string;
   onchainRequestId?: string;
   controller?: string;
+  /// The on-chain log this entry answers -- the dedupe key for request, close
+  /// and cancel events (`requestId` is always 0, so it cannot be).
+  txHash?: string;
+  logIndex?: number;
+  arcusStatus?: ArcusStatus;
   note?: string;
 }): Promise<LedgerEntry> {
   const entry = await db.ledgerEntry.create({
@@ -33,9 +38,11 @@ export async function recordPending(params: {
       positionId: params.positionId,
       type: params.type,
       amount: params.amount,
-      arcusStatus: "pending",
+      arcusStatus: params.arcusStatus ?? "pending",
       onchainRequestId: params.onchainRequestId,
       controller: params.controller?.toLowerCase(),
+      txHash: params.txHash?.toLowerCase(),
+      logIndex: params.logIndex,
       note: params.note,
     },
   });
@@ -64,6 +71,17 @@ export async function markReversed(id: string, note: string): Promise<LedgerEntr
   return entry;
 }
 
+/// The user took the request back on-chain before it was fulfilled, and any
+/// Arcus-side move has been undone.
+export async function markCancelled(id: string, note: string): Promise<LedgerEntry> {
+  const entry = await db.ledgerEntry.update({
+    where: { id },
+    data: { arcusStatus: "cancelled", note: note.slice(0, 500) },
+  });
+  log.warn("ledger cancelled", { id, type: entry.type, amount: entry.amount, note });
+  return entry;
+}
+
 /// Set once the matching on-chain fulfill call lands. What distinguishes a
 /// finished entry from one confirmed on Arcus but stranded before the chain leg.
 export async function markOnchainFulfilled(id: string): Promise<LedgerEntry> {
@@ -73,26 +91,16 @@ export async function markOnchainFulfilled(id: string): Promise<LedgerEntry> {
   });
 }
 
-export async function findEntryForRequest(params: {
-  positionId: string;
-  type: LedgerType;
-  onchainRequestId: string;
-  controller: string;
-}): Promise<LedgerEntry | null> {
-  return db.ledgerEntry.findFirst({
-    where: {
-      positionId: params.positionId,
-      type: params.type,
-      onchainRequestId: params.onchainRequestId,
-      controller: params.controller.toLowerCase(),
-    },
-    orderBy: { createdAt: "desc" },
+/// The entry already recorded for an on-chain log, if any.
+export async function findEntryForLog(txHash: string, logIndex: number): Promise<LedgerEntry | null> {
+  return db.ledgerEntry.findUnique({
+    where: { txHash_logIndex: { txHash: txHash.toLowerCase(), logIndex } },
   });
 }
 
 /// Net confirmed collateral for a position, in USDG base units. Deposits and
-/// margin adds credit; margin removes and the close debit. Reversed entries are
-/// excluded by construction -- they never happened.
+/// margin adds credit; margin removes and the close debit. Reversed and
+/// cancelled entries are excluded by construction -- they never happened.
 export async function expectedMargin(positionId: string): Promise<bigint> {
   const entries = await db.ledgerEntry.findMany({
     where: { positionId, arcusStatus: "confirmed" },
@@ -103,7 +111,7 @@ export async function expectedMargin(positionId: string): Promise<bigint> {
   for (const entry of entries) {
     const amount = BigInt(entry.amount);
     if (entry.type === "deposit" || entry.type === "margin_add") total += amount;
-    else total -= amount;
+    else if (entry.type === "margin_remove" || entry.type === "close") total -= amount;
   }
   return total;
 }
