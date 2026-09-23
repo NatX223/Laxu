@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Sparkline from "../charts/LazySparkline";
 import type { Card } from "./derive";
 import { Disc, MONO, SERIF } from "./shared";
 
@@ -73,18 +74,13 @@ export default function SpotlightCard({ t, onBuy }: { t: Card; onBuy: () => void
       </div>
 
       <div style={{ padding: "4px 8px 8px" }}>
-        <svg viewBox="0 0 300 76" preserveAspectRatio="none" aria-hidden="true" style={{ display: "block", width: "100%", height: 76 }}>
-          <path d={t.area} fill={t.fill} />
-          <path
-            d={t.line}
-            fill="none"
-            stroke={t.c}
-            strokeWidth="1.8"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        </svg>
+        <Sparkline
+          positionTokenAddress={t.token.positionTokenAddress}
+          series={t.token.series}
+          color={t.c}
+          fill={t.fill}
+          height={76}
+        />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: "rgba(255,255,255,0.1)" }}>

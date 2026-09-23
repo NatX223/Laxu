@@ -1,5 +1,6 @@
 "use client";
 
+import TradingViewCredit from "../charts/TradingViewCredit";
 import { FOOTER_LINKS } from "./data";
 import { Grain, SERIF } from "./shared";
 import { useNarrow } from "@/lib/landing";
@@ -186,6 +187,7 @@ export default function SiteFooter() {
           Leveraged positions can be liquidated in full. Position tokens carry the market risk of
           the underlying trade plus smart-contract risk, and are not deposits, securities, or
           insured instruments. Nothing here is financial advice.
+          <TradingViewCredit style={{ marginTop: 10 }} />
         </div>
 
         {/* oversized watermark, bled off the bottom edge */}

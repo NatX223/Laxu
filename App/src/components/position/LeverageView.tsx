@@ -1,48 +1,18 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useCallback, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+import type { NavHistory, PublicPosition } from "@/lib/api";
 import { CELL_BG, HAIRLINE, MONO, Panel } from "./shared";
+import { SUPPLY, usd, type RangeKey, type Series, type Side } from "./data";
 import type { PositionEngine } from "./engine";
 
-/** The dashed reference line's floating caption. */
-function Marker({
-  top,
-  side,
-  border,
-  ink,
-  children,
-}: {
-  top: string;
-  side: "left" | "right";
-  border: string;
-  ink: string;
-  children: ReactNode;
-}) {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: side === "left" ? 8 : undefined,
-        right: side === "right" ? 8 : undefined,
-        top,
-        transform: "translateY(-50%)",
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "3px 9px",
-        borderRadius: 99,
-        background: "rgba(36,28,70,0.88)",
-        border: `1px solid ${border}`,
-        fontFamily: MONO,
-        fontSize: 10.5,
-        color: ink,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
+// Lightweight Charts touches `window`, so both charts render client-side only.
+const AssetChart = dynamic(() => import("../charts/AssetChart"), { ssr: false });
+const NavChart = dynamic(() => import("../charts/NavChart"), { ssr: false });
+
+const GREEN = "#5fe3a8";
+const ROSE = "#ff7d92";
 
 function ChartHead({
   title,
@@ -71,16 +41,6 @@ function ChartHead({
   );
 }
 
-function Axis({ axis }: { axis: string[] }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", fontFamily: MONO, fontSize: 10, color: "#6f66a0" }}>
-      {axis.map((a, i) => (
-        <div key={i}>{a}</div>
-      ))}
-    </div>
-  );
-}
-
 const CARD: React.CSSProperties = {
   background: CELL_BG,
   display: "flex",
@@ -89,12 +49,98 @@ const CARD: React.CSSProperties = {
   padding: "14px 16px 16px",
 };
 
+/** The range pills now set both charts' visible window. */
+const RANGE_SEC: Record<RangeKey, number | null> = {
+  "24H": 86_400,
+  "7D": 7 * 86_400,
+  "30D": 30 * 86_400,
+  ALL: null,
+};
+
+/** How far back the preview's 180 prototype ticks are laid out, ending now. */
+const DEMO_SPAN_SEC = 45 * 86_400;
+
+/**
+ * The preview has no indexed reports, so the prototype's replayed ones are laid
+ * on a real clock and expressed per token — the same shape nav-history returns.
+ */
+function demoHistory(series: Series, closed: boolean): { history: NavHistory; entryTime: number } {
+  const end = Math.floor(Date.now() / 1000);
+  const last = series.asset.length - 1;
+  const at = (i: number) => end - Math.round(((last - i) / last) * DEMO_SPAN_SEC);
+  // derive() cuts a closed position's history at 84%
+  const cut = closed ? Math.floor(series.asset.length * 0.84) : series.asset.length;
+  const reports = series.reports.filter((r) => r.i < cut);
+  return {
+    entryTime: at(0),
+    history: {
+      entry: { time: at(0), navPerToken: "1.000000" },
+      points: reports.map((r) => ({ time: at(r.i), navPerToken: (r.nav / SUPPLY).toFixed(6) })),
+      closed,
+    },
+  };
+}
+
+function Loading() {
+  return (
+    <div style={{ height: 190, display: "grid", placeItems: "center", fontSize: 12, color: "#8f85bd" }}>
+      Loading position&hellip;
+    </div>
+  );
+}
+
+const pct = (value: number, base: number) => (base ? (value / base - 1) * 100 : 0);
+const signed = (n: number, digits: number) => (n >= 0 ? "+" : "") + n.toFixed(digits) + "%";
+
 /**
  * The underlying beside the position's own NAV — the whole point of the
- * screen, since the second is the first run through the leverage.
+ * screen, since the second is the first run through the leverage. With a
+ * minted token behind the page (`live`), both are real: Arcus candles and the
+ * indexer's per-report NAV. Without one, the candles are still live Arcus ETH
+ * and the NAV line replays the prototype's reports.
  */
-export default function LeverageView({ engine }: { engine: PositionEngine }) {
-  const { vals, setRange } = engine;
+export default function LeverageView({
+  engine,
+  live,
+  awaitingLive = false,
+  previewSide = "long",
+}: {
+  engine: PositionEngine;
+  live?: PublicPosition | null;
+  /** a token address was given but its position hasn't loaded — show neither preview nor live */
+  awaitingLive?: boolean;
+  /** the prototype's `side` knob, for the preview's entry arrow */
+  previewSide?: Side;
+}) {
+  const { vals, setRange, series } = engine;
+  const windowSec = RANGE_SEC[engine.st.range];
+
+  const demo = useMemo(
+    () => (live || awaitingLive ? null : demoHistory(series, vals.isClosed)),
+    [live, awaitingLive, series, vals.isClosed],
+  );
+
+  const [asset, setAsset] = useState<{ last: number; entry: number } | null>(null);
+  const [nav, setNav] = useState<{ last: number; entry: number; count: number } | null>(null);
+  const onLast = useCallback((last: number, entry: number) => setAsset({ last, entry }), []);
+  const onNav = useCallback(
+    (last: number, entry: number, _closed: boolean, count: number) => setNav({ last, entry, count }),
+    [],
+  );
+
+  const market = live?.arcusMarket ?? "ETH-USD";
+  const base = live?.symbol ?? market.split("-")[0];
+  const side = live?.direction ?? previewSide;
+
+  const assetPct = asset ? pct(asset.last, asset.entry) : 0;
+  const navPct = nav ? pct(nav.last, nav.entry) : 0;
+  const summary =
+    asset && nav
+      ? `${base} ${signed(assetPct, 1)}, this position ${signed(navPct, 1)}`
+      : live
+        ? `${base} · ${live.leverage}× ${live.direction}`
+        : vals.leverageLine;
+
   return (
     <Panel>
       {/* the label and the summary line share one wrapping group, then the ranges */}
@@ -113,7 +159,7 @@ export default function LeverageView({ engine }: { engine: PositionEngine }) {
           <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.14em", color: "#c3b8e3" }}>
             LEVERAGE VIEW
           </div>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#a79bd0" }}>{vals.leverageLine}</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#a79bd0" }}>{summary}</div>
         </div>
         <div style={{ display: "flex", gap: 5 }}>
           {vals.ranges.map((r) => (
@@ -150,125 +196,44 @@ export default function LeverageView({ engine }: { engine: PositionEngine }) {
       >
         <div style={CARD}>
           <ChartHead
-            title={vals.assetTitle}
-            source="SOURCE · ARCUS MARKET DATA API"
-            last={vals.assetLast}
-            chg={vals.assetChg}
-            chgColor={vals.assetColor}
+            title={`${base} · underlying`}
+            source={`SOURCE · ARCUS MARKET DATA API · ${market}`}
+            last={asset ? usd(asset.last) : "—"}
+            chg={asset ? `${signed(assetPct, 2)} vs entry` : ""}
+            chgColor={assetPct >= 0 ? GREEN : ROSE}
           />
-          <div style={{ position: "relative", height: 190 }}>
-            <svg
-              viewBox="0 0 600 190"
-              preserveAspectRatio="none"
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
-              aria-hidden="true"
-            >
-              <defs>
-                <linearGradient id="lxAsset" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={vals.assetColor} stopOpacity="0.26" />
-                  <stop offset="100%" stopColor={vals.assetColor} stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              <path d={vals.assetArea} fill="url(#lxAsset)" />
-              <path
-                d={vals.assetLine}
-                fill="none"
-                stroke={vals.assetColor}
-                strokeWidth="1.9"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-                vectorEffect="non-scaling-stroke"
-              />
-              <line
-                x1="0"
-                x2="600"
-                y1={vals.assetEntryY}
-                y2={vals.assetEntryY}
-                stroke="#ffd9a0"
-                strokeWidth="1.2"
-                strokeDasharray="5 4"
-                vectorEffect="non-scaling-stroke"
-              />
-              <circle
-                cx={vals.assetEntryX}
-                cy={vals.assetEntryY}
-                r="4"
-                fill="#ffd9a0"
-                vectorEffect="non-scaling-stroke"
-              />
-            </svg>
-            <Marker top={vals.assetEntryTop} side="left" border="rgba(255,217,160,0.5)" ink="#ffd9a0">
-              ENTRY {vals.entryPrice}
-            </Marker>
-          </div>
-          <Axis axis={vals.axis} />
+          {awaitingLive ? (
+            <Loading />
+          ) : (
+            <AssetChart
+              market={market}
+              side={side}
+              entryPrice={live?.entryPrice ? Number(live.entryPrice) : null}
+              entryTime={live ? live.openedAt : demo?.entryTime}
+              windowSec={windowSec}
+              onLast={onLast}
+            />
+          )}
         </div>
 
         <div style={CARD}>
           <ChartHead
-            title="Position NAV"
-            source={`SOURCE · LAXU onReport INDEX · ${vals.reportCount} REPORTS`}
-            last={vals.navLast}
-            chg={vals.navChg}
-            chgColor={vals.pnlColor}
+            title="Position NAV · per token"
+            source={`SOURCE · LAXU INDEX · totalAssets() / totalSupply() · ${nav?.count ?? vals.reportCount} REPORTS`}
+            last={nav ? "$" + nav.last.toFixed(4) : "—"}
+            chg={nav ? signed(navPct, 2) : ""}
+            chgColor={navPct >= 0 ? GREEN : ROSE}
           />
-          <div style={{ position: "relative", height: 190 }}>
-            <svg
-              viewBox="0 0 600 190"
-              preserveAspectRatio="none"
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}
-              aria-hidden="true"
-            >
-              <defs>
-                <linearGradient id="lxNav" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={vals.pnlColor} stopOpacity="0.26" />
-                  <stop offset="100%" stopColor={vals.pnlColor} stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              <path d={vals.navArea} fill="url(#lxNav)" />
-              {/* mitred and butted, so the steps stay square */}
-              <path
-                d={vals.navLine}
-                fill="none"
-                stroke={vals.pnlColor}
-                strokeWidth="1.9"
-                strokeLinejoin="miter"
-                strokeLinecap="butt"
-                vectorEffect="non-scaling-stroke"
-              />
-              <line
-                x1="0"
-                x2="600"
-                y1={vals.navBaseY}
-                y2={vals.navBaseY}
-                stroke="#ffd9a0"
-                strokeWidth="1.2"
-                strokeDasharray="5 4"
-                vectorEffect="non-scaling-stroke"
-              />
-              {vals.navDots.map((d, i) => (
-                <circle key={i} cx={d.x} cy={d.y} r="2" fill="#c2b6e4" opacity="0.55" vectorEffect="non-scaling-stroke" />
-              ))}
-              {vals.isClosed && (
-                <circle
-                  cx={vals.navEndX}
-                  cy={vals.navEndY}
-                  r="4.5"
-                  fill="#ff7d92"
-                  vectorEffect="non-scaling-stroke"
-                />
-              )}
-            </svg>
-            <Marker top={vals.navBaseTop} side="left" border="rgba(255,217,160,0.5)" ink="#ffd9a0">
-              DEPOSIT {vals.depositLabel}
-            </Marker>
-            {vals.isClosed && (
-              <Marker top={vals.navEndTop} side="right" border="rgba(255,125,146,0.5)" ink="#ff7d92">
-                CLOSED {vals.navLast}
-              </Marker>
-            )}
-          </div>
-          <Axis axis={vals.axis} />
+          {awaitingLive ? (
+            <Loading />
+          ) : (
+            <NavChart
+              positionTokenAddress={live?.positionTokenAddress}
+              history={demo?.history}
+              windowSec={windowSec}
+              onNav={onNav}
+            />
+          )}
         </div>
       </div>
 
@@ -281,9 +246,10 @@ export default function LeverageView({ engine }: { engine: PositionEngine }) {
           borderTop: "1px solid rgba(255,255,255,0.1)",
         }}
       >
-        NAV is replayed from every <span style={{ fontFamily: MONO, color: "#c2b6e4" }}>onReport</span> triple through
-        the contract&rsquo;s own <span style={{ fontFamily: MONO, color: "#c2b6e4" }}>totalAssets()</span> &mdash;
+        NAV is the contract&rsquo;s own <span style={{ fontFamily: MONO, color: "#c2b6e4" }}>totalAssets()</span> /{" "}
+        <span style={{ fontFamily: MONO, color: "#c2b6e4" }}>totalSupply()</span>, read at every report &mdash;
         stepped, because the flat stretches are what the contract actually saw.
+        {!live && !awaitingLive && " Preview: candles are live Arcus ETH; the NAV line replays sample reports."}
       </div>
     </Panel>
   );

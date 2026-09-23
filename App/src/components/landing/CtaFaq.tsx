@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import AuthLink from "../auth/AuthLink";
 import { useState } from "react";
 import { COPY, CTA_STATS, FAQS } from "./data";
 import { Grain, SERIF } from "./shared";
@@ -102,7 +102,7 @@ export default function CtaFaq() {
               paddingTop: 10,
             }}
           >
-            <Link
+            <AuthLink
               href="/trade"
               className="laxu-cta-primary"
               style={{
@@ -120,7 +120,7 @@ export default function CtaFaq() {
               }}
             >
               {COPY.ctaLabel}
-            </Link>
+            </AuthLink>
             <a
               href="#"
               className="laxu-cta-secondary"

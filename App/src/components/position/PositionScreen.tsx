@@ -1,8 +1,18 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
+import { erc20Abi, parseUnits, type Address } from "viem";
+import { buyIn } from "@/lib/actions";
+import { getPublicPosition, type PublicPosition } from "@/lib/api";
+import { publicClient } from "@/lib/chain";
+import { env } from "@/lib/env";
+import { useSession } from "@/lib/session";
+import { getWalletClient } from "@/lib/walletClient";
 import { Grain } from "../landing/shared";
+import TradingViewCredit from "../charts/TradingViewCredit";
 import TopNav from "../community/TopNav";
 import BuyPanel from "./BuyPanel";
+import HolderActions from "./HolderActions";
 import HolderBase from "./HolderBase";
 import LeverageView from "./LeverageView";
 import PositionHeader from "./PositionHeader";
@@ -16,10 +26,32 @@ import { usePositionEngine, type PositionProps } from "./engine";
  * sticky buy-in ticket.
  *
  * `nickname`, `status`, `side`, `leverage`, `creatorFeeBps` and
- * `collateralized` are the knobs the prototype exposed.
+ * `collateralized` are the knobs the prototype exposed. With a
+ * `positionTokenAddress`, the minted position's own side, leverage, nickname
+ * and status override them, both charts go live, and the buy-in ticket signs a
+ * real `requestDeposit`. The ticket only shows once the creator has listed the
+ * position; HolderActions carries List / Close / Redeem / Cancel.
  */
-export default function PositionScreen(props: PositionProps) {
-  const engine = usePositionEngine(props);
+export default function PositionScreen({
+  positionTokenAddress,
+  ...props
+}: PositionProps & { positionTokenAddress?: string }) {
+  const live = usePublicPosition(positionTokenAddress);
+  // Bumped after a buy-in so HolderActions re-reads the pending request at once.
+  const [refreshKey, setRefreshKey] = useState(0);
+  const bumpRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
+  const onBuy = useBuyIn(live, bumpRefresh);
+
+  const engine = usePositionEngine({
+    ...props,
+    ...(live && {
+      nickname: live.nickname || undefined,
+      side: live.direction,
+      leverage: live.leverage,
+      status: live.status === "closed" ? "Closed" : "Open",
+      onBuy,
+    }),
+  });
   const { st, vals } = engine;
 
   return (
@@ -48,12 +80,20 @@ export default function PositionScreen(props: PositionProps) {
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 20, minWidth: 0 }}>
           <StateGrid vals={vals} />
-          <LeverageView engine={engine} />
+          <LeverageView
+            engine={engine}
+            live={live}
+            awaitingLive={Boolean(positionTokenAddress) && !live}
+            previewSide={props.side}
+          />
           <Reactions engine={engine} />
+          <TradingViewCredit />
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16, position: "sticky", top: 18 }}>
-          <BuyPanel engine={engine} />
+          {live && <HolderActions live={live} refreshKey={refreshKey} onDone={engine.flash} />}
+          {/* Buy-ins open only once the creator lists the position. */}
+          {(!live || live.listed) && <BuyPanel engine={engine} />}
           <HolderBase holders={vals.holdersList} />
         </div>
       </div>
@@ -84,5 +124,51 @@ export default function PositionScreen(props: PositionProps) {
         </div>
       )}
     </div>
+  );
+}
+
+function usePublicPosition(positionTokenAddress: string | undefined): PublicPosition | null {
+  const [live, setLive] = useState<PublicPosition | null>(null);
+  useEffect(() => {
+    if (!positionTokenAddress) return;
+    let cancelled = false;
+    getPublicPosition(positionTokenAddress)
+      .then((position) => {
+        if (!cancelled) setLive(position);
+      })
+      .catch((error) => console.error("could not load position", error));
+    return () => {
+      cancelled = true;
+    };
+  }, [positionTokenAddress]);
+  return positionTokenAddress ? live : null;
+}
+
+/**
+ * The ticket's real buy-in: approve USDG (exact amount, skipped when the
+ * allowance covers it), then `requestDeposit`. The receipt only means
+ * *requested*; the backend settles it on Arcus and the tokens arrive with no
+ * claim step.
+ */
+function useBuyIn(live: PublicPosition | null, onRequested: () => void) {
+  const { authenticated, wallet, login } = useSession();
+  return useCallback(
+    async (amountUsd: number) => {
+      if (!live) throw new Error("Position not loaded");
+      if (!authenticated || !wallet) {
+        login();
+        return "Log in to buy in";
+      }
+      const decimals = await publicClient().readContract({
+        address: env.usdgAddress as Address,
+        abi: erc20Abi,
+        functionName: "decimals",
+      });
+      const client = await getWalletClient(wallet);
+      await buyIn(client, live.positionTokenAddress as Address, parseUnits(String(amountUsd), decimals));
+      onRequested();
+      return "Buy-in requested \u2014 settling on Arcus\u2026";
+    },
+    [live, authenticated, wallet, login, onRequested],
   );
 }

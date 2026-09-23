@@ -5,6 +5,7 @@ import FilterBar from "./FilterBar";
 import HeroBand from "./HeroBand";
 import SpotlightCard from "./SpotlightCard";
 import TokenTable from "./TokenTable";
+import TradingViewCredit from "../charts/TradingViewCredit";
 import TopNav from "./TopNav";
 import { useCommunityEngine, type CommunityProps } from "./engine";
 import { SERIF } from "./shared";
@@ -62,6 +63,9 @@ export default function CommunityScreen(props: CommunityProps) {
           <FilterBar engine={engine} />
           <TokenTable engine={engine} />
         </div>
+
+        {/* the sparklines hide their per-chart logo; this is their attribution */}
+        <TradingViewCredit />
       </div>
 
       {st.toast && (

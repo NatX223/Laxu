@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Sparkline from "../charts/LazySparkline";
 import type { CommunityEngine } from "./engine";
 import { Disc, MONO } from "./shared";
 
@@ -127,22 +128,12 @@ export default function TokenTable({ engine }: { engine: CommunityEngine }) {
             <div style={{ textAlign: "right", fontFamily: MONO, fontSize: 13, fontWeight: 600, color: t.c }}>{t.chg}</div>
 
             <div>
-              <svg
-                viewBox="0 0 300 76"
-                preserveAspectRatio="none"
-                aria-hidden="true"
-                style={{ display: "block", width: "100%", height: 30 }}
-              >
-                <path
-                  d={t.line}
-                  fill="none"
-                  stroke={t.c}
-                  strokeWidth="1.5"
-                  strokeLinejoin="round"
-                  strokeLinecap="round"
-                  vectorEffect="non-scaling-stroke"
-                />
-              </svg>
+              <Sparkline
+                positionTokenAddress={t.token.positionTokenAddress}
+                series={t.token.series}
+                color={t.c}
+                height={30}
+              />
             </div>
 
             <div style={{ textAlign: "right", fontFamily: MONO, fontSize: 13, color: "#fdfbf7" }}>{t.vol}</div>

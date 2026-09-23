@@ -1,4 +1,4 @@
-import Link from "next/link";
+import AuthLink from "../auth/AuthLink";
 
 import { COPY } from "./data";
 import { Grain, SERIF } from "./shared";
@@ -42,7 +42,7 @@ export default function Hero() {
             filter: "drop-shadow(0 4px 14px rgba(26,23,20,0.18))",
           }}
         />
-        <Link
+        <AuthLink
           href="/trade"
           className="laxu-nav-cta"
           style={{
@@ -59,7 +59,7 @@ export default function Hero() {
           }}
         >
           {COPY.navCtaLabel}
-        </Link>
+        </AuthLink>
       </div>
 
       <div
@@ -119,7 +119,7 @@ export default function Hero() {
           position — its own entry, size and leverage.
         </p>
 
-        <Link
+        <AuthLink
           href="/trade"
           className="laxu-hero-cta"
           style={{
@@ -163,7 +163,7 @@ export default function Hero() {
               <polyline points="8 7 17 7 17 16" />
             </svg>
           </span>
-        </Link>
+        </AuthLink>
 
         {COPY.showChainCredit && (
           <div

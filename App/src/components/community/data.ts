@@ -89,6 +89,8 @@ export type Token = {
   entry: number;
   creator: string;
   age: number;
+  /** A minted token behind the row: its sparkline reads the real NAV history. */
+  positionTokenAddress?: string;
 };
 
 export function buildTokens(): Token[] {

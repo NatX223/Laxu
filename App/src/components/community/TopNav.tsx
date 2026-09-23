@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { MONO, SERIF } from "./shared";
+import { SERIF } from "./shared";
+import WalletChip from "../auth/WalletChip";
 
 const LINK: React.CSSProperties = {
   fontSize: 13,
@@ -59,23 +60,7 @@ export default function TopNav({ communityHref = "#" }: { communityHref?: string
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 7,
-            fontFamily: MONO,
-            fontSize: 11.5,
-            color: "#a79bd0",
-            background: "rgba(255,255,255,0.06)",
-            border: "1px solid rgba(255,255,255,0.12)",
-            padding: "7px 12px",
-            borderRadius: 99,
-          }}
-        >
-          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#5fe3a8" }} />
-          0x7a4c&hellip;b219
-        </div>
+        <WalletChip />
       </div>
     </div>
   );

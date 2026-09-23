@@ -1,6 +1,7 @@
 "use client";
 
 import { BASE_EQUITY, money } from "./data";
+import WalletChip from "../auth/WalletChip";
 import MarketMenu from "./MarketMenu";
 import { posPnl, type TradeEngine } from "./engine";
 import { Disc, MONO, SERIF } from "./shared";
@@ -109,24 +110,7 @@ export default function TopBar({ engine }: { engine: TradeEngine }) {
           <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.14em", color: "#a79bd0" }}>EQUITY</div>
           <div style={{ fontFamily: MONO, fontSize: 14, fontWeight: 600, color: "#fdfbf7" }}>{equity}</div>
         </div>
-        <div
-          className="laxu-wallet"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            fontSize: 12,
-            fontWeight: 700,
-            color: "#16130f",
-            background: "#ffb765",
-            padding: "9px 15px",
-            borderRadius: 99,
-            cursor: "pointer",
-          }}
-        >
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#0b7a55" }} />
-          <span style={{ fontFamily: MONO }}>0x4f2a&hellip;9c17</span>
-        </div>
+        <WalletChip tone="amber" />
       </div>
     </div>
   );

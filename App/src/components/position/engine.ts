@@ -16,6 +16,8 @@ export type PositionProps = {
   creatorFeeBps?: number;
   /** shows the loan chip when the position backs a borrow */
   collateralized?: boolean;
+  /** A real buy-in for a minted token: resolves to the toast to show. Unset, the ticket is the prototype's. */
+  onBuy?: (amountUsd: number) => Promise<string>;
 };
 
 type State = ViewState & { toast: string };
@@ -30,7 +32,7 @@ const INITIAL: State = {
 };
 
 export function usePositionEngine(props: PositionProps) {
-  const { nickname, status, side, leverage, creatorFeeBps, collateralized } = props;
+  const { nickname, status, side, leverage, creatorFeeBps, collateralized, onBuy } = props;
 
   const cfg = useMemo<PositionConfig>(
     () => ({
@@ -96,11 +98,20 @@ export function usePositionEngine(props: PositionProps) {
 
   const buy = useCallback(() => {
     if (vals.buyDisabled) return;
+    if (onBuy) {
+      // same parse derive() applies to the ticket's amount
+      const amt = parseFloat(String(st.amount).replace(/[^0-9.]/g, "")) || 0;
+      flash("Confirm in your wallet…");
+      onBuy(amt).then(flash, (e: unknown) =>
+        flash(e instanceof Error ? e.message.split("\n")[0] : "Buy-in failed"),
+      );
+      return;
+    }
     setSt((s) => ({ ...s, holders: s.holders + 1 }));
     flash(vals.buyToast);
-  }, [vals.buyDisabled, vals.buyToast, flash]);
+  }, [vals.buyDisabled, vals.buyToast, flash, onBuy, st.amount]);
 
-  return { st, vals, palette: PALETTE, setRange, setAmount, togglePicker, toggleReact, addReact, buy };
+  return { st, vals, series, palette: PALETTE, setRange, setAmount, togglePicker, toggleReact, addReact, buy, flash };
 }
 
 export type PositionEngine = ReturnType<typeof usePositionEngine>;
