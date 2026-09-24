@@ -42,6 +42,9 @@ export default function PositionScreen({
   const [refreshKey, setRefreshKey] = useState(0);
   const bumpRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
   const onBuy = useBuyIn(live, bumpRefresh);
+  // Keys the wallet's own panels: a sign-out or account switch remounts them,
+  // so nothing read for the previous wallet stays on screen.
+  const account = useSession().wallet?.address ?? "signed-out";
 
   const engine = usePositionEngine({
     ...props,
@@ -93,8 +96,8 @@ export default function PositionScreen({
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16, position: "sticky", top: 18 }}>
-          {live && <HolderActions live={live} refreshKey={refreshKey} onDone={engine.flash} />}
-          {live && <TriggersPanel live={live} refreshKey={refreshKey} onDone={engine.flash} />}
+          {live && <HolderActions key={account} live={live} refreshKey={refreshKey} onDone={engine.flash} />}
+          {live && <TriggersPanel key={account} live={live} refreshKey={refreshKey} onDone={engine.flash} />}
           {/* Buy-ins open only once the creator lists the position, and close with it. */}
           {(!live || (live.listed && live.lifecycle === "open")) && <BuyPanel engine={engine} />}
           <HolderBase holders={vals.holdersList} />

@@ -21,6 +21,11 @@ type Session = {
   /** Null until `POST /users/me` has answered. */
   user: LaxuUser | null;
   /**
+   * Signed in, but `POST /users/me` gave up (backend down, or the wallet never
+   * appeared). Without it the header would wait on `user` forever.
+   */
+  userFailed: boolean;
+  /**
    * The wallet the backend knows this user by (`user.walletAddress`) — never
    * just `wallets[0]`, which can be a different linked wallet. Payments and
    * on-chain requests are checked against this address, so signing with any
@@ -47,6 +52,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const { ready, authenticated, logout, user: privyUser } = usePrivy();
   const { wallets } = useWallets();
   const [user, setUser] = useState<LaxuUser | null>(null);
+  /** The Privy id whose `POST /users/me` gave up; any other id starts clean. */
+  const [failedFor, setFailedFor] = useState<string | null>(null);
   const router = useRouter();
 
   // Where to go once a CTA-triggered login completes. onComplete fires after
@@ -90,11 +97,13 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         } catch (error) {
           if (!(error instanceof ApiError) || error.code !== "WALLET_NOT_READY") {
             console.error("POST /users/me failed", error);
+            if (!cancelled) setFailedFor(privyId);
             return;
           }
           await new Promise((resolve) => setTimeout(resolve, WALLET_RETRY_MS));
         }
       }
+      if (!cancelled) setFailedFor(privyId);
     })();
 
     return () => {
@@ -112,6 +121,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       ready,
       authenticated,
       user: privyId ? user : null,
+      userFailed: privyId !== null && failedFor === privyId,
       wallet:
         authenticated && privyId && user
           ? (wallets.find((w) => w.address.toLowerCase() === user.walletAddress.toLowerCase()) ?? null)
@@ -121,7 +131,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       logout: signOut,
       setUser,
     }),
-    [ready, authenticated, privyId, user, wallets, login, loginThen, signOut],
+    [ready, authenticated, privyId, user, failedFor, wallets, login, loginThen, signOut],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
@@ -131,6 +141,7 @@ const NO_AUTH: Session = {
   ready: true,
   authenticated: false,
   user: null,
+  userFailed: false,
   wallet: null,
   login: () => console.warn("Login is unavailable: NEXT_PUBLIC_PRIVY_APP_ID is not set"),
   // no auth configured: the CTA still takes you where it says

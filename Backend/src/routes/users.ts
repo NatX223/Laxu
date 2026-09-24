@@ -36,7 +36,8 @@ usersRouter.get(
   }),
 );
 
-const tagSchema = z.object({ tag: z.string().min(1).max(32) });
+// Loose on purpose: the 3-20 length rule and its message live in normaliseTag.
+const tagSchema = z.object({ tag: z.string().max(200) });
 
 usersRouter.patch(
   "/me/tag",
@@ -46,7 +47,7 @@ usersRouter.patch(
     if (!parsed.success) {
       throw badRequest("Invalid request body", "INVALID_REQUEST", parsed.error.issues);
     }
-    // updateTag owns the 3-20 [a-z0-9_] rule, after stripping "@" and lowercasing.
+    // updateTag owns the letters-only rule (services/tags.ts), after stripping "@" and lowercasing.
     const user = await updateTag(authenticatedWallet(req), parsed.data.tag);
     res.json(serialise(user));
   }),

@@ -1,12 +1,12 @@
 "use client";
 
 import { BASE_EQUITY, cat, money } from "./data";
-import WalletChip from "../auth/WalletChip";
+import AccountMenu from "../auth/AccountMenu";
 import MarketMenu from "./MarketMenu";
 import { posPnl, type TradeEngine } from "./engine";
 import { Disc, MONO, SERIF } from "./shared";
 
-/** Wordmark, market switcher, info toggle, equity readout and wallet chip. */
+/** Wordmark, market switcher, info toggle, equity readout and account menu. */
 export default function TopBar({ engine }: { engine: TradeEngine }) {
   const { st, set, infoShown } = engine;
 
@@ -126,7 +126,7 @@ export default function TopBar({ engine }: { engine: TradeEngine }) {
           <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.14em", color: "#a79bd0" }}>EQUITY</div>
           <div style={{ fontFamily: MONO, fontSize: 14, fontWeight: 600, color: "#fdfbf7" }}>{equity}</div>
         </div>
-        <WalletChip tone="amber" />
+        <AccountMenu tone="amber" />
       </div>
     </div>
   );

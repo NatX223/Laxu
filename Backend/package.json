@@ -12,6 +12,7 @@
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "db:seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts",
+    "tags:fix": "ts-node-dev --transpile-only --respawn=false scripts/fix-numeric-tags.ts",
     "slots:provision": "ts-node-dev --transpile-only --respawn=false scripts/provisionSlots.ts",
     "smoke": "ts-node-dev --transpile-only --respawn=false scripts/smoke.ts"
   },

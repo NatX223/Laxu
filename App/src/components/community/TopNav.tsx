@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { SERIF } from "./shared";
-import WalletChip from "../auth/WalletChip";
+import AccountMenu from "../auth/AccountMenu";
 
 const LINK: React.CSSProperties = {
   fontSize: 13,
@@ -11,7 +11,7 @@ const LINK: React.CSSProperties = {
 };
 
 /**
- * Wordmark, the four section tabs and the connected-wallet chip.
+ * Wordmark, the four section tabs and the account menu.
  *
  * The Community pill stays lit on the position screen too — that screen sits
  * under the market — so it takes an href there and is inert here.
@@ -60,7 +60,7 @@ export default function TopNav({ communityHref = "#" }: { communityHref?: string
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <WalletChip />
+        <AccountMenu />
       </div>
     </div>
   );

@@ -5,6 +5,7 @@ import { resolvePrivyWallet } from "../auth/privy";
 import { db } from "../config/db";
 import { badRequest, conflict, HttpError, unauthorized } from "../lib/errors";
 import { dripGasInBackground } from "./faucet";
+import { allocateTag, isTagCollision, normaliseTag } from "./tags";
 
 /**
  * Identity.
@@ -16,29 +17,6 @@ import { dripGasInBackground } from "./faucet";
  * carries no authentication weight and must never be accepted in place of an
  * address.
  */
-
-const ADJECTIVES = [
-  "amber", "brisk", "candid", "dapper", "eager", "frosty", "gilded", "hazy",
-  "ivory", "jolly", "keen", "lucid", "mellow", "nimble", "opal", "prime",
-  "quiet", "rustic", "sable", "tidal", "umber", "vivid", "witty", "zesty",
-];
-
-const NOUNS = [
-  "anchor", "beacon", "cinder", "delta", "ember", "falcon", "gable", "harbor",
-  "inlet", "juniper", "kestrel", "lantern", "meridian", "nimbus", "orchard",
-  "pier", "quarry", "ridge", "summit", "thicket", "upland", "vector", "willow", "zenith",
-];
-
-/// `adjective_noun_1234`. The longest pair ("gilded_meridian_") plus the
-/// suffix is exactly 20 characters, so every default tag passes TAG_RE.
-function randomTag(): string {
-  const adjective = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
-  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
-  const suffix = Math.floor(Math.random() * 10_000)
-    .toString()
-    .padStart(4, "0");
-  return `${adjective}_${noun}_${suffix}`;
-}
 
 export function normaliseAddress(address: string): string {
   if (!isAddress(address)) throw badRequest(`Not an EVM address: ${address}`, "INVALID_ADDRESS");
@@ -69,44 +47,36 @@ export async function upsertPrivyUser(privyUserId: string): Promise<{ user: User
     throw conflict("This wallet is already registered to another account", "WALLET_TAKEN");
   }
 
-  // Tags are unique; on the rare collision, try again with a fresh one.
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  // Tags are unique; a collision re-draws (see allocateTag).
+  return allocateTag(async (tag) => {
     try {
-      const user = await db.user.create({ data: { walletAddress, privyUserId, tag: randomTag() } });
+      const user = await db.user.create({ data: { walletAddress, privyUserId, tag } });
       dripGasInBackground(walletAddress);
       return { user, created: true };
     } catch (error) {
       // A concurrent POST /users/me for the same login may have won the race.
       const raced = await db.user.findUnique({ where: { privyUserId } });
       if (raced) return { user: raced, created: false };
-      if (attempt === 4) throw error;
+      if (isTagCollision(error)) return "taken";
+      throw error;
     }
-  }
-
-  throw new Error(`Could not allocate a unique tag for ${walletAddress}`);
+  });
 }
-
-/// 3-20 characters of `[a-z0-9_]`, stored lowercase.
-const TAG_RE = /^[a-z0-9_]{3,20}$/;
 
 export async function updateTag(walletAddress: string, rawTag: string): Promise<User> {
   const address = normaliseAddress(walletAddress);
-  const tag = rawTag.trim().replace(/^@/, "").toLowerCase();
-
-  if (!TAG_RE.test(tag)) {
-    throw badRequest("Tag must be 3-20 characters of lowercase letters, digits or underscores.", "INVALID_TAG");
-  }
+  const tag = normaliseTag(rawTag);
 
   const taken = await db.user.findUnique({ where: { tag } });
   if (taken && taken.walletAddress !== address) {
-    throw conflict(`@${tag} is taken`, "TAG_TAKEN");
+    throw conflict("That name's taken", "TAG_TAKEN");
   }
 
   try {
     return await db.user.update({ where: { walletAddress: address }, data: { tag } });
   } catch (error) {
     // Lost a race for the same tag between the check above and the write.
-    if ((error as { code?: string }).code === "P2002") throw conflict(`@${tag} is taken`, "TAG_TAKEN");
+    if ((error as { code?: string }).code === "P2002") throw conflict("That name's taken", "TAG_TAKEN");
     throw error;
   }
 }

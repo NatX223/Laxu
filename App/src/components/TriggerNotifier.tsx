@@ -45,8 +45,13 @@ function messageFor(exit: TriggerExit): string {
  * exit that happened while they were away.
  */
 export default function TriggerNotifier() {
-  const { wallet } = useSession();
-  const address = wallet?.address;
+  const address = useSession().wallet?.address;
+  // Keyed by wallet: signing out (or switching account) drops the queue, so a
+  // toast about the previous user's exit never outlives their session.
+  return address ? <Notifier key={address} address={address} /> : null;
+}
+
+function Notifier({ address }: { address: string }) {
   const [queue, setQueue] = useState<TriggerExit[]>([]);
 
   useEffect(() => {
