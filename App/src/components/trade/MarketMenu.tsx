@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { useMarketRefresh } from "@/lib/markets";
 import {
   MARKET_CATS,
   MARKET_TABS,
-  SYMS,
   cat,
   dpOf,
   money,
+  syms,
 } from "./data";
 import type { TradeEngine } from "./engine";
 import { Disc, MONO } from "./shared";
@@ -32,12 +33,15 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
     searchRef.current?.focus();
   }, []);
 
+  // The menu only mounts while open: refetch on open, then every 60s.
+  useMarketRefresh(60_000);
+
   const q = st.mq.trim().toLowerCase();
-  const rows = SYMS.filter((sym) => {
+  const rows = syms().filter((sym) => {
     const c = cat(sym);
-    if (q && !(sym.toLowerCase().includes(q) || c.name.toLowerCase().includes(q))) return false;
-    if (st.mktTab === "Spot" && c.cat !== "Crypto" && c.cat !== "Stocks") return false;
-    if (st.mktCat === "New") return !!c.isNew;
+    // "nvidia", "NVDA" and "nvda-usd" all find NVDA
+    if (q && ![sym, c.displaySymbol, c.name].some((field) => field.toLowerCase().includes(q))) return false;
+    if (st.mktTab === "Spot" && c.cat !== "Crypto" && c.cat !== "Equities") return false;
     if (st.mktCat === "★") return st.favs.includes(sym);
     if (st.mktCat !== "All") return c.cat === st.mktCat;
     return true;
@@ -198,10 +202,19 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
           {rows.map((sym) => {
             const c = cat(sym);
-            const list = st.candles[sym] || [];
-            const open = list.length ? list[0].o : st.px[sym] ?? c.base;
             const price = st.px[sym] ?? c.base;
-            const chp = open ? ((price - open) / open) * 100 : 0;
+            // Arcus's own 24h change when live; the simulated series' otherwise.
+            let chp: number;
+            let delta: number;
+            if (c.live) {
+              chp = Number(c.live.priceChange24h) * 100;
+              delta = price - price / (1 + chp / 100);
+            } else {
+              const list = st.candles[sym] || [];
+              const open = list.length ? list[0].o : price;
+              chp = open ? ((price - open) / open) * 100 : 0;
+              delta = price - open;
+            }
             const up = chp >= 0;
             const fav = st.favs.includes(sym);
             return (
@@ -231,27 +244,44 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
                     <Star filled={fav} color="#ffb765" />
                   </div>
                   <Disc sym={sym} size={24} font={11} />
-                  <div style={{ flex: "none", fontSize: 14, fontWeight: 700, color: "#fdfbf7", whiteSpace: "nowrap" }}>{sym}</div>
-                  {st.mktTab !== "Spot" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <div style={{ flex: "none", fontSize: 14, fontWeight: 700, color: "#fdfbf7", whiteSpace: "nowrap" }}>{sym}</div>
+                      {st.mktTab !== "Spot" && (
+                        <div
+                          style={{
+                            flex: "none",
+                            fontFamily: MONO,
+                            fontSize: 10.5,
+                            fontWeight: 600,
+                            color: "#d5c6ff",
+                            background: "rgba(255,255,255,0.09)",
+                            borderRadius: 6,
+                            padding: "3px 6px",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          Up to {c.lev}&times;
+                        </div>
+                      )}
+                    </div>
                     <div
                       style={{
-                        flex: "none",
-                        fontFamily: MONO,
-                        fontSize: 10.5,
-                        fontWeight: 600,
-                        color: "#d5c6ff",
-                        background: "rgba(255,255,255,0.09)",
-                        borderRadius: 6,
-                        padding: "3px 6px",
+                        fontSize: 11.5,
+                        fontWeight: 500,
+                        color: "#a79bd0",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
                       }}
                     >
-                      {c.lev}&times;
+                      {c.name}
                     </div>
-                  )}
+                  </div>
                 </div>
                 <div style={{ fontFamily: MONO, fontSize: 13, color: "#fdfbf7", whiteSpace: "nowrap" }}>{money(price, dpOf(sym))}</div>
                 <div style={{ fontFamily: MONO, fontSize: 13, whiteSpace: "nowrap", color: up ? "#58e0a6" : "#ff8f7d" }}>
-                  {(up ? "+" : "−") + "$" + money(Math.abs(price - open), dpOf(sym)).slice(1) + " (" + (up ? "+" : "") + chp.toFixed(2) + "%)"}
+                  {(up ? "+" : "−") + "$" + money(Math.abs(delta), dpOf(sym)).slice(1) + " (" + (up ? "+" : "") + chp.toFixed(2) + "%)"}
                 </div>
                 <div style={{ fontFamily: MONO, fontSize: 13, color: "#e3ddf4" }}>{c.vol}</div>
                 <div style={{ fontFamily: MONO, fontSize: 13, color: "#58e0a6" }}>{c.fund}</div>

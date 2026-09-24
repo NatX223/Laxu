@@ -1,7 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 
-import { closeArcusStream } from "./arcus/ws";
 import { db } from "./config/db";
 import { assertOrchestrationConfig, config } from "./config/env";
 import { HttpError } from "./lib/errors";
@@ -12,11 +11,14 @@ import { marketsRouter } from "./routes/markets";
 import { positionsRouter } from "./routes/positions";
 import { usersRouter } from "./routes/users";
 import { verifySlotCredentials } from "./services/allocator";
+import { startSettlementJob } from "./services/closePosition";
 import { startLiquidationJob } from "./services/liquidator";
-import { refreshMarkets } from "./services/markets";
+import { closeArcusStream, getArcusStream, startArcusStream } from "./services/arcusStream";
+import { startMarketSync } from "./services/marketSync";
 import { resumeOpenRequests } from "./services/openPosition";
 import { startReconciler } from "./services/reconciler";
-import { startReportingJob } from "./services/reporter";
+import { onStreamLiquidationSignal, startReportingJob } from "./services/reporter";
+import { statsRouter } from "./routes/stats";
 
 const log = createLogger("server");
 
@@ -27,6 +29,7 @@ app.use(express.json());
 app.use("/health", healthRouter);
 app.use("/markets", marketsRouter);
 app.use("/positions", positionsRouter);
+app.use("/stats", statsRouter);
 app.use("/users", usersRouter);
 
 app.use((_req, res) => {
@@ -63,19 +66,6 @@ async function start(): Promise<void> {
     for (const problem of problems) {
       log.error("slot credentials are inconsistent", problem);
     }
-
-    // Order signing needs each market's tickSize and stepSize, so this is not
-    // optional warm-up -- an unresolved market cannot be traded at all.
-    try {
-      const result = await refreshMarkets();
-      if (result.unresolved.length > 0) {
-        log.warn("markets without an Arcus counterpart will reject orders", {
-          symbols: result.unresolved,
-        });
-      }
-    } catch (error) {
-      log.error("market refresh at boot failed", errorFields(error));
-    }
   }
 
   // Open-position requests are driven in this process; pick up any a restart
@@ -84,8 +74,32 @@ async function start(): Promise<void> {
     void resumeOpenRequests().catch((error) => log.error("open-request resume at boot failed", errorFields(error)));
   }
 
+  // Always on: GET /markets needs the table, and the open flow needs each
+  // market's tickSize/stepSize to sign an order. Syncs once now, then every
+  // minute -- one public Arcus call per tick.
+  stopWorkers.push(startMarketSync());
+
+  if (config.enableIndexer || config.enableReconciler || config.enableReporter) {
+    // One shared Arcus stream for every slot: fills, positions and transfers.
+    // Liquidation-marked fills and unexpected FLAT rows go to the same
+    // idempotent check the reporter uses as its fallback.
+    const stream = getArcusStream();
+    stream.onLiquidationFill((account, fill) => {
+      void onStreamLiquidationSignal(account, { marketId: fill.marketId, fill });
+    });
+    // A FLAT row can also be a creator close landing; checkForLiquidation
+    // ignores it then (a close is in progress).
+    stream.onPositionFlat((account, row) => {
+      void onStreamLiquidationSignal(account, { marketId: row.marketId });
+    });
+    stopWorkers.push(startArcusStream());
+  }
+
   if (config.enableIndexer) stopWorkers.push(startIndexer());
-  if (config.enableReconciler) stopWorkers.push(startReconciler());
+  if (config.enableReconciler) {
+    stopWorkers.push(startReconciler());
+    stopWorkers.push(startSettlementJob());
+  }
   if (config.enableReporter) stopWorkers.push(startReportingJob());
   if (config.enableLiquidator) stopWorkers.push(startLiquidationJob());
 

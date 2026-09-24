@@ -5,6 +5,7 @@ import { z } from "zod";
 import { authenticatedWallet, requireUser } from "../auth/privy";
 import { asyncHandler } from "../lib/async";
 import { badRequest, notFound, unauthorized } from "../lib/errors";
+import { portfolio, recentTriggerExits } from "../services/discovery";
 import { getUser, updateTag, upsertPrivyUser } from "../services/users";
 
 export const usersRouter = Router();
@@ -48,6 +49,29 @@ usersRouter.patch(
     // updateTag owns the 3-20 [a-z0-9_] rule, after stripping "@" and lowercasing.
     const user = await updateTag(authenticatedWallet(req), parsed.data.tag);
     res.json(serialise(user));
+  }),
+);
+
+/// Portfolio page: positions created, holdings (with collateral and cost
+/// basis), loans (health read live) and requests still settling on Arcus.
+usersRouter.get(
+  "/:address/portfolio",
+  asyncHandler(async (req, res) => {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(req.params.address)) {
+      throw badRequest("Invalid address", "INVALID_ADDRESS");
+    }
+    res.json(await portfolio(req.params.address));
+  }),
+);
+
+/// SL/TP exits from the last week -- polled for the "executed" notification.
+usersRouter.get(
+  "/:address/trigger-exits",
+  asyncHandler(async (req, res) => {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(req.params.address)) {
+      throw badRequest("Invalid address", "INVALID_ADDRESS");
+    }
+    res.json(await recentTriggerExits(req.params.address));
   }),
 );
 

@@ -2,7 +2,9 @@
  * Hand-maintained ABI fragments, kept narrow on purpose: only what this service
  * calls or listens for. Signatures mirror the compiled artifacts in
  * ../../Contracts/artifacts -- notably `fulfillDepositRequest` and
- * `fulfillRedeemRequest` take `(requestId, controller, fulfillmentPrice)`. The
+ * `fulfillRedeemRequest` take `(requestId, controller, size, fillPrice)`: the
+ * contract prices shares itself at navPerShare(), and the operator reports the
+ * Arcus fill that resized the position. The
  * base ERC7540 admin strategy tracks pending state per-controller with every
  * request sharing `requestId = 0`, so `controller` is what identifies whose
  * request is being fulfilled; `requestId` is always 0.
@@ -22,6 +24,9 @@ export const positionTokenFactoryAbi = [
       { name: "size", type: "uint256" },
       { name: "initialDeposit", type: "uint256" },
       { name: "arcusPositionId", type: "bytes32" },
+      // The creator's SL/TP, 1e18 prices of the underlying; 0 = none.
+      { name: "defaultStopLoss", type: "uint256" },
+      { name: "defaultTakeProfit", type: "uint256" },
     ],
     outputs: [{ name: "positionToken", type: "address" }],
   },
@@ -102,26 +107,51 @@ export const positionTokenAbi = [
     type: "event",
     name: "DepositFulfilled",
     inputs: [
-      { name: "requestId", type: "uint256", indexed: false },
-      { name: "fulfillmentPrice", type: "uint256", indexed: false },
+      { name: "controller", type: "address", indexed: true },
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "shares", type: "uint256", indexed: false },
+      { name: "navPerShare", type: "uint256", indexed: false },
+      { name: "addedSize", type: "uint256", indexed: false },
+      { name: "fillPrice", type: "uint256", indexed: false },
     ],
   },
   {
     type: "event",
     name: "RedeemFulfilled",
     inputs: [
-      { name: "requestId", type: "uint256", indexed: false },
-      { name: "fulfillmentPrice", type: "uint256", indexed: false },
+      { name: "controller", type: "address", indexed: true },
+      { name: "shares", type: "uint256", indexed: false },
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "navPerShare", type: "uint256", indexed: false },
+      { name: "closedSize", type: "uint256", indexed: false },
+      { name: "fillPrice", type: "uint256", indexed: false },
     ],
   },
   {
+    type: "event",
+    name: "CreatorFeeCollected",
+    inputs: [{ name: "amount", type: "uint256", indexed: false }],
+  },
+  {
+    type: "event",
+    name: "Transfer",
+    inputs: [
+      { name: "from", type: "address", indexed: true },
+      { name: "to", type: "address", indexed: true },
+      { name: "value", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    /// The contract prices the shares itself at navPerShare(); the operator
+    /// reports the Arcus fill that grew the position (0/0 = margin only).
     type: "function",
     name: "fulfillDepositRequest",
     stateMutability: "nonpayable",
     inputs: [
       { name: "requestId", type: "uint256" },
       { name: "controller", type: "address" },
-      { name: "fulfillmentPrice", type: "uint256" },
+      { name: "addedSize", type: "uint256" },
+      { name: "fillPrice", type: "uint256" },
     ],
     outputs: [],
   },
@@ -132,10 +162,16 @@ export const positionTokenAbi = [
     inputs: [
       { name: "requestId", type: "uint256" },
       { name: "controller", type: "address" },
-      { name: "fulfillmentPrice", type: "uint256" },
+      { name: "closedSize", type: "uint256" },
+      { name: "fillPrice", type: "uint256" },
     ],
     outputs: [],
   },
+  { type: "function", name: "navPerShare", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "capital", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "fundingSettled", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "int256" }] },
+  { type: "function", name: "finalNavValue", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "listed", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
   {
     type: "function",
     name: "pendingDepositRequest",
@@ -284,6 +320,56 @@ export const positionTokenAbi = [
     inputs: [],
     outputs: [{ name: "", type: "bool" }],
   },
+
+  // --- Settlement & claims --------------------------------------------------
+  { type: "function", name: "settled", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
+  { type: "function", name: "settlementAssets", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "claimedAssets", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  {
+    type: "function",
+    name: "settle",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "assets", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "claim",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [{ name: "assets", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claimFor",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "holder", type: "address" }],
+    outputs: [{ name: "assets", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "recoverExcess",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "to", type: "address" }],
+    outputs: [],
+  },
+  {
+    type: "event",
+    name: "Settled",
+    inputs: [
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "supply", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "Claimed",
+    inputs: [
+      { name: "holder", type: "address", indexed: true },
+      { name: "shares", type: "uint256", indexed: false },
+      { name: "assets", type: "uint256", indexed: false },
+    ],
+  },
   {
     type: "function",
     name: "asset",
@@ -366,6 +452,63 @@ export const positionTokenAbi = [
       { name: "timestamp", type: "uint256", indexed: false },
     ],
   },
+
+  // --- Per-holder stop loss / take profit ---------------------------------
+  {
+    type: "event",
+    name: "TriggersSet",
+    inputs: [
+      { name: "holder", type: "address", indexed: true },
+      { name: "stopLoss", type: "uint256", indexed: false },
+      { name: "takeProfit", type: "uint256", indexed: false },
+      { name: "custom", type: "bool", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "TriggerExecuted",
+    inputs: [
+      { name: "holder", type: "address", indexed: true },
+      { name: "isStopLoss", type: "bool", indexed: false },
+      { name: "usedDefault", type: "bool", indexed: false },
+      { name: "shares", type: "uint256", indexed: false },
+      { name: "assets", type: "uint256", indexed: false },
+      { name: "markPrice", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "DefaultTriggersRetired",
+    inputs: [{ name: "markPrice", type: "uint256", indexed: false }],
+  },
+  /// Exits `holder`'s wallet balance at navPerShare(); reverts unless the
+  /// holder's own effective level is breached at the stored mark.
+  {
+    type: "function",
+    name: "executeTrigger",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "holder", type: "address" },
+      { name: "closedSize", type: "uint256" },
+      { name: "fillPrice", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  { type: "function", name: "retireDefaultTriggers", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  {
+    type: "function",
+    name: "effectiveTriggers",
+    stateMutability: "view",
+    inputs: [{ name: "holder", type: "address" }],
+    outputs: [
+      { name: "stopLoss", type: "uint256" },
+      { name: "takeProfit", type: "uint256" },
+      { name: "usingDefault", type: "bool" },
+    ],
+  },
+  { type: "function", name: "defaultStopLoss", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "defaultTakeProfit", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "defaultsActive", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
 ] as const;
 
 export const erc20Abi = [
@@ -506,6 +649,37 @@ export const lendingPoolFactoryAbi = [
  * over a stale price.
  */
 export const lendingPoolAbi = [
+  {
+    type: "event",
+    name: "CollateralWithdrawn",
+    inputs: [
+      { name: "user", type: "address", indexed: true },
+      { name: "shares", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "event",
+    name: "Repaid",
+    inputs: [
+      { name: "user", type: "address", indexed: true },
+      { name: "principal", type: "uint256", indexed: false },
+      { name: "interest", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    type: "function",
+    name: "collateralBalance",
+    stateMutability: "view",
+    inputs: [{ name: "user", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "availableToBorrow",
+    stateMutability: "view",
+    inputs: [{ name: "user", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
   {
     type: "event",
     name: "CollateralDeposited",

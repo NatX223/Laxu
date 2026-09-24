@@ -1,8 +1,9 @@
 "use client";
 
+import { hoursHint } from "@/lib/markets";
 import { SIZE_CHIPS, cat, money } from "./data";
 import type { MarketView } from "./derive";
-import { liqOf, type TradeEngine } from "./engine";
+import { liqOf, triggerProblem, type TradeEngine } from "./engine";
 import { MONO } from "./shared";
 
 const LABEL: React.CSSProperties = { fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#a79bd0" };
@@ -23,13 +24,18 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
   const { st, set, lev, freeMargin, actions } = engine;
   const { mark, dp } = mkt;
 
-  const levMax = cat(st.market).lev;
+  const market = cat(st.market);
+  const levMax = market.lev;
+  const hint = market.live ? hoursHint(market.live) : null;
   const notional = st.size * lev;
   const liq = liqOf(mark, st.side, lev);
   const healthPct = Math.max(8, 100 - lev * 4.2);
   const healthColor = healthPct > 66 ? "#2fd18c" : healthPct > 38 ? "#ffb765" : "#ff6b57";
   const healthLabel = healthPct > 66 ? "Healthy" : healthPct > 38 ? "Watch" : "At risk";
   const filling = st.stage === "filling";
+  const slTpProblem = triggerProblem(st.side, st.sl, st.tp, mark);
+  // A stop past the liquidation price never gets to fire.
+  const slPastLiq = !slTpProblem && st.sl !== "" && (st.side === "long" ? Number(st.sl) <= liq : Number(st.sl) >= liq);
 
   const facts = [
     { k: "Notional", v: money(notional, 0), c: "#fdfbf7" },
@@ -38,7 +44,8 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
     { k: "Fees", v: money(notional * 0.00055, 2), c: "#e3ddf4" },
   ];
 
-  const levTicks = [1, Math.round(levMax * 0.25), Math.round(levMax * 0.5), levMax];
+  // deduped: a 3x market would otherwise read 1× 1× 2× 3×
+  const levTicks = [...new Set([1, Math.round(levMax * 0.25), Math.round(levMax * 0.5), levMax])];
 
   return (
     <div style={{ flex: "0 1 262px", minWidth: 208, display: "flex", flexDirection: "column", gap: 10, position: "relative" }}>
@@ -166,6 +173,54 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
               <span key={i}>{v}&times;</span>
             ))}
           </div>
+          {st.levNote && (
+            <div role="status" style={{ fontSize: 11, fontWeight: 600, color: "#ffb765", animation: "laxu-fade 0.16s ease both" }}>
+              {st.levNote}
+            </div>
+          )}
+          {hint && (
+            <div style={{ fontSize: 10.5, lineHeight: 1.45, color: "#998dbd" }}>
+              {hint.text} <span style={{ color: "#d5c6ff", fontWeight: 600 }}>{hint.now}</span>
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {(
+              [
+                ["sl", "STOP LOSS"],
+                ["tp", "TAKE PROFIT"],
+              ] as const
+            ).map(([key, label]) => (
+              <div key={key} style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+                <label htmlFor={`laxu-ticket-${key}`} style={LABEL}>
+                  {label}
+                </label>
+                <input
+                  id={`laxu-ticket-${key}`}
+                  value={st[key]}
+                  inputMode="decimal"
+                  placeholder="Optional"
+                  onChange={(e) => set(key, e.target.value.replace(/[^0-9.]/g, ""))}
+                  style={{ ...INPUT, fontSize: 13, padding: "9px 10px" }}
+                />
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: 10.5, lineHeight: 1.45, color: "#998dbd" }}>
+            Default for everyone who buys in; each holder can change their own.
+          </div>
+          {slTpProblem && (
+            <div role="status" style={{ fontSize: 11, fontWeight: 600, color: "#ff8a8a" }}>
+              {slTpProblem}
+            </div>
+          )}
+          {slPastLiq && (
+            <div role="status" style={{ fontSize: 11, fontWeight: 600, color: "#ffb765" }}>
+              Arcus would liquidate before your stop triggers.
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 1, background: "rgba(255,255,255,0.09)", borderRadius: 10, overflow: "hidden" }}>
@@ -190,7 +245,8 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
             letterSpacing: "0.02em",
             padding: "15px 0",
             borderRadius: 12,
-            cursor: "pointer",
+            cursor: slTpProblem ? "default" : "pointer",
+            opacity: slTpProblem ? 0.55 : 1,
             transition: "transform 0.2s ease, background 0.2s ease",
             color: "#fdfbf7",
             background: filling ? "rgba(255,255,255,0.14)" : st.side === "long" ? "#0b7a55" : "#b23a28",

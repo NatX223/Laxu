@@ -1,19 +1,17 @@
 import { getAccount, submitInternalTransfer } from "../arcus/client";
 import { signTransfer } from "../arcus/eip712";
-import { QUOTE_QUANTUMS_PER_DOLLAR } from "../arcus/types";
-import { compareDecimal, parseDecimal } from "../lib/decimal";
+import { compareDecimal } from "../lib/decimal";
+import { toUsdg6, usdg6ToArcusQuantums } from "../lib/units";
 import { createLogger } from "../lib/logger";
 import { operatorEvmKey, type SlotWithWallet } from "./allocator";
 import { unixNanos } from "../arcus/signing";
 
 const log = createLogger("sweep");
 
-/// A human dollar string as Arcus quote quantums (1e9 = $1), truncated.
+/// A human dollar string as Arcus quote quantums (1e9 = $1), truncated to
+/// whole USDG base units first so the amount is exactly representable.
 export function dollarsToQuantums(dollars: string): bigint {
-  const value = parseDecimal(dollars);
-  return value.scale <= 9
-    ? (value.units * QUOTE_QUANTUMS_PER_DOLLAR) / 10n ** BigInt(value.scale)
-    : value.units / 10n ** BigInt(value.scale - 9);
+  return usdg6ToArcusQuantums(toUsdg6(dollars));
 }
 
 /**

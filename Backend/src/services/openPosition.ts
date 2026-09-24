@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import type { Address, Hash } from "viem";
 
 import { getPositions, placeOrder, setLeverage } from "../arcus/client";
-import { getArcusStream, type OrderOutcome } from "../arcus/ws";
+import type { ArcusMarketInfo } from "../arcus/types";
 import { db } from "../config/db";
 import { config } from "../config/env";
 import { usdgAddress, usdgDecimals } from "../chain/clients";
@@ -27,7 +27,7 @@ import {
   parseDecimal,
   toBaseUnits,
 } from "../lib/decimal";
-import { badRequest, conflict, forbidden, notFound } from "../lib/errors";
+import { badRequest, conflict, forbidden, notFound, serviceUnavailable } from "../lib/errors";
 import { alert, createLogger, errorFields } from "../lib/logger";
 import {
   credentialsFor,
@@ -37,17 +37,23 @@ import {
   reserveSlot,
   type SlotWithWallet,
 } from "./allocator";
+import { depositToSubaccount, findCredit, heldForOpenRequests, waitForCredit, walletForSlot } from "./arcusFunding";
+import { getArcusStream, type OrderOutcome } from "./arcusStream";
+import { awaitWithdrawalApplied, withdrawToInternalWallet } from "./arcusWithdraw";
 import {
-  depositToSubaccount,
-  findCredit,
-  waitForCredit,
-  waitForWithdrawal,
-  walletForSlot,
-  withdrawToInternalWallet,
-} from "./arcusFunding";
-import { markPriceFor, requireMarket, requireMarketByName, type ResolvedMarket } from "./markets";
+  leverageInputsFrom,
+  leverageLimits,
+  liveMarketInfo,
+  markOf,
+  markPriceFor,
+  requireMarket,
+  requireMarketByName,
+  type ResolvedMarket,
+} from "./markets";
 import { requireRegisteredUser } from "./users";
+import { PRICE_SCALE, toPrice18, toSize6 } from "../lib/units";
 import { sweepSubaccount } from "./sweep";
+import { levelError, levelOf } from "./triggerMath";
 
 const log = createLogger("open-position");
 
@@ -107,6 +113,10 @@ export interface OpenPositionRequest {
   leverage: number;
   /// Human USDG, e.g. "500".
   amount: string;
+  /// The creator's stop loss / take profit, human prices of the underlying
+  /// ("1900"). Defaults for every holder who buys in; each can override their own.
+  stopLoss?: string;
+  takeProfit?: string;
 }
 
 export interface OpenPositionReservation {
@@ -122,13 +132,6 @@ export interface OpenPositionReservation {
 export async function requestOpenPosition(request: OpenPositionRequest): Promise<OpenPositionReservation> {
   const market = await requireMarketByName(request.market);
 
-  if (!Number.isInteger(request.leverage) || request.leverage < 1) {
-    throw badRequest("Leverage must be a whole number of at least 1", "INVALID_LEVERAGE");
-  }
-  if (market.maxLeverage && request.leverage > market.maxLeverage) {
-    throw badRequest(`${market.symbol} caps leverage at ${market.maxLeverage}x`, "LEVERAGE_TOO_HIGH");
-  }
-
   const decimals = await usdgDecimals();
   let amount: bigint;
   try {
@@ -143,6 +146,16 @@ export async function requestOpenPosition(request: OpenPositionRequest): Promise
     throw badRequest(`Amount has more than ${decimals} decimal places`, "INVALID_AMOUNT");
   }
 
+  // Limits come from a fresh Arcus read, not the cached row: the row can be a
+  // minute old, and a market crossing into off-hours in that minute would let
+  // through an order Arcus then rejects -- after the creator has paid.
+  const live = await liveMarketInfo(market);
+  checkOpenAgainstMarket(market, live, {
+    leverage: request.leverage,
+    amount: request.amount,
+  });
+  checkDefaultLevels(request, markOf(live));
+
   const user = await requireRegisteredUser(request.userWalletAddress);
 
   const { slot, result: openRequest } = await reserveSlot(
@@ -156,6 +169,8 @@ export async function requestOpenPosition(request: OpenPositionRequest): Promise
           direction: request.direction,
           leverage: request.leverage,
           amount: amount.toString(),
+          stopLoss: nonZero(request.stopLoss),
+          takeProfit: nonZero(request.takeProfit),
         },
       }),
   );
@@ -167,6 +182,101 @@ export async function requestOpenPosition(request: OpenPositionRequest): Promise
     amount: amount.toString(),
     expiresAt: (slot.reservationExpiresAt ?? new Date(Date.now() + config.reservationTimeoutMs)).toISOString(),
   };
+}
+
+/// "0" (or blank) means none.
+function nonZero(level: string | undefined): string | null {
+  return level && !isZeroDecimal(level) ? level : null;
+}
+
+/**
+ * The creator's SL/TP against the current mark, with the contract's own rule:
+ * long SL below / TP above, short the reverse. The contract re-checks against
+ * the actual fill at createPosition (see {defaultLevelsAtEntry}).
+ */
+function checkDefaultLevels(request: OpenPositionRequest, mark: string | null): void {
+  const levels = { stopLoss: levelOf(nonZero(request.stopLoss)), takeProfit: levelOf(nonZero(request.takeProfit)) };
+  if (levels.stopLoss === 0n && levels.takeProfit === 0n) return;
+  if (!mark) throw serviceUnavailable("No mark price to check the stop loss / take profit against", "NO_MARK_PRICE");
+  const error = levelError(request.direction, levels, toPrice18(mark));
+  if (error) throw badRequest(error, "INVALID_TRIGGER_LEVEL");
+}
+
+/**
+ * The defaults as createPosition takes them (1e18, 0n = none), checked against
+ * the fill. The price can move between the request and the fill; a level the
+ * fill has already crossed would make createPosition revert on every retry
+ * with the trade open on Arcus, so that level is dropped instead -- the
+ * position row then shows the defaults that actually apply.
+ */
+function defaultLevelsAtEntry(request: PositionOpenRequest, entry18: bigint): { stopLoss: bigint; takeProfit: bigint } {
+  const side = request.direction === "short" ? "short" : "long";
+  let stopLoss = levelOf(request.stopLoss);
+  let takeProfit = levelOf(request.takeProfit);
+  if (levelError(side, { stopLoss, takeProfit: 0n }, entry18)) {
+    log.warn("default stop loss already crossed at the fill; dropped", { openRequestId: request.id, stopLoss: request.stopLoss });
+    stopLoss = 0n;
+  }
+  if (levelError(side, { stopLoss: 0n, takeProfit }, entry18)) {
+    log.warn("default take profit already crossed at the fill; dropped", { openRequestId: request.id, takeProfit: request.takeProfit });
+    takeProfit = 0n;
+  }
+  return { stopLoss, takeProfit };
+}
+
+/**
+ * Everything about the market that can reject an open, checked before a slot
+ * is reserved or anything is paid: the market is ONLINE, leverage is within
+ * the limit that applies right now, and `amount x leverage` clears Arcus's
+ * minimum notional and minimum order size.
+ */
+export function checkOpenAgainstMarket(
+  market: Pick<ResolvedMarket, "arcusDisplayName">,
+  live: ArcusMarketInfo,
+  request: { leverage: number; amount: string },
+): void {
+  const name = market.arcusDisplayName;
+  if (live.status !== "ONLINE") {
+    throw badRequest(`${name} is ${live.status} on Arcus`, "MARKET_OFFLINE");
+  }
+
+  if (!Number.isInteger(request.leverage) || request.leverage < 1) {
+    throw badRequest("Leverage must be a whole number of at least 1", "INVALID_LEVERAGE");
+  }
+  const limits = leverageLimits(leverageInputsFrom(live));
+  if (request.leverage > limits.now) {
+    const when =
+      limits.inHours === limits.offHours ? "" : live.isOutsideRth ? " outside market hours" : " during market hours";
+    throw badRequest(`Max leverage for ${name} is ${limits.now}x${when}`, "LEVERAGE_TOO_HIGH", {
+      maxLeverage: limits.now,
+    });
+  }
+
+  const mark = markOf(live);
+  if (!mark) throw serviceUnavailable(`Arcus has no mark price for ${name} yet`, "NO_MARK_PRICE");
+
+  const { quantity, notional } = sizeEntry({
+    collateral: request.amount,
+    leverage: request.leverage,
+    mark,
+    side: "BUY",
+    market: live,
+  });
+  const minNotional = live.minOrderNotional ?? "0";
+  if (compareDecimal(notional, minNotional) < 0 || compareDecimal(quantity, live.minOrderSize) < 0) {
+    // One dollar figure covering both limits, for the message only.
+    const minUsd = Math.max(Number(minNotional), Number(live.minOrderSize) * Number(mark));
+    const min = (Math.ceil(minUsd * 100) / 100).toFixed(2).replace(/\.00$/, "");
+    const minAmount = (Math.ceil((minUsd / request.leverage) * 100) / 100).toFixed(2).replace(/\.00$/, "");
+    throw badRequest(
+      `Minimum position size for ${name} is $${min} -- at ${request.leverage}x that needs at least ${minAmount} USDG`,
+      "POSITION_TOO_SMALL",
+      { minNotional: min, minAmount },
+    );
+  }
+  if (!isZeroDecimal(live.maxOrderSize) && compareDecimal(quantity, live.maxOrderSize) > 0) {
+    throw badRequest(`Position exceeds ${name}'s maximum order size`, "POSITION_TOO_LARGE");
+  }
 }
 
 /**
@@ -650,14 +760,9 @@ export function sizeEntry(params: {
   return { price, quantity, notional };
 }
 
-/**
- * The filled size in the unit PositionToken's value math needs. The contract
- * computes pnl as `size * (mark - entry) / 1e18` in USDG base units, with
- * prices at 1e18 -- so `size` must carry the asset quantity scaled by USDG's
- * own decimals, not by 1e18.
- */
-export function onChainSize(filledSize: string, usdgDecimalPlaces: number): bigint {
-  return toBaseUnits(filledSize, usdgDecimalPlaces);
+/// The filled size as PositionToken stores it: base quantity x 1e6 (see lib/units.ts).
+export function onChainSize(filledSize: string): bigint {
+  return toSize6(filledSize);
 }
 
 // ---------------------------------------------------------------------------
@@ -673,8 +778,8 @@ export function onChainSize(filledSize: string, usdgDecimalPlaces: number): bigi
  */
 async function mintPositionToken(request: PositionOpenRequest, slot: SlotWithWallet): Promise<void> {
   const creator = request.userWalletAddress as Address;
-  const decimals = await usdgDecimals();
   const orderId = request.arcusOrderId as string;
+  const defaults = defaultLevelsAtEntry(request, toPrice18(request.entryPrice as string));
 
   // --- 3a. createPosition -------------------------------------------------
   let positionToken = request.positionTokenAddress as Address | null;
@@ -689,10 +794,12 @@ async function mintPositionToken(request: PositionOpenRequest, slot: SlotWithWal
           market: request.marketId as `0x${string}`,
           direction: request.direction as "long" | "short",
           leverage: request.leverage,
-          entryPrice: toBaseUnits(request.entryPrice as string, 18),
-          size: onChainSize(request.filledSize as string, decimals),
+          entryPrice: toPrice18(request.entryPrice as string),
+          size: onChainSize(request.filledSize as string),
           initialDeposit: BigInt(request.creditedAmount as string),
           arcusOrderId: orderId,
+          defaultStopLoss: defaults.stopLoss,
+          defaultTakeProfit: defaults.takeProfit,
         }));
         break;
       } catch (error) {
@@ -742,8 +849,12 @@ async function mintPositionToken(request: PositionOpenRequest, slot: SlotWithWal
         leverage: request.leverage,
         requestedAmount: request.amount,
         depositedAmount: request.creditedAmount,
-        entryPrice: toBaseUnits(request.entryPrice as string, 18).toString(),
-        size: onChainSize(request.filledSize as string, decimals).toString(),
+        entryPrice: toPrice18(request.entryPrice as string).toString(),
+        size: onChainSize(request.filledSize as string).toString(),
+        capital: request.creditedAmount,
+        defaultStopLoss: defaults.stopLoss > 0n ? request.stopLoss : null,
+        defaultTakeProfit: defaults.takeProfit > 0n ? request.takeProfit : null,
+        defaultsActive: defaults.stopLoss > 0n || defaults.takeProfit > 0n,
         status: "open",
         openedAt: new Date(),
       },
@@ -762,6 +873,25 @@ async function mintPositionToken(request: PositionOpenRequest, slot: SlotWithWal
         },
       });
     }
+
+    // The creator's initial deposit, for cost basis and metrics. Genesis mints
+    // 1:1 at NAV 1.0. Keyed on the token (the minting tx is not always known
+    // after a recovered createPosition), so a retry upserts the same row.
+    await tx.flow.upsert({
+      where: { txHash_logIndex: { txHash: `open:${tokenAddress}`, logIndex: 0 } },
+      create: {
+        positionId: row.id,
+        type: "open",
+        address: request.userWalletAddress.toLowerCase(),
+        assets: request.creditedAmount as string,
+        shares: request.creditedAmount as string,
+        navPerShare: PRICE_SCALE.toString(),
+        txHash: `open:${tokenAddress}`,
+        logIndex: 0,
+        timestamp: new Date(),
+      },
+      update: {},
+    });
 
     if (pool) {
       await tx.lendingPool.upsert({
@@ -873,12 +1003,18 @@ async function refund(request: PositionOpenRequest, slot: SlotWithWallet, reason
 
     let owed = BigInt(request.amount);
     if (deposited) {
+      const credited = BigInt(request.creditedAmount ?? request.amount);
       if (!request.refundWithdrawalId) {
-        const credited = BigInt(request.creditedAmount ?? request.amount);
         const { withdrawalId } = await withdrawToInternalWallet(slot, credited);
-        request = await update(request.id, { refundWithdrawalId: withdrawalId });
+        // "unknown" only after a 409 with no id echoed: matched by amount instead.
+        request = await update(request.id, { refundWithdrawalId: withdrawalId ?? "unknown" });
       }
-      owed = await waitForWithdrawal(slot, request.refundWithdrawalId as string, request.createdAt);
+      const withdrawalId = request.refundWithdrawalId === "unknown" ? undefined : (request.refundWithdrawalId as string);
+      owed = await awaitWithdrawalApplied(slot, withdrawalId, {
+        since: request.createdAt,
+        amount6: withdrawalId ? undefined : credited,
+        timeoutMs: config.arcusWithdrawalTimeoutMs,
+      });
       await waitForOnChainArrival(walletAddress, owed, request.id);
     }
 
@@ -927,19 +1063,7 @@ async function waitForOnChainArrival(wallet: Address, owed: bigint, openRequestI
   const deadline = Date.now() + config.arcusWithdrawalTimeoutMs;
 
   while (Date.now() < deadline) {
-    const held = await db.positionOpenRequest.findMany({
-      where: {
-        id: { not: openRequestId },
-        status: "payment_received",
-        arcusDepositTxHash: null,
-        slotId: { in: (await db.subaccountSlot.findMany({
-          where: { operatorWallet: { address: { equals: wallet, mode: "insensitive" } } },
-          select: { id: true },
-        })).map((row) => row.id) },
-      },
-      select: { amount: true },
-    });
-    const reserved = held.reduce((sum, row) => sum + BigInt(row.amount), 0n);
+    const reserved = await heldForOpenRequests(wallet, openRequestId);
     if ((await usdgBalanceOf(wallet)) >= reserved + owed) return;
     await sleep(config.depositPollIntervalMs * 2);
   }

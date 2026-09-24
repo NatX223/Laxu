@@ -1,40 +1,27 @@
 import { Router } from "express";
 
 import { asyncHandler } from "../lib/async";
-import { bytes32ToSymbol, listMarkets, refreshMarkets } from "../services/markets";
+import { notFound } from "../lib/errors";
+import { findMarketByName, listMarkets, serialiseMarket } from "../services/markets";
 
 export const marketsRouter = Router();
 
+/// ONLINE markets, sorted by asset class then symbol. `?all=true` includes
+/// OFFLINE ones.
 marketsRouter.get(
   "/",
-  asyncHandler(async (_req, res) => {
-    const markets = await listMarkets();
-    res.json({
-      markets: markets.map((market) => ({
-        symbol: market.symbol,
-        laxuMarket: market.laxuMarket,
-        assetClass: market.assetClass,
-        arcusMarketId: market.arcusMarketId,
-        arcusDisplayName: market.arcusDisplayName,
-        tickSize: market.tickSize,
-        stepSize: market.stepSize,
-        minOrderSize: market.minOrderSize,
-        maxOrderSize: market.maxOrderSize,
-        maxLeverage: market.maxLeverage,
-        status: market.status,
-        refreshedAt: market.refreshedAt?.toISOString() ?? null,
-      })),
-    });
+  asyncHandler(async (req, res) => {
+    const markets = await listMarkets({ all: req.query.all === "true" });
+    res.json(markets.map(serialiseMarket));
   }),
 );
 
-/// Re-pull tick/step and ids from Arcus. Safe to call repeatedly; it is also run
-/// at boot, so this exists for when a market goes live mid-session.
-marketsRouter.post(
-  "/refresh",
-  asyncHandler(async (_req, res) => {
-    res.json(await refreshMarkets());
+/// One market by display symbol ("ETH-USD") or base asset ("ETH"), any status.
+marketsRouter.get(
+  "/:symbol",
+  asyncHandler(async (req, res) => {
+    const market = await findMarketByName(req.params.symbol);
+    if (!market) throw notFound(`Unknown market ${req.params.symbol}`, "UNKNOWN_MARKET");
+    res.json(serialiseMarket(market));
   }),
 );
-
-export { bytes32ToSymbol };

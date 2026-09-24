@@ -1,12 +1,17 @@
 import type { Address } from "viem";
 
 import { WAD } from "../chain/abi";
+import { liquidatorWallet } from "../chain/clients";
 import {
+  claimAsLiquidator,
   ensureLiquidatorApproval,
   healthFactorFor,
+  isClosed,
   liquidate,
   maxLiquidatableDebtFor,
+  readSettlement,
   requestRedeemAsLiquidator,
+  shareBalanceOf,
 } from "../chain/writes";
 import { db } from "../config/db";
 import { config } from "../config/env";
@@ -31,6 +36,10 @@ const log = createLogger("liquidator");
  */
 export async function runLiquidationTick(): Promise<void> {
   const pools = await db.lendingPool.findMany({ include: { borrowers: true } });
+
+  // Seized shares of a position that closed before they could be redeemed are
+  // held until it settles, then claimed -- retried here every tick.
+  await claimSettledHoldings([...new Set(pools.map((p) => p.positionTokenAddress.toLowerCase()))] as Address[]);
 
   for (const pool of pools) {
     const poolAddress = pool.poolAddress as Address;
@@ -57,11 +66,8 @@ export async function runLiquidationTick(): Promise<void> {
         });
 
         // Recycling is the liquidator's own problem to solve, on its own
-        // clock -- this just queues the redeem through the existing
-        // fractional-redeem flow rather than leaving the capital as shares.
-        if (seizedShares > 0n) {
-          await requestRedeemAsLiquidator(pool.positionTokenAddress as Address, seizedShares);
-        }
+        // clock -- rather than leaving the capital as shares.
+        if (seizedShares > 0n) await recycleSeizedShares(pool.positionTokenAddress as Address, seizedShares);
       } catch (error) {
         log.error("could not liquidate borrower", {
           pool: poolAddress,
@@ -69,6 +75,38 @@ export async function runLiquidationTick(): Promise<void> {
           ...errorFields(error),
         });
       }
+    }
+  }
+}
+
+/**
+ * By the position's state:
+ *   open                 -> requestRedeem through the fractional-redeem flow
+ *   closed, not settled  -> hold; {claimSettledHoldings} retries every tick
+ *   settled              -> claim()
+ */
+async function recycleSeizedShares(positionToken: Address, shares: bigint): Promise<void> {
+  if ((await readSettlement(positionToken)).settled) {
+    const txHash = await claimAsLiquidator(positionToken);
+    log.info("claimed seized shares of a settled position", { positionToken, txHash });
+  } else if (await isClosed(positionToken)) {
+    log.info("position closed but not settled; holding seized shares until it is", { positionToken });
+  } else {
+    await requestRedeemAsLiquidator(positionToken, shares);
+  }
+}
+
+async function claimSettledHoldings(tokens: Address[]): Promise<void> {
+  const liquidator = liquidatorWallet().account?.address;
+  if (!liquidator) return;
+  for (const token of tokens) {
+    try {
+      if ((await shareBalanceOf(token, liquidator)) === 0n) continue;
+      if (!(await readSettlement(token)).settled) continue;
+      const txHash = await claimAsLiquidator(token);
+      log.info("claimed held seized shares after settlement", { positionToken: token, txHash });
+    } catch (error) {
+      log.error("could not claim held seized shares", { positionToken: token, ...errorFields(error) });
     }
   }
 }

@@ -1,49 +1,33 @@
+"use client";
+
 import type { CSSProperties } from "react";
+import { marketFor, useMarkets } from "@/lib/markets";
+import MarketIcon from "../MarketIcon";
 
 export { SERIF } from "../landing/shared";
 export const MONO = "var(--font-ibm-plex-mono), monospace";
 
 /**
- * The tinted token disc. Note the prototype paints the ticker's initial on
- * every disc — including the two that carry a logo image — so it does that
- * here too.
+ * The token disc — the shared MarketIcon. The live Arcus logo for `base` wins
+ * when the market list has it; otherwise the disc's own logo, otherwise a
+ * letter avatar.
  */
 export function Disc({
   size,
   font,
-  accent,
+  base,
   logo,
-  initial,
   style,
 }: {
   size: number;
   font: number;
-  accent: string;
-  logo: string;
-  initial: string;
+  /** Underlying market's base asset, e.g. "ETH". */
+  base: string;
+  logo?: string;
   style?: CSSProperties;
 }) {
+  useMarkets(); // re-render when the live list (and its logos) lands
   return (
-    <div
-      style={{
-        flex: "none",
-        width: size,
-        height: size,
-        borderRadius: "50%",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontSize: font,
-        fontWeight: 700,
-        color: "#16130f",
-        backgroundColor: accent,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-        backgroundImage: logo ? `url(${logo})` : undefined,
-        ...style,
-      }}
-    >
-      {initial}
-    </div>
+    <MarketIcon logoUrl={marketFor(base)?.logoUrl ?? (logo || null)} baseAsset={base} size={size} font={font} style={style} />
   );
 }

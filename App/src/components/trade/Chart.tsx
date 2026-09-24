@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 import dynamic from "next/dynamic";
 import type { ArcusTimeframe } from "@/lib/arcus";
 import type { LiveBar, ScaleMode } from "../charts/TradeChart";
-import { RANGES, TIMEFRAMES, volFmt } from "./data";
+import { RANGES, TIMEFRAMES, cat, volFmt } from "./data";
 import type { MarketView } from "./derive";
 import type { TradeEngine } from "./engine";
 import { Disc, MONO } from "./shared";
@@ -14,9 +14,12 @@ const TradeChart = dynamic(() => import("../charts/TradeChart"), { ssr: false })
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-/** Laxu symbol -> Arcus market. Most are `SYM-USD`; these two trade as ETFs. */
+/**
+ * Laxu symbol -> Arcus market: the live list's display symbol. Before it loads
+ * the design's two ETF stand-ins need mapping by hand.
+ */
 const ARCUS_MARKET: Record<string, string> = { GOLD: "GLD-USD", SPX: "SPY-USD" };
-export const arcusMarketFor = (sym: string) => ARCUS_MARKET[sym] ?? `${sym}-USD`;
+export const arcusMarketFor = (sym: string) => cat(sym).live?.displaySymbol ?? ARCUS_MARKET[sym] ?? `${sym}-USD`;
 
 /** The design's timeframe pills, in Arcus's spelling. */
 const ARCUS_TF: Record<string, ArcusTimeframe> = { "1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1D": "1d" };

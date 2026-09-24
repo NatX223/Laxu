@@ -1,4 +1,4 @@
-import { erc20Abi, type Address, type Hash } from "viem";
+import { erc20Abi, parseUnits, type Address, type Hash } from "viem";
 import { apiFetch } from "./api";
 import { publicClient } from "./chain";
 import { env } from "./env";
@@ -11,8 +11,10 @@ import type { LaxuWalletClient } from "./walletClient";
  * Each helper waits for its receipt before resolving. For the async ones
  * (`requestDeposit` / `requestRedeem` / `requestClose`) a receipt only means
  * *requested* — the UI shows "Settling on Arcus…" until the backend fulfils
- * it. There is no claim step: the fulfil mints the tokens (buy-in) or pays the
- * USDG (redeem) straight to the wallet that asked.
+ * it. The fulfil mints the tokens (buy-in) or pays the USDG (redeem) straight
+ * to the wallet that asked. The one claim step is after a position closes and
+ * settles: the backend pushes each holder's payout, and `claim()` is the
+ * fallback for anyone it didn't reach.
  */
 
 // --- ABIs: only what's called here ------------------------------------------
@@ -40,8 +42,14 @@ const positionTokenAbi = [
     ],
     outputs: [{ name: "requestId", type: "uint256" }],
   },
-  /** Creator only, unlisted, holding 100% of supply, no deposit pending — the contract enforces it. */
+  /** Creator only, holding 100% of supply, no deposit pending — the contract enforces it. */
   { type: "function", name: "requestClose", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  /** After settlement: burns the caller's shares (and any redeem caught pending at close) for their USDG. */
+  { type: "function", name: "claim", stateMutability: "nonpayable", inputs: [], outputs: [{ name: "assets", type: "uint256" }] },
+  { type: "function", name: "settled", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
+  { type: "function", name: "settlementAssets", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "claimedAssets", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
   /** One-way: opens the position to buy-ins and sets the nickname (≤ 32 bytes, "" for none). */
   {
     type: "function",
@@ -79,6 +87,21 @@ const positionTokenAbi = [
   { type: "function", name: "listed", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
   { type: "function", name: "closed", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
   { type: "function", name: "closeRequested", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
+  /** Personal SL/TP for the caller's own wallet balance; 0 = none for that side. Prices at 1e18. */
+  {
+    type: "function",
+    name: "setTriggers",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "stopLoss", type: "uint256" },
+      { name: "takeProfit", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  /** Explicitly no triggers — the creator's defaults stop applying to the caller. */
+  { type: "function", name: "clearTriggers", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  /** Back to the creator's defaults. */
+  { type: "function", name: "useDefaultTriggers", stateMutability: "nonpayable", inputs: [], outputs: [] },
 ] as const;
 
 /** PositionToken.REQUEST_CANCEL_TIMEOUT: an unfulfilled request can be taken back after this. */
@@ -91,6 +114,7 @@ export const BUY_IN_FEE_BPS = 200;
 const lendingPoolAbi = [
   { type: "function", name: "depositCollateral", stateMutability: "nonpayable", inputs: [{ name: "shares", type: "uint256" }], outputs: [] },
   { type: "function", name: "withdrawCollateral", stateMutability: "nonpayable", inputs: [{ name: "shares", type: "uint256" }], outputs: [] },
+  { type: "function", name: "collateralBalance", stateMutability: "view", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
   { type: "function", name: "borrow", stateMutability: "nonpayable", inputs: [{ name: "amount", type: "uint256" }], outputs: [] },
   {
     type: "function",
@@ -211,7 +235,16 @@ export type OpenRequest = {
  */
 export async function openPosition(
   wallet: LaxuWalletClient,
-  request: { market: string; direction: "long" | "short"; leverage: number; /** human USDG, e.g. "500" */ amount: string },
+  request: {
+    market: string;
+    direction: "long" | "short";
+    leverage: number;
+    /** human USDG, e.g. "500" */
+    amount: string;
+    /** The creator's SL/TP as human prices ("1900") — the default for everyone who buys in. */
+    stopLoss?: string;
+    takeProfit?: string;
+  },
 ): Promise<{ reservation: OpenReservation; hash: Hash }> {
   const reservation = await apiFetch<OpenReservation>("/positions/open", {
     auth: true,
@@ -271,9 +304,9 @@ export async function exitStake(wallet: LaxuWalletClient, positionToken: Address
 }
 
 /**
- * Close — creator only, while unlisted and holding 100% of supply (tokens
- * posted as loan collateral don't count: repay and withdraw them first). Once
- * listed, the creator exits by redeeming like everyone else.
+ * Close — creator only, holding 100% of supply with no buy-in pending (tokens
+ * posted as loan collateral don't count: repay and withdraw them first). A
+ * listed creator who has bought everyone back out may close too.
  */
 export async function closePosition(wallet: LaxuWalletClient, positionToken: Address): Promise<Hash> {
   return confirm(
@@ -305,10 +338,66 @@ export async function cancelRedeemRequest(wallet: LaxuWalletClient, positionToke
   );
 }
 
+// --- stop loss / take profit ------------------------------------------------
+
+/** PositionToken.PRICE_SCALE: trigger levels go on-chain as 1e18 fixed point. */
+const PRICE_DECIMALS = 18;
+
+/**
+ * Set this wallet's own SL/TP (human prices; "" or undefined = none for that
+ * side). Covers the tokens in the wallet only — not any posted as loan
+ * collateral. Works before a buy-in settles, too.
+ */
+export async function setTriggers(
+  wallet: LaxuWalletClient,
+  positionToken: Address,
+  levels: { stopLoss?: string; takeProfit?: string },
+): Promise<Hash> {
+  const price = (value?: string) => (value && value.trim() ? parseUnits(value.trim(), PRICE_DECIMALS) : BigInt(0));
+  return confirm(
+    await wallet.writeContract({
+      address: positionToken,
+      abi: positionTokenAbi,
+      functionName: "setTriggers",
+      args: [price(levels.stopLoss), price(levels.takeProfit)],
+    }),
+  );
+}
+
+/** No triggers at all, including the creator's defaults. */
+export async function clearTriggers(wallet: LaxuWalletClient, positionToken: Address): Promise<Hash> {
+  return confirm(
+    await wallet.writeContract({ address: positionToken, abi: positionTokenAbi, functionName: "clearTriggers" }),
+  );
+}
+
+/** Drop personal levels and follow the creator's defaults again. */
+export async function resetTriggersToDefault(wallet: LaxuWalletClient, positionToken: Address): Promise<Hash> {
+  return confirm(
+    await wallet.writeContract({ address: positionToken, abi: positionTokenAbi, functionName: "useDefaultTriggers" }),
+  );
+}
+
+/** Take this wallet's share of a settled position. The payout always goes to the caller. */
+export async function claimSettlement(wallet: LaxuWalletClient, positionToken: Address): Promise<Hash> {
+  return confirm(
+    await wallet.writeContract({ address: positionToken, abi: positionTokenAbi, functionName: "claim" }),
+  );
+}
+
 export type HolderState = {
   listed: boolean;
   closed: boolean;
   closeRequested: boolean;
+  settled: boolean;
+  /** USDG base units `claim()` would pay now: (balance + pendingRedeem) × what's left ÷ supply. 0 unless settled. */
+  claimable: bigint;
+  /** Shares this wallet has posted as collateral in the position's LendingPool. */
+  inCollateral: bigint;
+  /** What those collateral shares would claim once withdrawn. 0 unless settled. */
+  collateralClaimable: bigint;
+  /** The token's decimals, which are USDG's: shares and payouts format with the same. */
+  decimals: number;
   balance: bigint;
   totalSupply: bigint;
   pendingDeposit: bigint;
@@ -318,26 +407,70 @@ export type HolderState = {
   lastRedeemRequestAt: number;
 };
 
-/** Everything the position page needs to decide which of List / Close / Redeem / Cancel to show. */
-export async function readHolderState(positionToken: Address, account: Address): Promise<HolderState> {
+/** Everything the position page needs to decide which of List / Close / Redeem / Cancel / Claim to show. */
+export async function readHolderState(
+  positionToken: Address,
+  account: Address,
+  lendingPool?: Address | null,
+): Promise<HolderState> {
   const read = <T>(functionName: string, args: readonly unknown[] = []) =>
     publicClient().readContract({ address: positionToken, abi: positionTokenAbi, functionName, args } as never) as Promise<T>;
-  const [listed, closed, closeRequested, balance, totalSupply, pendingDeposit, pendingRedeem, lastDeposit, lastRedeem] =
-    await Promise.all([
-      read<boolean>("listed"),
-      read<boolean>("closed"),
-      read<boolean>("closeRequested"),
-      read<bigint>("balanceOf", [account]),
-      read<bigint>("totalSupply"),
-      read<bigint>("pendingDepositRequest", [BigInt(0), account]),
-      read<bigint>("pendingRedeemRequest", [BigInt(0), account]),
-      read<bigint>("lastDepositRequestAt", [account]),
-      read<bigint>("lastRedeemRequestAt", [account]),
+  const [
+    listed,
+    closed,
+    closeRequested,
+    settled,
+    balance,
+    totalSupply,
+    pendingDeposit,
+    pendingRedeem,
+    lastDeposit,
+    lastRedeem,
+    inCollateral,
+    decimals,
+  ] = await Promise.all([
+    read<boolean>("listed"),
+    read<boolean>("closed"),
+    read<boolean>("closeRequested"),
+    read<boolean>("settled"),
+    read<bigint>("balanceOf", [account]),
+    read<bigint>("totalSupply"),
+    read<bigint>("pendingDepositRequest", [BigInt(0), account]),
+    read<bigint>("pendingRedeemRequest", [BigInt(0), account]),
+    read<bigint>("lastDepositRequestAt", [account]),
+    read<bigint>("lastRedeemRequestAt", [account]),
+    lendingPool
+      ? (publicClient().readContract({
+          address: lendingPool,
+          abi: lendingPoolAbi,
+          functionName: "collateralBalance",
+          args: [account],
+        }) as Promise<bigint>)
+      : Promise.resolve(BigInt(0)),
+    read<number>("decimals"),
+  ]);
+
+  let claimable = BigInt(0);
+  let collateralClaimable = BigInt(0);
+  if (settled && totalSupply > BigInt(0)) {
+    const [settlementAssets, claimedAssets] = await Promise.all([
+      read<bigint>("settlementAssets"),
+      read<bigint>("claimedAssets"),
     ]);
+    const remaining = settlementAssets - claimedAssets;
+    claimable = ((balance + pendingRedeem) * remaining) / totalSupply;
+    collateralClaimable = (inCollateral * remaining) / totalSupply;
+  }
+
   return {
     listed,
     closed,
     closeRequested,
+    settled,
+    claimable,
+    inCollateral,
+    collateralClaimable,
+    decimals,
     balance,
     totalSupply,
     pendingDeposit,

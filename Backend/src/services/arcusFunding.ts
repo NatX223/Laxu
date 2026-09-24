@@ -1,22 +1,20 @@
 import type { Address, Hash, WalletClient } from "viem";
 
-import { getAccount, getAccountTransferUpdates, submitWithdrawal } from "../arcus/client";
-import { signWithdraw } from "../arcus/eip712";
-import { unixNanos } from "../arcus/signing";
+import { getAccountTransferUpdates } from "../arcus/client";
 import type { AccountTransferUpdate } from "../arcus/types";
-import { QUOTE_QUANTUMS_PER_DOLLAR } from "../arcus/types";
-import { internalWallet, usdgDecimals } from "../chain/clients";
+import { internalWallet } from "../chain/clients";
 import {
   ensureDepositProxyApproval,
   initiateArcusDeposit,
   mintUsdg,
+  usdgBalanceOf,
 } from "../chain/writes";
+import { db } from "../config/db";
 import { config } from "../config/env";
-import { sleep } from "../lib/async";
-import { toBaseUnits } from "../lib/decimal";
 import { createLogger } from "../lib/logger";
+import { toUsdg6 } from "../lib/units";
 import { operatorEvmKey, type SlotWithWallet } from "./allocator";
-import { dollarsToQuantums } from "./sweep";
+import { getArcusStream } from "./arcusStream";
 
 const log = createLogger("arcus-funding");
 
@@ -40,12 +38,6 @@ export function walletForSlot(slot: SlotWithWallet): WalletClient {
 /// Epoch microseconds, the unit Arcus's transfer feed filters `from` on.
 export function toMicros(date: Date): bigint {
   return BigInt(date.getTime()) * 1000n;
-}
-
-/// USDG base units as Arcus quote quantums (1e9 = $1).
-export async function baseUnitsToQuantums(amount: bigint): Promise<bigint> {
-  const decimals = await usdgDecimals();
-  return (amount * QUOTE_QUANTUMS_PER_DOLLAR) / 10n ** BigInt(decimals);
 }
 
 /**
@@ -90,9 +82,10 @@ export async function findCredit(
 }
 
 /**
- * Poll until Arcus credits a deposit to this exact subaccount, usually within a
- * minute. `since` bounds the search to deposits made for this request: the
- * slot was exclusively reserved from then on, so any credit after it is ours.
+ * Wait for Arcus to credit a deposit to this exact subaccount, usually within a
+ * minute. The shared stream's DEPOSIT event is the main signal, with a REST
+ * poll alongside. `since` bounds the search to deposits made for this request:
+ * the slot was exclusively ours from then on, so any credit after it is ours.
  * Returns the credited amount in USDG base units.
  */
 export async function waitForCredit(
@@ -100,114 +93,76 @@ export async function waitForCredit(
   since: Date,
   timeoutMs = config.arcusCreditTimeoutMs,
 ): Promise<{ transferId: string; credited: bigint }> {
-  const decimals = await usdgDecimals();
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    const credit = await findCredit(slot, since);
-    if (credit) {
-      return { transferId: credit.id, credited: toBaseUnits(credit.amount, decimals) };
-    }
-    await sleep(config.depositPollIntervalMs);
+  const credit = await getArcusStream().awaitTransfer({
+    address: slot.operatorWallet.address,
+    accountIndex: slot.accountIndex,
+    type: "DEPOSIT",
+    since,
+    // Spot-asset deposits carry a size in the asset's own units, not USD.
+    match: (update) => !(update.spotAssetId && update.spotAssetId > 0),
+    timeoutMs,
+    label: `deposit credit on ${slot.operatorWallet.address} index ${slot.accountIndex}`,
+  });
+  if (credit.status?.startsWith("REJECTED")) {
+    throw new Error(`Arcus rejected the deposit on index ${slot.accountIndex}: ${credit.rejectReason ?? credit.status}`);
   }
-
-  throw new Error(
-    `Arcus did not credit a deposit on ${slot.operatorWallet.address} index ${slot.accountIndex} within ${Math.round(
-      timeoutMs / 1000,
-    )}s`,
-  );
+  return { transferId: credit.id, credited: toUsdg6(credit.amount) };
 }
 
 /**
- * Testnet only (USDG has an open mint): fund a subaccount with the backend's
- * own USDG. Buy-in USDG stays inside the PositionToken -- there is no function
- * to move it to Arcus -- so the Arcus-side margin increase for a buy-in is
- * funded here instead. Mainnet needs a proper operator-only sweep.
+ * Creators' payments that sit on an internal wallet before their deposit goes
+ * out. Never spendable on anything else -- a refund, a buy-in's funding or a
+ * redeem payout must come out of what is left over.
  */
-export async function fundSubaccountFromMint(
-  slot: SlotWithWallet,
-  amount: bigint,
-): Promise<{ credited: bigint }> {
-  const wallet = walletForSlot(slot);
+export async function heldForOpenRequests(walletAddress: string, exceptOpenRequestId?: string): Promise<bigint> {
+  const slotIds = (
+    await db.subaccountSlot.findMany({
+      where: { operatorWallet: { address: { equals: walletAddress, mode: "insensitive" } } },
+      select: { id: true },
+    })
+  ).map((row) => row.id);
+  const held = await db.positionOpenRequest.findMany({
+    where: {
+      ...(exceptOpenRequestId ? { id: { not: exceptOpenRequestId } } : {}),
+      status: "payment_received",
+      arcusDepositTxHash: null,
+      slotId: { in: slotIds },
+    },
+    select: { amount: true },
+  });
+  return held.reduce((sum, row) => sum + BigInt(row.amount), 0n);
+}
+
+/**
+ * Make sure the slot's internal wallet has `amount` USDG it may spend (on top
+ * of creators' held payments). Testnet (USDG_MINTABLE): mints the shortfall.
+ * Mainnet: the float must already cover it, or this throws and the caller's
+ * retry picks it up once the float is refilled.
+ */
+export async function ensureInternalWalletFloat(slot: SlotWithWallet, amount: bigint): Promise<void> {
+  const walletAddress = slot.operatorWallet.address as Address;
+  const [balance, held] = await Promise.all([usdgBalanceOf(walletAddress), heldForOpenRequests(walletAddress)]);
+  const spare = balance > held ? balance - held : 0n;
+  if (spare >= amount) return;
+  const shortfall = amount - spare;
+  if (!config.usdgMintable) {
+    throw new Error(`Internal wallet ${walletAddress} float is short ${shortfall} USDG base units`);
+  }
+  await mintUsdg(walletForSlot(slot), walletAddress, shortfall);
+  log.info("internal wallet float topped up by mint", { wallet: walletAddress, amount: shortfall.toString() });
+}
+
+/**
+ * Fund a subaccount for a buy-in. The buyer's USDG stays inside the
+ * PositionToken as the payout buffer for later redeems, so the Arcus side is
+ * funded from the slot's internal wallet: minted on testnet, the float on
+ * mainnet. Then `initiateDeposit(owner = itself, accountIndex = slot)` and
+ * wait for the DEPOSIT credit on the shared stream.
+ */
+export async function fundSubaccount(slot: SlotWithWallet, amount: bigint): Promise<{ credited: bigint }> {
+  await ensureInternalWalletFloat(slot, amount);
   const since = new Date();
-  await mintUsdg(wallet, slot.operatorWallet.address as Address, amount);
   await depositToSubaccount(slot, amount);
   const { credited } = await waitForCredit(slot, since);
   return { credited };
 }
-
-/**
- * Withdraw USDG from the slot's subaccount back to its internal wallet
- * on-chain (withdraw-to-self is the only kind Arcus offers). Capped at the
- * subaccount's free collateral. Returns the withdrawal id and the base-unit
- * amount requested.
- */
-export async function withdrawToInternalWallet(
-  slot: SlotWithWallet,
-  amount: bigint,
-): Promise<{ withdrawalId: string; amount: bigint }> {
-  const decimals = await usdgDecimals();
-  const account = await getAccount(slot.operatorWallet.address, slot.accountIndex);
-  const free = account ? toBaseUnits(account.freeCollateral ?? "0", decimals) : 0n;
-  const withdraw = amount < free ? amount : free;
-  if (withdraw <= 0n) {
-    throw new Error(`Nothing withdrawable on index ${slot.accountIndex} (free collateral ${free})`);
-  }
-
-  const quantums = await baseUnitsToQuantums(withdraw);
-  const nonce = unixNanos().toString();
-  const signature = await signWithdraw({
-    privateKey: operatorEvmKey(slot),
-    ethereumAddress: slot.operatorWallet.address,
-    accountIndex: slot.accountIndex,
-    amount: quantums,
-    nonce,
-  });
-
-  const result = await submitWithdrawal({
-    ethereumAddress: slot.operatorWallet.address,
-    accountIndex: slot.accountIndex,
-    amount: quantums.toString(),
-    nonce,
-    signature,
-  });
-
-  log.info("withdrawal submitted", {
-    slotId: slot.id,
-    accountIndex: slot.accountIndex,
-    amount: withdraw.toString(),
-    withdrawalId: result.withdrawalId,
-  });
-  return { withdrawalId: result.withdrawalId, amount: withdraw };
-}
-
-/**
- * Wait for a withdrawal's terminal state on the transfer feed. Returns the
- * applied amount in base units; throws on a rejection.
- */
-export async function waitForWithdrawal(
-  slot: SlotWithWallet,
-  withdrawalId: string,
-  since: Date,
-  timeoutMs = config.arcusCreditTimeoutMs,
-): Promise<bigint> {
-  const decimals = await usdgDecimals();
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() < deadline) {
-    const updates = await getAccountTransferUpdates(slot.operatorWallet.address, slot.accountIndex, {
-      limit: 50,
-      from: toMicros(since),
-    });
-    const match = updates.find((update) => update.type === "WITHDRAWAL" && update.id === withdrawalId);
-    if (match?.status === "APPLIED") return toBaseUnits(match.amount, decimals);
-    if (match && match.status.startsWith("REJECTED")) {
-      throw new Error(`Withdrawal ${withdrawalId} rejected: ${match.rejectReason ?? match.status}`);
-    }
-    await sleep(config.depositPollIntervalMs);
-  }
-
-  throw new Error(`Withdrawal ${withdrawalId} not applied within ${Math.round(timeoutMs / 1000)}s`);
-}
-
-export { dollarsToQuantums };

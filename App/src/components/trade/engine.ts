@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FREE_MARGIN, INFO_MIN_WIDTH, SYMS, cat, type Position, type Side } from "./data";
+import { useMarkets } from "@/lib/markets";
+import { FREE_MARGIN, INFO_MIN_WIDTH, cat, syms, type Position, type Side } from "./data";
 
 export type Candle = { o: number; c: number; h: number; l: number; v: number };
 export type Tape = { p: number; s: number; buy: boolean; t: string };
@@ -21,6 +22,9 @@ export type TradeState = {
   lev: number;
   size: number;
   limit: string | null;
+  /** Optional stop loss / take profit, human prices: the defaults for everyone who buys in. */
+  sl: string;
+  tp: string;
   tf: string;
   range: string;
   tab: "book" | "trades";
@@ -45,6 +49,8 @@ export type TradeState = {
   uid: number;
   mintFor: number | null;
   mintName: string;
+  /** Brief note under the leverage slider, e.g. after a clamp. */
+  levNote: string;
 };
 
 const INITIAL: TradeState = {
@@ -56,6 +62,8 @@ const INITIAL: TradeState = {
   lev: 5,
   size: 2500,
   limit: null,
+  sl: "",
+  tp: "",
   tf: "15m",
   range: "1m",
   tab: "book",
@@ -83,6 +91,7 @@ const INITIAL: TradeState = {
   uid: 2,
   mintFor: null,
   mintName: "",
+  levNote: "",
 };
 
 /** 64 bars of a sine-plus-noise walk starting 3.8% below the base price. */
@@ -165,6 +174,22 @@ export const liqOf = (mark: number, side: Side, lev: number) =>
 
 export const defaultAlias = (p: Position) => `${p.sym} ${p.side} ${p.lev}×`;
 
+/**
+ * The contract's rule for the creator's SL/TP, checked against the entry
+ * estimate: a long's stop loss below and take profit above, a short's the
+ * other way round. Blank means none.
+ */
+export function triggerProblem(side: Side, sl: string, tp: string, mark: number | undefined): string | null {
+  const valid = (v: string) => /^\d+(\.\d+)?$/.test(v);
+  if (sl && !valid(sl)) return "Stop loss must be a price";
+  if (tp && !valid(tp)) return "Take profit must be a price";
+  if (!mark) return null;
+  const long = side === "long";
+  if (sl && (long ? Number(sl) >= mark : Number(sl) <= mark)) return `Stop loss must be ${long ? "below" : "above"} the entry`;
+  if (tp && (long ? Number(tp) <= mark : Number(tp) >= mark)) return `Take profit must be ${long ? "above" : "below"} the entry`;
+  return null;
+}
+
 export function aliasTicker(p: Position, name: string) {
   const trimmed = (name || "").trim();
   const base = trimmed ? trimmed.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6) : p.sym;
@@ -176,6 +201,7 @@ export function useTradeEngine(liveTicks = true) {
   const hostEl = useRef<HTMLDivElement | null>(null);
   const fillTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const levNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const set = useCallback(<K extends keyof TradeState>(k: K, v: TradeState[K]) => {
     setSt((s) => ({ ...s, [k]: v }));
@@ -194,21 +220,42 @@ export function useTradeEngine(liveTicks = true) {
     [measure],
   );
 
-  // seed every market once on the client — `genCandles` is random, so running
-  // it during render would break hydration
+  // Live markets from `GET /markets`; re-renders the whole screen on refresh.
+  const markets = useMarkets();
+  // Symbols whose series were generated from a live Arcus mark (rather than
+  // the design's placeholder base) — each is seeded once, then walks.
+  const liveSeeded = useRef(new Set<string>());
+
+  // seed every market on the client — `genCandles` is random, so running it
+  // during render would break hydration. Re-runs as the live list arrives, so
+  // new markets get a series and the design's placeholders are replaced by
+  // real prices.
   useEffect(() => {
-    const candles: Record<string, Candle[]> = {};
-    const tapes: Record<string, Tape[]> = {};
-    const px: Record<string, number> = {};
-    SYMS.forEach((sym) => {
-      const b = cat(sym).base;
-      px[sym] = b;
-      candles[sym] = genCandles(b);
-      tapes[sym] = genTape(b);
+    setSt((s) => {
+      const candles = { ...s.candles };
+      const tapes = { ...s.tapes };
+      const px = { ...s.px };
+      let changed = !s.seeded;
+      syms().forEach((sym) => {
+        const live = !!cat(sym).live;
+        if (candles[sym] && (!live || liveSeeded.current.has(sym))) {
+          // already seeded: pull the simulated walk back to Arcus's mark
+          if (live) {
+            px[sym] = cat(sym).base;
+            changed = true;
+          }
+          return;
+        }
+        if (live) liveSeeded.current.add(sym);
+        const b = cat(sym).base;
+        px[sym] = b;
+        candles[sym] = genCandles(b);
+        tapes[sym] = genTape(b);
+        changed = true;
+      });
+      return changed ? { ...s, candles, tapes, px, now: Date.now(), seeded: true } : s;
     });
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- the series are random, so generating them during render would break hydration
-    setSt((s) => ({ ...s, candles, tapes, px, now: Date.now(), seeded: true }));
-  }, []);
+  }, [markets]);
 
   useEffect(() => {
     measure();
@@ -237,7 +284,7 @@ export function useTradeEngine(liveTicks = true) {
         const px = { ...s.px };
         const candles = { ...s.candles };
         const tapes = { ...s.tapes };
-        SYMS.forEach((m) => {
+        Object.keys(px).forEach((m) => {
           if (px[m] == null) return;
           const drift = (Math.random() - 0.48) * px[m] * 0.0016;
           px[m] = Math.max(px[m] * 0.5, px[m] + drift);
@@ -267,6 +314,7 @@ export function useTradeEngine(liveTicks = true) {
     () => () => {
       if (fillTimer.current) clearTimeout(fillTimer.current);
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
+      if (levNoteTimer.current) clearTimeout(levNoteTimer.current);
     },
     [],
   );
@@ -281,6 +329,7 @@ export function useTradeEngine(liveTicks = true) {
     let started = false;
     setSt((s) => {
       if (s.stage !== "idle") return s;
+      if (triggerProblem(s.side, s.sl, s.tp, s.px[s.market])) return s;
       started = true;
       return { ...s, stage: "filling" };
     });
@@ -349,8 +398,26 @@ export function useTradeEngine(liveTicks = true) {
     }));
   }, []);
 
+  /** Switching market clamps leverage to its limit, and says so. */
   const pickMarket = useCallback((sym: string) => {
-    setSt((s) => ({ ...s, market: sym, mktMenu: false, mq: "", lev: Math.min(s.lev, cat(sym).lev) }));
+    const m = cat(sym);
+    let clamped = false;
+    setSt((s) => {
+      clamped = s.lev > m.lev;
+      return {
+        ...s,
+        market: sym,
+        mktMenu: false,
+        mq: "",
+        lev: Math.min(s.lev, m.lev),
+        levNote: clamped ? `Max leverage for ${m.displaySymbol} is ${m.lev}×` : "",
+      };
+    });
+    queueMicrotask(() => {
+      if (!clamped) return;
+      if (levNoteTimer.current) clearTimeout(levNoteTimer.current);
+      levNoteTimer.current = setTimeout(() => setSt((s) => ({ ...s, levNote: "" })), 3200);
+    });
   }, []);
 
   /** Leverage is clamped to the active market's cap. */

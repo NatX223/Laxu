@@ -207,10 +207,15 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
      * liquidation during a staleness window trades a small risk (acting on a slightly-old price)
      * for a much bigger one (bad debt accumulating unchecked while liquidation sits frozen);
      * liquidating on last-known data is safer than refusing to liquidate at all.
+     *
+     * A closed position's value is final, so staleness no longer applies -- and must not, since
+     * reports stop at close: without the exemption this would fail permanently seven minutes later,
+     * and borrowers could never withdraw their collateral to claim.
      */
     modifier freshOracle() {
+        IPositionToken t = IPositionToken(collateralToken);
         require(
-            block.timestamp - IPositionToken(collateralToken).lastReportTimestamp() <= MAX_REPORT_AGE,
+            t.closed() || block.timestamp - t.lastReportTimestamp() <= MAX_REPORT_AGE,
             "LendingPool: stale oracle data"
         );
         _;
@@ -258,6 +263,7 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
      * misrepresented value turns into real new debt.
      */
     function borrow(uint256 amount) external nonReentrant freshOracle {
+        require(!IPositionToken(collateralToken).closed(), "LendingPool: position closed");
         require(amount > 0, "LendingPool: zero amount");
 
         _accrue(msg.sender);

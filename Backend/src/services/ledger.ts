@@ -5,7 +5,9 @@ import { createLogger } from "../lib/logger";
 
 const log = createLogger("ledger");
 
-export type LedgerType = "deposit" | "margin_add" | "margin_remove" | "close" | "cancel";
+/// `trigger_exit`: one SL/TP batch -- a single aggregate reduce-only order,
+/// then an executeTrigger per holder (services/triggers.ts).
+export type LedgerType = "deposit" | "margin_add" | "margin_remove" | "trigger_exit" | "close" | "cancel";
 export type ArcusStatus = "pending" | "confirmed" | "reversed" | "cancelled";
 
 /**
@@ -32,6 +34,8 @@ export async function recordPending(params: {
   logIndex?: number;
   arcusStatus?: ArcusStatus;
   note?: string;
+  /// The request event's raw amount (assets for a buy-in, shares for a redeem).
+  requestAmount?: string;
 }): Promise<LedgerEntry> {
   const entry = await db.ledgerEntry.create({
     data: {
@@ -44,6 +48,7 @@ export async function recordPending(params: {
       txHash: params.txHash?.toLowerCase(),
       logIndex: params.logIndex,
       note: params.note,
+      requestAmount: params.requestAmount,
     },
   });
   log.info("ledger pending", { id: entry.id, type: entry.type, amount: entry.amount });
@@ -52,7 +57,9 @@ export async function recordPending(params: {
 
 export async function markConfirmed(
   id: string,
-  extra: { arcusRequestId?: string; note?: string } = {},
+  /// The Arcus fill (size6 / price 1e18) is saved here so a restarted fulfil
+  /// settles with the real numbers.
+  extra: { arcusRequestId?: string; note?: string; filledSize?: string; fillPrice?: string } = {},
 ): Promise<LedgerEntry> {
   const entry = await db.ledgerEntry.update({
     where: { id },
@@ -111,7 +118,7 @@ export async function expectedMargin(positionId: string): Promise<bigint> {
   for (const entry of entries) {
     const amount = BigInt(entry.amount);
     if (entry.type === "deposit" || entry.type === "margin_add") total += amount;
-    else if (entry.type === "margin_remove" || entry.type === "close") total -= amount;
+    else if (entry.type === "margin_remove" || entry.type === "trigger_exit" || entry.type === "close") total -= amount;
   }
   return total;
 }

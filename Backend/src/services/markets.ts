@@ -2,21 +2,20 @@ import type { Market } from "@prisma/client";
 import { hexToString, stringToHex } from "viem";
 
 import { getMarkets } from "../arcus/client";
+import type { ArcusMarketInfo, ArcusTradingHours } from "../arcus/types";
 import { db } from "../config/db";
 import { badRequest, serviceUnavailable } from "../lib/errors";
-import { createLogger } from "../lib/logger";
-
-const log = createLogger("markets");
 
 /**
- * Laxu <-> Arcus market mapping.
+ * Laxu <-> Arcus market mapping. Rows are written by marketSync.ts from
+ * `GET /v1/markets`; this file reads them.
  *
  * This is not a display-name lookup. Order signing converts the human price and
  * size into the integer ticks and quantums that the Ed25519 payload is built
  * from, and those divisions must be exact against the market's `tickSize` and
- * `stepSize`. Without a resolved row here an order cannot be signed at all.
+ * `stepSize`. Without a row here an order cannot be signed at all.
  *
- * The bytes32 key is the Laxu symbol, right-padded -- exactly what
+ * The id is the base asset as bytes32, right-padded -- exactly what
  * PositionToken stores and what its `_bytes32ToString` renders back into the
  * token's name and symbol.
  */
@@ -29,49 +28,95 @@ export function bytes32ToSymbol(value: string): string {
   return hexToString(value as `0x${string}`, { size: 32 }).replace(/\0+$/, "");
 }
 
+/// The stable market id for an Arcus base asset. Lowercase hex, which is how
+/// positions and open requests store it.
+export function marketIdFor(baseAsset: string): string {
+  return symbolToBytes32(baseAsset.toUpperCase()).toLowerCase();
+}
+
+// ---------------------------------------------------------------------------
+// Leverage
+// ---------------------------------------------------------------------------
+
+/// LendingPool's risk tiers stop at 20x; anything above would silently fall
+/// into the 11-20x tier.
+export const LAXU_MAX_LEVERAGE = 20;
+
+type LeverageInputs = Pick<Market, "initialMarginFraction" | "offHoursInitialMarginFraction" | "isOutsideRth">;
+
+function leverageFor(imf: string): number {
+  const fraction = Number(imf);
+  // A missing or nonsensical fraction must never widen the limit.
+  if (!Number.isFinite(fraction) || fraction <= 0) return 1;
+  // +1e-9 guards float error: 1/0.04 is 24.999…
+  return Math.max(1, Math.min(LAXU_MAX_LEVERAGE, Math.floor(1 / fraction + 1e-9)));
+}
+
+/// Arcus's limit is 1 / initialMarginFraction, using the off-hours fraction
+/// while the market is outside its trading-hours window. Laxu caps it at 20x.
+export function maxLeverage(m: LeverageInputs): number {
+  return leverageFor(m.isOutsideRth ? m.offHoursInitialMarginFraction : m.initialMarginFraction);
+}
+
+export function leverageLimits(m: LeverageInputs): { now: number; inHours: number; offHours: number } {
+  return {
+    now: maxLeverage(m),
+    inHours: leverageFor(m.initialMarginFraction),
+    offHours: leverageFor(m.offHoursInitialMarginFraction),
+  };
+}
+
+/// The same inputs read straight off an Arcus response rather than a row.
+export function leverageInputsFrom(info: ArcusMarketInfo): LeverageInputs {
+  const initialMarginFraction = info.initialMarginFraction ?? "1";
+  return {
+    initialMarginFraction,
+    offHoursInitialMarginFraction: info.offHoursInitialMarginFraction ?? initialMarginFraction,
+    isOutsideRth: info.isOutsideRth ?? false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Lookups -- throw rather than return null: every caller is about to sign an
+// order or quote a market, and a missing one is not something to paper over.
+// ---------------------------------------------------------------------------
+
 export interface ResolvedMarket {
+  /// bytes32 id, lowercase hex.
   laxuMarket: string;
+  /// Base asset, e.g. "ETH".
   symbol: string;
   arcusMarketId: number;
+  /// Arcus display name, e.g. "ETH-USD".
   arcusDisplayName: string;
   tickSize: string;
   stepSize: string;
   minOrderSize: string;
   maxOrderSize: string;
-  maxLeverage: number | null;
+  minOrderNotional: string;
 }
 
-/// Throws rather than returning null: every caller here is about to sign an
-/// order, and a half-resolved market is not something to paper over.
 export async function requireMarket(laxuMarket: string): Promise<ResolvedMarket> {
-  const row = await db.market.findUnique({ where: { laxuMarket: laxuMarket.toLowerCase() } });
+  const row = await db.market.findUnique({ where: { id: laxuMarket.toLowerCase() } });
   if (!row) {
-    throw badRequest(
-      `Unknown market ${laxuMarket} (${safeSymbol(laxuMarket)}). Add it to the markets table and run the market refresh.`,
-      "UNKNOWN_MARKET",
-    );
+    throw badRequest(`Unknown market ${laxuMarket} (${safeSymbol(laxuMarket)})`, "UNKNOWN_MARKET");
   }
-  return assertResolved(row);
+  return assertOnline(row);
 }
 
-export async function requireMarketBySymbol(symbol: string): Promise<ResolvedMarket> {
-  const row = await db.market.findUnique({ where: { symbol: symbol.toUpperCase() } });
-  if (!row) {
-    throw badRequest(`Unknown market symbol ${symbol}`, "UNKNOWN_MARKET");
-  }
-  return assertResolved(row);
-}
-
-/// Accepts the Laxu symbol ("ETH") or the Arcus display name ("ETH-USD").
+/// Accepts the base asset ("ETH") or the Arcus display name ("ETH-USD"), any case.
 export async function requireMarketByName(name: string): Promise<ResolvedMarket> {
-  const upper = name.toUpperCase();
-  const row =
-    (await db.market.findUnique({ where: { symbol: upper } })) ??
-    (await db.market.findFirst({ where: { arcusDisplayName: upper } }));
-  if (!row) {
-    throw badRequest(`Unknown market ${name}`, "UNKNOWN_MARKET");
-  }
-  return assertResolved(row);
+  const row = await findMarketByName(name);
+  if (!row) throw badRequest(`Unknown market ${name}`, "UNKNOWN_MARKET");
+  return assertOnline(row);
+}
+
+export async function findMarketByName(name: string): Promise<Market | null> {
+  const upper = name.trim().toUpperCase();
+  return (
+    (await db.market.findUnique({ where: { displaySymbol: upper } })) ??
+    (await db.market.findUnique({ where: { baseAsset: upper } }))
+  );
 }
 
 function safeSymbol(laxuMarket: string): string {
@@ -82,115 +127,104 @@ function safeSymbol(laxuMarket: string): string {
   }
 }
 
-function assertResolved(row: Market): ResolvedMarket {
-  const missing: string[] = [];
-  if (row.arcusMarketId === null) missing.push("arcusMarketId");
-  if (!row.tickSize) missing.push("tickSize");
-  if (!row.stepSize) missing.push("stepSize");
-
-  if (missing.length > 0) {
-    throw serviceUnavailable(
-      `Market ${row.symbol} is not resolved against Arcus yet (missing ${missing.join(", ")}). Run refreshMarkets().`,
-      "MARKET_UNRESOLVED",
-    );
+function assertOnline(row: Market): ResolvedMarket {
+  if (row.status !== "ONLINE") {
+    throw serviceUnavailable(`${row.displaySymbol} is ${row.status} on Arcus`, "MARKET_OFFLINE");
   }
+  return toResolved(row);
+}
 
-  if (row.status === "OFFLINE") {
-    throw serviceUnavailable(`Market ${row.symbol} is OFFLINE on Arcus`, "MARKET_OFFLINE");
-  }
-
+function toResolved(row: Market): ResolvedMarket {
   return {
-    laxuMarket: row.laxuMarket,
-    symbol: row.symbol,
-    arcusMarketId: row.arcusMarketId as number,
-    arcusDisplayName: row.arcusDisplayName ?? row.symbol,
-    tickSize: row.tickSize as string,
-    stepSize: row.stepSize as string,
-    minOrderSize: row.minOrderSize ?? "0",
-    maxOrderSize: row.maxOrderSize ?? "0",
-    maxLeverage: row.maxLeverage,
+    laxuMarket: row.id,
+    symbol: row.baseAsset,
+    arcusMarketId: row.arcusMarketId,
+    arcusDisplayName: row.displaySymbol,
+    tickSize: row.tickSize,
+    stepSize: row.stepSize,
+    minOrderSize: row.minOrderSize,
+    maxOrderSize: row.maxOrderSize,
+    minOrderNotional: row.minOrderNotional,
   };
 }
 
-/**
- * Pull `GET /v1/markets` and fill in the Arcus side of every row.
- *
- * Matching is by `arcusDisplayName` when the row already names one, otherwise by
- * `<SYMBOL>-USD`, which is how Arcus names its USD-quoted perps. Rows that find
- * no counterpart are left `UNRESOLVED` and reported rather than dropped -- a
- * silently missing market would surface as a signing failure much later.
- */
-export async function refreshMarkets(): Promise<{
-  resolved: number;
-  unresolved: string[];
-}> {
-  const rows = await db.market.findMany();
-  if (rows.length === 0) {
-    log.warn("markets table is empty; nothing to refresh (run the seed first)");
-    return { resolved: 0, unresolved: [] };
-  }
+// ---------------------------------------------------------------------------
+// Public listing
+// ---------------------------------------------------------------------------
 
-  const remote = await getMarkets();
-  const byName = new Map(remote.map((m) => [m.marketDisplayName.toUpperCase(), m]));
-  const byId = new Map(remote.map((m) => [m.marketId, m]));
-
-  const unresolved: string[] = [];
-  let resolved = 0;
-
-  for (const row of rows) {
-    const match =
-      (row.arcusMarketId !== null ? byId.get(row.arcusMarketId) : undefined) ??
-      (row.arcusDisplayName ? byName.get(row.arcusDisplayName.toUpperCase()) : undefined) ??
-      byName.get(`${row.symbol.toUpperCase()}-USD`);
-
-    if (!match) {
-      unresolved.push(row.symbol);
-      await db.market.update({
-        where: { laxuMarket: row.laxuMarket },
-        data: { status: "UNRESOLVED", refreshedAt: new Date() },
-      });
-      continue;
-    }
-
-    await db.market.update({
-      where: { laxuMarket: row.laxuMarket },
-      data: {
-        arcusMarketId: match.marketId,
-        arcusDisplayName: match.marketDisplayName,
-        tickSize: match.tickSize,
-        stepSize: match.stepSize,
-        minOrderSize: match.minOrderSize,
-        maxOrderSize: match.maxOrderSize,
-        status: match.status ?? "ONLINE",
-        maxLeverage:
-          match.maxLeverage !== undefined ? Math.floor(Number(match.maxLeverage)) : row.maxLeverage,
-        refreshedAt: new Date(),
-      },
-    });
-    resolved += 1;
-  }
-
-  log.info("markets refreshed", { resolved, unresolved });
-  if (unresolved.length > 0) {
-    log.warn("markets with no Arcus counterpart", { symbols: unresolved });
-  }
-
-  return { resolved, unresolved };
+export async function listMarkets({ all = false } = {}): Promise<Market[]> {
+  return db.market.findMany({
+    where: all ? undefined : { status: "ONLINE" },
+    orderBy: [{ assetClass: "asc" }, { displaySymbol: "asc" }],
+  });
 }
 
-export async function listMarkets(): Promise<Market[]> {
-  return db.market.findMany({ orderBy: { symbol: "asc" } });
+/// Seconds-of-day -> "HH:MM".
+function clock(secondsOfDay: number): string {
+  const minutes = Math.floor(secondsOfDay / 60) % (24 * 60);
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+export function tradingHoursOf(
+  raw: unknown,
+): { start: string; end: string; timezone: string } | null {
+  const hours = raw as ArcusTradingHours | null | undefined;
+  if (!hours || typeof hours.startSecondsOfDay !== "number" || typeof hours.endSecondsOfDay !== "number") {
+    return null;
+  }
+  return { start: clock(hours.startSecondsOfDay), end: clock(hours.endSecondsOfDay), timezone: hours.timezone };
+}
+
+export function serialiseMarket(market: Market) {
+  const limits = leverageLimits(market);
+  return {
+    id: market.id,
+    displaySymbol: market.displaySymbol,
+    baseAsset: market.baseAsset,
+    fullAssetName: market.fullAssetName,
+    assetClass: market.assetClass,
+    status: market.status,
+    logoUrl: market.logoUrl,
+    markPrice: market.markPrice,
+    priceChange24h: market.priceChange24h,
+    /// The limit right now; the other two drive the frontend's hours hint.
+    maxLeverage: limits.now,
+    maxLeverageInHours: limits.inHours,
+    maxLeverageOffHours: limits.offHours,
+    isOutsideRth: market.isOutsideRth,
+    tradingHours: tradingHoursOf(market.regularTradingHours),
+    stepSize: market.stepSize,
+    minOrderSize: market.minOrderSize,
+    minOrderNotional: market.minOrderNotional,
+    syncedAt: market.syncedAt.toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Fresh Arcus reads -- for anything that decides whether money moves, never
+// the (up to a minute old) row.
+// ---------------------------------------------------------------------------
+
+export async function liveMarketInfo(market: Pick<ResolvedMarket, "arcusMarketId" | "arcusDisplayName">): Promise<ArcusMarketInfo> {
+  const [info] = await getMarkets(String(market.arcusMarketId));
+  if (!info || info.marketId !== market.arcusMarketId) {
+    throw serviceUnavailable(`Arcus returned no data for ${market.arcusDisplayName}`, "MARKET_UNAVAILABLE");
+  }
+  return info;
+}
+
+/// Mark, falling back to oracle before the first trade. Null when Arcus has neither.
+export function markOf(info: ArcusMarketInfo): string | null {
+  if (info.markPrice && info.markPrice !== "0") return info.markPrice;
+  if (info.oraclePrice && info.oraclePrice !== "0") return info.oraclePrice;
+  return null;
 }
 
 /// Current mark, used for the protective slippage bound on a MARKET order.
 export async function markPriceFor(market: ResolvedMarket): Promise<string> {
-  const [info] = await getMarkets(String(market.arcusMarketId));
-  const price = info?.markPrice && info.markPrice !== "0" ? info.markPrice : info?.oraclePrice;
-  if (!price || price === "0") {
-    throw serviceUnavailable(
-      `Arcus has no mark price for ${market.arcusDisplayName} yet`,
-      "NO_MARK_PRICE",
-    );
+  const price = markOf(await liveMarketInfo(market));
+  if (!price) {
+    throw serviceUnavailable(`Arcus has no mark price for ${market.arcusDisplayName} yet`, "NO_MARK_PRICE");
   }
   return price;
 }

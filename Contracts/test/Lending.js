@@ -69,7 +69,9 @@ async function deployLendingFixture({ leverage = RISK_TIERS.low.leverage } = {})
     INITIAL_DEPOSIT,
     ethers.encodeBytes32String("arcus-1"),
     usdg.target,
-    arcusOperator.address
+    arcusOperator.address,
+    0n,
+    0n
   );
 
   // --- liquidity: the shared vault ---
@@ -637,6 +639,23 @@ describe("LendingPool oracle freshness", function () {
 
     const debt = await pool.currentDebt(borrower.address);
     await pool.connect(liquidator).liquidate(borrower.address, debt / 2n); // does not revert
+  });
+
+  it("exempts a closed position: repay + withdrawCollateral work long after close, borrow does not", async function () {
+    const { pool, positionToken, arcusOperator, borrower } = await deployLendingFixture();
+
+    await pool.connect(borrower).depositCollateral(INITIAL_DEPOSIT);
+    await pool.connect(borrower).borrow(10n * PRICE_SCALE);
+    await positionToken.connect(arcusOperator).close(ENTRY_PRICE, 0n, true);
+    await time.increase(Number(MAX_REPORT_AGE) + 60);
+
+    await expect(pool.connect(borrower).borrow(1n * PRICE_SCALE)).to.be.revertedWith(
+      "LendingPool: position closed"
+    );
+
+    await pool.connect(borrower).repay(ethers.MaxUint256);
+    await pool.connect(borrower).withdrawCollateral(INITIAL_DEPOSIT);
+    expect(await positionToken.balanceOf(borrower.address)).to.equal(INITIAL_DEPOSIT);
   });
 
   it("does NOT block healthFactor() on stale data -- liquidate() depends on it staying callable", async function () {

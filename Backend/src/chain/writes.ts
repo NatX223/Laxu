@@ -21,7 +21,6 @@ import {
   type DirectionName,
 } from "./abi";
 import {
-  PRICE_SCALE,
   depositProxyAddress,
   factoryAddress,
   lendingPoolFactoryAddress,
@@ -83,9 +82,12 @@ export interface CreatePositionArgs {
   /// What Arcus credited, USDG base units.
   initialDeposit: bigint;
   arcusOrderId: string;
+  /// The creator's SL/TP -- defaults for every holder. 1e18; 0n = none.
+  defaultStopLoss: bigint;
+  defaultTakeProfit: bigint;
 }
 
-/// PositionTokenFactory.createPosition -- the 8-argument signature. Mints the
+/// PositionTokenFactory.createPosition -- the 10-argument signature. Mints the
 /// whole initial supply to `creator`.
 export async function createPosition(
   args: CreatePositionArgs,
@@ -103,6 +105,8 @@ export async function createPosition(
       args.size,
       args.initialDeposit,
       arcusPositionIdFor(args.arcusOrderId),
+      args.defaultStopLoss,
+      args.defaultTakeProfit,
     ],
   });
 
@@ -183,7 +187,16 @@ export async function ensureLendingPool(positionToken: Address): Promise<Address
 
 async function operatorWrite(
   address: Address,
-  functionName: "fulfillDepositRequest" | "fulfillRedeemRequest" | "close" | "applyReport",
+  functionName:
+    | "fulfillDepositRequest"
+    | "fulfillRedeemRequest"
+    | "close"
+    | "applyReport"
+    | "settle"
+    | "claimFor"
+    | "recoverExcess"
+    | "executeTrigger"
+    | "retireDefaultTriggers",
   args: readonly unknown[],
 ): Promise<Hash> {
   const { txHash } = await send(operatorWallet(), functionName, {
@@ -208,25 +221,32 @@ async function operatorWrite(
 export async function fulfillDepositRequest(params: {
   positionToken: Address;
   controller: Address;
-  /// NAV per share, PRICE_SCALE fixed point.
-  fulfillmentPrice: bigint;
+  /// The Arcus fill that grew the position, size6. 0 = added as margin only.
+  addedSize: bigint;
+  /// Its price, 1e18. 0 when addedSize is 0.
+  fillPrice: bigint;
 }): Promise<Hash> {
+  // The contract prices the shares itself at navPerShare() -- no price passed.
   return operatorWrite(params.positionToken, "fulfillDepositRequest", [
     0n,
     params.controller,
-    params.fulfillmentPrice,
+    params.addedSize,
+    params.fillPrice,
   ]);
 }
 
 export async function fulfillRedeemRequest(params: {
   positionToken: Address;
   controller: Address;
-  fulfillmentPrice: bigint;
+  /// The reduce-only fill on Arcus, size6. 0 = paid from the buffer only.
+  closedSize: bigint;
+  fillPrice: bigint;
 }): Promise<Hash> {
   return operatorWrite(params.positionToken, "fulfillRedeemRequest", [
     0n,
     params.controller,
-    params.fulfillmentPrice,
+    params.closedSize,
+    params.fillPrice,
   ]);
 }
 
@@ -235,6 +255,24 @@ export async function fulfillRedeemRequest(params: {
 export function isNoPendingRevert(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /no pending (deposit|redeem)/i.test(message);
+}
+
+/// Exits one holder whose own SL/TP is breached at the stored mark, paying
+/// `balanceOf(holder) x navPerShare()`. The token must already hold the payout
+/// on top of pending buy-ins, or this reverts "insufficient assets".
+export async function executeTrigger(params: {
+  positionToken: Address;
+  holder: Address;
+  /// This holder's slice of the aggregate reduce-only fill, size6.
+  closedSize: bigint;
+  fillPrice: bigint;
+}): Promise<Hash> {
+  return operatorWrite(params.positionToken, "executeTrigger", [params.holder, params.closedSize, params.fillPrice]);
+}
+
+/// Only succeeds while a default level is breached at the stored mark.
+export async function retireDefaultTriggers(positionToken: Address): Promise<Hash> {
+  return operatorWrite(positionToken, "retireDefaultTriggers", []);
 }
 
 /// Normal closes need the creator's on-chain requestClose() first; the
@@ -252,6 +290,24 @@ export async function closePosition(params: {
     params.finalFunding,
     params.wasLiquidated,
   ]);
+}
+
+/// Records the USDG actually recovered from Arcus. The token must already hold
+/// `assets` on top of any pending buy-ins, or this reverts "settlement not funded".
+export async function settle(positionToken: Address, assets: bigint): Promise<Hash> {
+  return operatorWrite(positionToken, "settle", [assets]);
+}
+
+/// Pushes a settled holder's payout to them. The operator pays the gas; the
+/// USDG always goes to `holder`. Reverts for contract addresses.
+export async function claimFor(positionToken: Address, holder: Address): Promise<Hash> {
+  return operatorWrite(positionToken, "claimFor", [holder]);
+}
+
+/// Returns the backend's float -- whatever the settled token holds beyond
+/// unclaimed payouts and pending buy-in refunds -- to `to`.
+export async function recoverExcess(positionToken: Address, to: Address): Promise<Hash> {
+  return operatorWrite(positionToken, "recoverExcess", [to]);
 }
 
 /// Pushes a new mark price/funding onto a live position. Gated to `arcusOperator`
@@ -277,23 +333,56 @@ export async function applyReport(params: {
 // Reads used by the fulfilment flows
 // ---------------------------------------------------------------------------
 
-/**
- * NAV per share in PRICE_SCALE fixed point -- the `fulfillmentPrice` both
- * fulfil calls take: `totalAssets() * 1e18 / totalSupply()`. Shares and USDG
- * share decimals (no ERC-4626 offset), so this is USDG per whole share at 1e18.
- */
+/// The contract's own NAV per share, PRICE_SCALE fixed point -- exactly the
+/// price the fulfil functions settle at.
 export async function navPerShare(positionToken: Address): Promise<bigint> {
+  return (await publicClient().readContract({
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "navPerShare",
+  })) as bigint;
+}
+
+export interface OnChainPositionState {
+  size: bigint;
+  entryPrice: bigint;
+  markPrice: bigint;
+  capital: bigint;
+  fundingAccrued: bigint;
+  fundingSettled: bigint;
+  totalAssets: bigint;
+  totalSupply: bigint;
+  closed: boolean;
+}
+
+/// Everything the buy-in/redeem sizing and the stats job read, in one go.
+export async function readPositionState(positionToken: Address): Promise<OnChainPositionState> {
   const client = publicClient();
-  const [assets, supply] = await Promise.all([
-    client.readContract({ address: positionToken, abi: positionTokenAbi, functionName: "totalAssets" }) as Promise<bigint>,
-    client.readContract({ address: positionToken, abi: positionTokenAbi, functionName: "totalSupply" }) as Promise<bigint>,
-  ]);
-  if (supply === 0n) throw new Error(`${positionToken} has zero supply; no NAV per share`);
-  const nav = (assets * PRICE_SCALE) / supply;
-  if (nav === 0n) {
-    throw new Error(`NAV per share on ${positionToken} is zero; refusing to fulfil at price 0`);
-  }
-  return nav;
+  const read = <T>(functionName: string) =>
+    client.readContract({ address: positionToken, abi: positionTokenAbi, functionName } as never) as Promise<T>;
+  const [size, entryPrice, markPrice, capital, fundingAccrued, fundingSettled, totalAssets, supply, closed] =
+    await Promise.all([
+      read<bigint>("size"),
+      read<bigint>("entryPrice"),
+      read<bigint>("markPrice"),
+      read<bigint>("capital"),
+      read<bigint>("fundingAccrued"),
+      read<bigint>("fundingSettled"),
+      read<bigint>("totalAssets"),
+      read<bigint>("totalSupply"),
+      read<boolean>("closed"),
+    ]);
+  return { size, entryPrice, markPrice, capital, fundingAccrued, fundingSettled, totalAssets, totalSupply: supply, closed };
+}
+
+/// USDG sitting in the token for buyers whose requests are still pending --
+/// theirs to take back on cancel, so never usable for a redeem payout.
+export async function totalPendingDepositAssets(positionToken: Address): Promise<bigint> {
+  return (await publicClient().readContract({
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "totalPendingDepositAssets",
+  })) as bigint;
 }
 
 export async function pendingDeposit(positionToken: Address, controller: Address): Promise<bigint> {
@@ -333,6 +422,34 @@ export async function isClosed(positionToken: Address): Promise<boolean> {
     abi: positionTokenAbi,
     functionName: "closed",
   })) as boolean;
+}
+
+export async function readSettlement(
+  positionToken: Address,
+): Promise<{ settled: boolean; settlementAssets: bigint; claimedAssets: bigint }> {
+  const read = <T>(functionName: string) =>
+    publicClient().readContract({ address: positionToken, abi: positionTokenAbi, functionName } as never) as Promise<T>;
+  const [settled, settlementAssets, claimedAssets] = await Promise.all([
+    read<boolean>("settled"),
+    read<bigint>("settlementAssets"),
+    read<bigint>("claimedAssets"),
+  ]);
+  return { settled, settlementAssets, claimedAssets };
+}
+
+export async function shareBalanceOf(positionToken: Address, holder: Address): Promise<bigint> {
+  return (await publicClient().readContract({
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "balanceOf",
+    args: [holder],
+  })) as bigint;
+}
+
+/// True for an address with deployed code -- `claimFor` refuses those.
+export async function isContract(address: Address): Promise<boolean> {
+  const code = await publicClient().getCode({ address });
+  return code !== undefined && code !== "0x";
 }
 
 export async function totalSupply(positionToken: Address): Promise<bigint> {
@@ -535,6 +652,16 @@ export async function liquidate(
  * PositionToken for `RedeemRequested`, so this call alone is what puts the
  * request in front of the existing margin-remove orchestration.
  */
+/// Seized shares of a settled position: take the payout directly.
+export async function claimAsLiquidator(positionToken: Address): Promise<Hash> {
+  const { txHash } = await send(liquidatorWallet(), "claim (liquidator)", {
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "claim",
+  });
+  return txHash;
+}
+
 export async function requestRedeemAsLiquidator(
   positionToken: Address,
   shares: bigint,

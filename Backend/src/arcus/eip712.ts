@@ -16,16 +16,16 @@ export interface RsvSignature {
 }
 
 function domain(name: "Arcus Transfer" | "Arcus Withdraw") {
-  if (!config.arcusBridgeVault || !config.arcusRootChainId) {
+  if (!config.arcusBridgeVaultAddress || !config.arcusChainId) {
     throw new Error(
-      "Arcus EIP-712 signing needs ARCUS_BRIDGE_VAULT and ARCUS_ROOT_CHAIN_ID (see the Arcus withdraw docs)",
+      "Arcus EIP-712 signing needs ARCUS_BRIDGE_VAULT_ADDRESS and ARCUS_CHAIN_ID (see the Arcus withdraw docs)",
     );
   }
   return {
     name,
     version: "1",
-    chainId: config.arcusRootChainId,
-    verifyingContract: config.arcusBridgeVault as `0x${string}`,
+    chainId: config.arcusChainId,
+    verifyingContract: config.arcusBridgeVaultAddress as `0x${string}`,
   };
 }
 

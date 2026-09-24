@@ -56,6 +56,9 @@ contract PositionTokenFactory is Ownable {
      * entry price, size, and arcusPositionId come from that confirmation, not from an arbitrary
      * caller's say-so. Practical consequence: the backend pays gas for every position creation,
      * not the end user.
+     *
+     * `defaultStopLoss` / `defaultTakeProfit` are the creator's SL/TP (PRICE_SCALE prices of the
+     * underlying, 0 = none): the defaults for every holder who doesn't set their own.
      */
     function createPosition(
         address creator,
@@ -65,7 +68,9 @@ contract PositionTokenFactory is Ownable {
         uint256 entryPrice,
         uint256 size,
         uint256 initialDeposit,
-        bytes32 arcusPositionId
+        bytes32 arcusPositionId,
+        uint256 defaultStopLoss,
+        uint256 defaultTakeProfit
     ) external returns (address positionToken) {
         require(msg.sender == deployer, "not deployer");
 
@@ -81,7 +86,9 @@ contract PositionTokenFactory is Ownable {
             initialDeposit,
             arcusPositionId,
             usdg,
-            deployer // passed through -- becomes `arcusOperator` on the receiving side
+            deployer, // passed through -- becomes `arcusOperator` on the receiving side
+            defaultStopLoss,
+            defaultTakeProfit
         );
 
         allPositions.push(positionToken);

@@ -14,12 +14,23 @@ export interface ArcusCredentials {
   secret: string;
 }
 
+export interface ArcusTradingHours {
+  startSecondsOfDay: number;
+  endSecondsOfDay: number;
+  /// IANA zone, e.g. "America/New_York".
+  timezone: string;
+  isOvernight?: boolean;
+}
+
 export interface ArcusMarketInfo {
   marketId: number;
   marketDisplayName: string;
+  fullAssetName?: string;
   status: string;
   baseAsset: string;
   quoteAsset: string;
+  /// CRYPTO | EQUITIES | COMMODITIES | INDICES
+  category?: string;
   tickSize: string;
   stepSize: string;
   minOrderSize: string;
@@ -27,7 +38,25 @@ export interface ArcusMarketInfo {
   minOrderNotional?: string;
   markPrice?: string;
   oraclePrice?: string;
-  maxLeverage?: string | number;
+  /// Fraction, e.g. "-0.0226".
+  priceChange24h?: string;
+  initialMarginFraction?: string;
+  /// Arcus's liquidation line, e.g. "0.0267".
+  maintenanceMarginFraction?: string;
+  /// Higher than initialMarginFraction for markets with trading hours; Arcus
+  /// applies it while `isOutsideRth` is true.
+  offHoursInitialMarginFraction?: string;
+  isOutsideRth?: boolean;
+  /// Null for 24/7 markets.
+  regularTradingHours?: ArcusTradingHours | null;
+}
+
+/// One record from `GET /v1/api-meta/markets`, keyed by ticker (the base
+/// asset, "TSM") -- not the display name.
+export interface ArcusMarketMeta {
+  ticker: string;
+  name?: string;
+  logo?: string | null;
 }
 
 export interface PlaceOrderParams {
@@ -82,8 +111,13 @@ export type AccountTransferType =
 
 export interface AccountTransferUpdate {
   type: AccountTransferType;
+  /// Absent on stream events, which are only emitted once applied.
   status: string;
+  /// REST carries `id`; stream events carry `eventId`. The stream normalises.
   id: string;
+  eventId?: string;
+  /// Present on WITHDRAWAL rows when Arcus echoes the submit's id.
+  withdrawalId?: string;
   /// Always positive; direction is conveyed by `type`.
   amount: string;
   netQuoteBalance: string;
@@ -110,10 +144,12 @@ export interface ArcusPosition {
   accountIndex: number;
   marketId: number;
   marketDisplayName: string;
-  side: OrderSide;
+  /// BUY/SELL on REST; LONG/SHORT (or FLAT once closed) on the stream.
+  side: OrderSide | "LONG" | "SHORT" | "FLAT";
   /// Human-readable base-asset units, unsigned.
   size: string;
   averageEntryPrice: string;
+  markPrice?: string;
   cumulativeFunding?: {
     allTime?: string;
     sinceOpen?: string;
@@ -135,10 +171,14 @@ export interface ArcusFill {
   marketId: number;
   marketDisplayName: string;
   side: OrderSide;
-  originalSize: string;
+  originalSize?: string;
+  /// REST and snapshots use `size` / `price`; live channel frames may carry
+  /// `fillSize` / `fillPrice` instead. The stream normalises onto size/price.
   size: string;
   price: string;
-  fee: string;
+  fillSize?: string;
+  fillPrice?: string;
+  fee?: string;
   closedPnl?: string;
   role: string;
   remainingSize?: string;
@@ -160,8 +200,35 @@ export interface ArcusOrderUpdate {
   rejectReason?: string;
 }
 
-export const TERMINAL_ORDER_STATUSES = new Set(["FILLED", "CANCELED", "CANCELLED", "REJECTED", "EXPIRED"]);
+/// GET /v1/order/{orderId}.
+export interface ArcusOrderStatus {
+  orderId: string;
+  clientId?: string;
+  status: string;
+  filledSize?: string;
+  remainingSize?: string;
+  avgFillPrice?: string;
+  cancelReason?: string;
+  rejectReason?: string;
+}
+
+export const TERMINAL_ORDER_STATUSES = new Set([
+  "FILLED",
+  "CANCELED",
+  "CANCELLED",
+  "MARGIN_CANCELED",
+  "REJECTED",
+  "EXPIRED",
+  "LIQUIDATED",
+  "ADL",
+  "ERROR",
+]);
 
 /// Arcus converts dollars to quote quantums at 1e9 = $1 on the wire formats
 /// that take quantums (EIP-712 transfer/withdraw messages).
 export const QUOTE_QUANTUMS_PER_DOLLAR = 1_000_000_000n;
+
+/// A position row's side is BUY/SELL on REST and LONG/SHORT on the stream.
+export function isLongSide(side: string): boolean {
+  return side === "BUY" || side === "LONG";
+}

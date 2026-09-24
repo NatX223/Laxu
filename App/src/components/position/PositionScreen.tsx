@@ -18,6 +18,7 @@ import LeverageView from "./LeverageView";
 import PositionHeader from "./PositionHeader";
 import Reactions from "./Reactions";
 import StateGrid from "./StateGrid";
+import TriggersPanel from "./TriggersPanel";
 import { usePositionEngine, type PositionProps } from "./engine";
 
 /**
@@ -46,9 +47,10 @@ export default function PositionScreen({
     ...props,
     ...(live && {
       nickname: live.nickname || undefined,
+      symbol: live.symbol || undefined,
       side: live.direction,
       leverage: live.leverage,
-      status: live.status === "closed" ? "Closed" : "Open",
+      status: live.status === "open" ? "Open" : "Closed",
       onBuy,
     }),
   });
@@ -92,8 +94,9 @@ export default function PositionScreen({
 
         <div style={{ display: "flex", flexDirection: "column", gap: 16, position: "sticky", top: 18 }}>
           {live && <HolderActions live={live} refreshKey={refreshKey} onDone={engine.flash} />}
-          {/* Buy-ins open only once the creator lists the position. */}
-          {(!live || live.listed) && <BuyPanel engine={engine} />}
+          {live && <TriggersPanel live={live} refreshKey={refreshKey} onDone={engine.flash} />}
+          {/* Buy-ins open only once the creator lists the position, and close with it. */}
+          {(!live || (live.listed && live.lifecycle === "open")) && <BuyPanel engine={engine} />}
           <HolderBase holders={vals.holdersList} />
         </div>
       </div>

@@ -17,7 +17,9 @@ interface IPositionToken {
         uint256 _initialDeposit,
         bytes32 _arcusPositionId,
         address _asset,
-        address _arcusOperator
+        address _arcusOperator,
+        uint256 _defaultStopLoss,
+        uint256 _defaultTakeProfit
     ) external;
 
     // -----------------------------------------------------------------------------------------
@@ -52,6 +54,11 @@ interface IPositionToken {
     /// @dev True once the underlying Arcus position has been settled; value is then frozen at
     /// `finalNavValue` rather than tracking a live mark.
     function closed() external view returns (bool);
+
+    /// @dev True once the USDG recovered from Arcus is recorded and holders can {claim}.
+    function settled() external view returns (bool);
+
+    function claim() external returns (uint256 assets);
 
     // -----------------------------------------------------------------------------------------
     // Price/funding reporting -- the surface the backend's scheduled reporting job calls.

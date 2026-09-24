@@ -109,6 +109,8 @@ export async function reconcileOnce(): Promise<ReconcileReport> {
       ],
       // Give an in-flight request room to finish before treating it as stuck.
       createdAt: { lt: new Date(Date.now() - config.reconcileIntervalMs) },
+      // Fulfils revert once closed; settlement.ts closes those rows out.
+      position: { status: "open" },
     },
     include: { position: true },
   });

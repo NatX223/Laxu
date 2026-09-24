@@ -6,9 +6,10 @@ import { authenticatedWallet, requireUser } from "../auth/privy";
 import { db } from "../config/db";
 import { asyncHandler } from "../lib/async";
 import { badRequest, forbidden, notFound } from "../lib/errors";
-import { getNavHistory, getPublicPosition } from "../services/navHistory";
+import { claimedBy, getNavHistory, getPublicPosition } from "../services/navHistory";
 import { getOpenRequest, reportPayment, requestOpenPosition } from "../services/openPosition";
 import { bytes32ToSymbol } from "../services/markets";
+import { discoverPositions, holderTriggers, leaderboard, positionDetail, topHolders } from "../services/discovery";
 
 export const positionsRouter = Router();
 
@@ -20,6 +21,10 @@ const openSchema = z.object({
   /// Human USDG as a decimal string ("500") -- never a JS number, which would
   /// lose precision and quietly change how much the user is committing.
   amount: z.string().regex(/^\d+(\.\d+)?$/, "amount must be a decimal string"),
+  /// The creator's stop loss / take profit, human prices ("1900"): the
+  /// defaults for every holder who buys in. Each holder can change their own.
+  stopLoss: z.string().regex(/^\d+(\.\d+)?$/, "stopLoss must be a decimal string").optional(),
+  takeProfit: z.string().regex(/^\d+(\.\d+)?$/, "takeProfit must be a decimal string").optional(),
 });
 
 /**
@@ -88,6 +93,8 @@ function serialiseOpenRequest(request: PositionOpenRequest) {
     direction: request.direction,
     leverage: request.leverage,
     amount: request.amount,
+    stopLoss: request.stopLoss,
+    takeProfit: request.takeProfit,
     creditedAmount: request.creditedAmount,
     paymentTxHash: request.paymentTxHash,
     positionTokenAddress: request.positionTokenAddress,
@@ -99,8 +106,9 @@ function serialiseOpenRequest(request: PositionOpenRequest) {
   };
 }
 
+/// The caller's own positions, with the ledger-level detail discovery omits.
 positionsRouter.get(
-  "/",
+  "/mine",
   requireUser,
   asyncHandler(async (req, res) => {
     const wallet = authenticatedWallet(req);
@@ -117,16 +125,30 @@ positionsRouter.get(
 // Public -- position pages and charts need no login.
 // ---------------------------------------------------------------------------
 
-/// Discovery: only positions their creator has listed for buy-ins.
+const discoveryQuery = z.object({
+  assetClass: z.enum(["CRYPTO", "EQUITIES", "COMMODITIES", "INDICES"]).optional(),
+  status: z.enum(["open", "at_risk", "closed"]).optional(),
+  sort: z.enum(["trending", "pnl", "holders", "newest"]).optional(),
+  q: z.string().max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: z.string().max(512).optional(),
+});
+
+/// Discovery grid: listed positions only. Values are human decimal strings.
 positionsRouter.get(
-  "/discover",
+  "/",
+  asyncHandler(async (req, res) => {
+    const query = discoveryQuery.safeParse(req.query);
+    if (!query.success) throw badRequest("Invalid query", "INVALID_REQUEST", query.error.issues);
+    res.json(await discoverPositions(query.data));
+  }),
+);
+
+/// Five cards each: top PnL (open >= 1h), most bought into, newest.
+positionsRouter.get(
+  "/leaderboard",
   asyncHandler(async (_req, res) => {
-    const positions = await db.position.findMany({
-      where: { listed: true, status: "open" },
-      orderBy: { openedAt: "desc" },
-      take: 200,
-    });
-    res.json({ positions: positions.map(serialise) });
+    res.json(await leaderboard());
   }),
 );
 
@@ -139,6 +161,17 @@ positionsRouter.get(
     const address = addressParam.safeParse(req.params.positionTokenAddress);
     if (!address.success) throw badRequest("Invalid position token address", "INVALID_ADDRESS");
     res.json(await getPublicPosition(address.data));
+  }),
+);
+
+/// What a holder has been paid out of a settled position so far.
+positionsRouter.get(
+  "/token/:positionTokenAddress/claims/:holder",
+  asyncHandler(async (req, res) => {
+    const address = addressParam.safeParse(req.params.positionTokenAddress);
+    const holder = addressParam.safeParse(req.params.holder);
+    if (!address.success || !holder.success) throw badRequest("Invalid address", "INVALID_ADDRESS");
+    res.json(await claimedBy(address.data, holder.data));
   }),
 );
 
@@ -155,6 +188,44 @@ positionsRouter.get(
     const query = navQuery.safeParse(req.query);
     if (!query.success) throw badRequest("Invalid query", "INVALID_REQUEST", query.error.issues);
     res.json(await getNavHistory(address.data, query.data.limit));
+  }),
+);
+
+/// Full position page by token address -- the card plus lifecycle, funding and
+/// capital. Unlisted positions are served too (the creator's own page). A
+/// non-address parameter falls through to the by-id route below.
+positionsRouter.get(
+  "/:address",
+  asyncHandler(async (req, res, next) => {
+    const address = addressParam.safeParse(req.params.address);
+    if (!address.success) return next();
+    res.json(await positionDetail(address.data));
+  }),
+);
+
+/// One holder's effective SL/TP on a position -- the position page's "Your SL /
+/// TP" panel, including for someone about to buy in (no balance yet).
+positionsRouter.get(
+  "/:address/triggers/:holder",
+  asyncHandler(async (req, res) => {
+    const address = addressParam.safeParse(req.params.address);
+    const holder = addressParam.safeParse(req.params.holder);
+    if (!address.success || !holder.success) throw badRequest("Invalid address", "INVALID_ADDRESS");
+    res.json(await holderTriggers(address.data, holder.data));
+  }),
+);
+
+const holdersQuery = z.object({ limit: z.coerce.number().int().min(1).max(100).optional() });
+
+/// Top holders, collateral posted to the LendingPool included.
+positionsRouter.get(
+  "/:address/holders",
+  asyncHandler(async (req, res) => {
+    const address = addressParam.safeParse(req.params.address);
+    if (!address.success) throw badRequest("Invalid position token address", "INVALID_ADDRESS");
+    const query = holdersQuery.safeParse(req.query);
+    if (!query.success) throw badRequest("Invalid query", "INVALID_REQUEST", query.error.issues);
+    res.json(await topHolders(address.data, query.data.limit ?? 10));
   }),
 );
 

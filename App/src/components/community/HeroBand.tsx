@@ -122,7 +122,7 @@ export default function HeroBand({ vals }: { vals: Derived }) {
                 backdropFilter: "blur(10px)",
               }}
             >
-              <Disc size={20} font={9.5} accent={t.accent} logo={t.logo} initial={t.initial} />
+              <Disc size={20} font={9.5} base={t.base} logo={t.logo} />
               <div style={{ fontFamily: MONO, fontSize: 11.5, color: "#fdfbf7", whiteSpace: "nowrap" }}>{t.sym}</div>
               <div style={{ fontFamily: MONO, fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap", color: t.c }}>
                 {t.chg}

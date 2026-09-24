@@ -44,6 +44,8 @@ export type ViewState = {
 /** The six knobs the prototype exposed in its props panel, already defaulted. */
 export type PositionConfig = {
   nickname: string;
+  /** underlying market's base asset, e.g. "ETH" */
+  symbol: string;
   status: Status;
   side: Side;
   leverage: number;
@@ -147,14 +149,14 @@ export function derive(series: Series, s: ViewState, cfg: PositionConfig) {
 
   return {
     nickname: cfg.nickname,
-    structuredName: "ETH " + side + " " + lev + "×",
-    ticker: "pETH" + (side === "long" ? "L" : "S") + lev,
+    structuredName: cfg.symbol + " " + side + " " + lev + "×",
+    ticker: "p" + cfg.symbol + (side === "long" ? "L" : "S") + lev,
     addr: "0x7f1ca3…3c2a",
     creator: "@sinewave",
     ageLabel: "opened 34d ago",
-    accent: "#8f7bff",
-    logo: "/laxu/logo-eth.png",
-    initial: "E",
+    /** picks the live market icon; the design's ETH logo stands in before it loads */
+    base: cfg.symbol,
+    logo: cfg.symbol === "ETH" ? "/laxu/logo-eth.png" : "",
 
     statusLabel: status.toUpperCase(),
     statusBg: isClosed

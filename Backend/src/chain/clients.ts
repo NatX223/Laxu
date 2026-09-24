@@ -12,6 +12,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 
 import { config } from "../config/env";
+import { USDG_DECIMALS } from "../lib/units";
 import { erc20Abi, positionTokenFactoryAbi } from "./abi";
 function chain() {
   return defineChain({
@@ -186,9 +187,12 @@ export async function usdgDecimals(): Promise<number> {
     functionName: "decimals",
   });
 
-  // Arcus's testnet USDG is 6 decimals. PositionToken computes pnl as
-  // `size * (mark - entry) / 1e18` in asset units, so prices go on-chain at
-  // PRICE_SCALE and `size` at the asset's own decimals -- see onChainSize().
+  // lib/units.ts fixes USDG, shares and size at 6 decimals -- the scale that
+  // makes PositionToken's `size * (mark - entry) / 1e18` land in USDG. A token
+  // with any other decimals would make every amount silently wrong, so refuse it.
+  if (Number(decimals) !== USDG_DECIMALS) {
+    throw new Error(`USDG at ${address} has ${decimals} decimals; lib/units.ts assumes ${USDG_DECIMALS}`);
+  }
   usdgDecimalsCache = Number(decimals);
   return usdgDecimalsCache;
 }

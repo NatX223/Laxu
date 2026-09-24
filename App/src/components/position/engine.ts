@@ -8,6 +8,8 @@ import { DEFAULT_REACTIONS, derive, type PositionConfig, type Reaction, type Vie
 export type PositionProps = {
   /** the creator's name for the position */
   nickname?: string;
+  /** underlying market's base asset, e.g. "ETH" */
+  symbol?: string;
   status?: Status;
   side?: Side;
   /** 2–20× */
@@ -32,18 +34,19 @@ const INITIAL: State = {
 };
 
 export function usePositionEngine(props: PositionProps) {
-  const { nickname, status, side, leverage, creatorFeeBps, collateralized, onBuy } = props;
+  const { nickname, symbol, status, side, leverage, creatorFeeBps, collateralized, onBuy } = props;
 
   const cfg = useMemo<PositionConfig>(
     () => ({
       nickname: nickname || "Lunar Ladder",
+      symbol: symbol || "ETH",
       status: status || "Open",
       side: side || "long",
       leverage: leverage ?? 5,
       creatorFeeBps: creatorFeeBps ?? 85,
       collateralized: collateralized ?? true,
     }),
-    [nickname, status, side, leverage, creatorFeeBps, collateralized],
+    [nickname, symbol, status, side, leverage, creatorFeeBps, collateralized],
   );
 
   // deterministic, so both sides of hydration replay the same reports

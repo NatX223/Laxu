@@ -32,6 +32,8 @@ export type Card = {
   rank: number;
   sym: string;
   title: string;
+  /** Underlying market's base asset — picks the live icon. */
+  base: string;
   initial: string;
   accent: string;
   logo: string;
@@ -60,6 +62,7 @@ export function card(t: Token, rank: number): Card {
     rank,
     sym: "p" + t.sym + (t.long ? "L" : "S") + t.lev,
     title: t.sym + " " + (t.long ? "long" : "short") + " " + t.lev + "×",
+    base: t.sym,
     initial: t.sym[0],
     accent: t.accent,
     logo: t.logo,
@@ -149,6 +152,7 @@ export function derive(
       .slice(0, 12)
       .map((t) => ({
         sym: "p" + t.sym + (t.long ? "L" : "S") + t.lev,
+        base: t.sym,
         initial: t.sym[0],
         accent: t.accent,
         logo: t.logo,

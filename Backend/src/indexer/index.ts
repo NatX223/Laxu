@@ -1,18 +1,20 @@
-import { parseAbiItem, type Address, type Log } from "viem";
+import { parseAbiItem, parseEventLogs, zeroAddress, type Address, type Log } from "viem";
 
 import { db } from "../config/db";
 import { config } from "../config/env";
-import { factoryAddress, lendingPoolFactoryAddress, publicClient } from "../chain/clients";
+import { PRICE_SCALE, factoryAddress, lendingPoolFactoryAddress, publicClient } from "../chain/clients";
 import {
   lendingPoolAbi,
   lendingPoolFactoryAbi,
   positionTokenAbi,
   positionTokenFactoryAbi,
 } from "../chain/abi";
+import { readPositionState } from "../chain/writes";
+import { fromPrice18 } from "../lib/units";
 import { startWorker } from "../lib/async";
 import { createLogger, errorFields } from "../lib/logger";
 import { cancelEntry, handleDepositRequested, handleRedeemRequested } from "../services/margin";
-import { executeClose } from "../services/closePosition";
+import { executeClose, settleEmptiedPosition } from "../services/closePosition";
 import { findEntryForLog, recordPending } from "../services/ledger";
 
 const log = createLogger("indexer");
@@ -45,13 +47,23 @@ const CHECKPOINT_ID = 1;
  *                         RedeemRequested            -> proportional reduce + margin remove (+ fulfil)
  *                         CloseRequested             -> executeClose
  *                         FundingUpdated             -> PositionReport row
- *                         PositionClosed             -> final NAV point + status backstop
+ *                         PositionClosed             -> provisional final NAV point + status backstop
+ *                         Settled                    -> final NAV point rewritten with the recovered USDG
+ *                         Claimed                    -> Flow claim
  *                         Listed                     -> positions.listed / nickname
  *                         DepositRequestCancelled /
  *                         RedeemRequestCancelled     -> ledger row cancelled, Arcus move undone
+ *                         Transfer                   -> Holding balances (re-read balanceOf)
+ *                         DepositFulfilled           -> Flow buy_in / top_up (+ Position mirror)
+ *                         RedeemFulfilled            -> Flow redeem (+ Position mirror)
+ *                         CreatorFeeCollected        -> BuyInFee, folded into its buy-in's feeAssets
+ *                         TriggersSet                -> HolderTrigger upsert (custom) / delete (defaults)
+ *                         TriggerExecuted            -> Flow trigger_exit; a fired personal trigger's row deleted
+ *                         DefaultTriggersRetired     -> positions.defaultsActive = false
  *   LendingPoolFactory    PoolCreated                -> watch the pool
- *   LendingPool           CollateralDeposited /
- *                         Borrowed                   -> liquidation bot's watch list
+ *   LendingPool           CollateralDeposited / CollateralWithdrawn /
+ *                         Borrowed / Repaid / Liquidated
+ *                                                    -> Borrower row; collateral and debt re-read
  *
  * `requestId` is always 0 on PositionToken, so request, close and cancel
  * events are deduped on the emitting log's (transactionHash, logIndex), stored
@@ -81,6 +93,26 @@ const depositCancelledEvent = parseAbiItem(
 const redeemCancelledEvent = parseAbiItem(
   "event RedeemRequestCancelled(address indexed controller, uint256 shares)",
 );
+/// Metrics (holders, flows, buy-in volume) -- see services/positionStats.ts.
+const transferEvent = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 value)");
+const depositFulfilledEvent = parseAbiItem(
+  "event DepositFulfilled(address indexed controller, uint256 assets, uint256 shares, uint256 navPerShare, uint256 addedSize, uint256 fillPrice)",
+);
+const redeemFulfilledEvent = parseAbiItem(
+  "event RedeemFulfilled(address indexed controller, uint256 shares, uint256 assets, uint256 navPerShare, uint256 closedSize, uint256 fillPrice)",
+);
+const creatorFeeEvent = parseAbiItem("event CreatorFeeCollected(uint256 amount)");
+/// Settlement: the USDG actually recovered from Arcus, then each holder's payout.
+const settledEvent = parseAbiItem("event Settled(uint256 assets, uint256 supply)");
+const claimedEvent = parseAbiItem("event Claimed(address indexed holder, uint256 shares, uint256 assets)");
+/// Per-holder stop loss / take profit -- see services/triggers.ts.
+const triggersSetEvent = parseAbiItem(
+  "event TriggersSet(address indexed holder, uint256 stopLoss, uint256 takeProfit, bool custom)",
+);
+const triggerExecutedEvent = parseAbiItem(
+  "event TriggerExecuted(address indexed holder, bool isStopLoss, bool usedDefault, uint256 shares, uint256 assets, uint256 markPrice)",
+);
+const defaultTriggersRetiredEvent = parseAbiItem("event DefaultTriggersRetired(uint256 markPrice)");
 
 /**
  * Lending-side liquidation bot's discovery surface -- same dual-source pattern
@@ -97,6 +129,11 @@ const collateralDepositedEvent = parseAbiItem(
   "event CollateralDeposited(address indexed user, uint256 shares)",
 );
 const borrowedEvent = parseAbiItem("event Borrowed(address indexed user, uint256 amount)");
+const collateralWithdrawnEvent = parseAbiItem("event CollateralWithdrawn(address indexed user, uint256 shares)");
+const repaidEvent = parseAbiItem("event Repaid(address indexed user, uint256 principal, uint256 interest)");
+const liquidatedEvent = parseAbiItem(
+  "event Liquidated(address indexed liquidator, address indexed borrower, uint256 repayAmount, uint256 seizedShares)",
+);
 
 type AnyLog = Log<bigint, number, false>;
 type EventKind =
@@ -107,8 +144,17 @@ type EventKind =
   | "closed"
   | "listed"
   | "depositCancelled"
-  | "redeemCancelled";
-type LendingEventKind = "collateral" | "borrowed";
+  | "redeemCancelled"
+  | "transfer"
+  | "depositFulfilled"
+  | "redeemFulfilled"
+  | "creatorFee"
+  | "settled"
+  | "claimed"
+  | "triggersSet"
+  | "triggerExecuted"
+  | "defaultsRetired";
+type LendingEventKind = "collateral" | "collateralWithdrawn" | "borrowed" | "repaid" | "liquidated";
 
 // ---------------------------------------------------------------------------
 // Checkpoint
@@ -244,6 +290,14 @@ async function handleCancelled(kind: "deposit" | "redeem", entry: AnyLog): Promi
   if (await findEntryForLog(key.txHash, key.logIndex)) return;
 
   const controller = args.controller.toLowerCase();
+  if (kind === "deposit") {
+    // The 2% fee is not refunded, but a cancelled request is not a buy-in:
+    // keep its fee out of buy-in volume.
+    await db.buyInFee.updateMany({
+      where: { positionId: position.id, controller, flowId: null, voided: false, blockNumber: { lte: key.blockNumber } },
+      data: { voided: true },
+    });
+  }
   const request = await db.ledgerEntry.findFirst({
     where: {
       positionId: position.id,
@@ -351,6 +405,242 @@ async function handleFunding(entry: AnyLog): Promise<void> {
     },
     update: {},
   });
+  // The mirror only moves forward: a backfilled older report must not
+  // overwrite a newer one.
+  const latest = await db.positionReport.findFirst({
+    where: { positionId: position.id },
+    orderBy: { timestamp: "desc" },
+    select: { timestamp: true },
+  });
+  if (latest && latest.timestamp.getTime() === timestamp.getTime()) {
+    await db.position.update({
+      where: { id: position.id },
+      data: { markPrice: args.markPrice.toString(), fundingAccrued: args.fundingAccrued.toString() },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Metrics: holders, flows, fees
+// ---------------------------------------------------------------------------
+
+const blockTimes = new Map<bigint, Date>();
+
+async function blockTime(blockNumber: bigint | null): Promise<Date> {
+  if (blockNumber === null) return new Date();
+  const cached = blockTimes.get(blockNumber);
+  if (cached) return cached;
+  const block = await publicClient().getBlock({ blockNumber });
+  const time = new Date(Number(block.timestamp) * 1000);
+  if (blockTimes.size > 2_000) blockTimes.clear();
+  blockTimes.set(blockNumber, time);
+  return time;
+}
+
+/// Balances are re-read rather than applied as deltas, so a replayed or
+/// out-of-order Transfer can never double-count.
+async function handleTransfer(entry: AnyLog): Promise<void> {
+  const args = (entry as unknown as { args: { from: Address; to: Address } }).args;
+  const position = await positionFor(entry.address);
+  if (!position) return;
+  for (const holder of [args.from, args.to]) {
+    if (holder.toLowerCase() === zeroAddress) continue;
+    const balance = (await publicClient().readContract({
+      address: entry.address,
+      abi: positionTokenAbi,
+      functionName: "balanceOf",
+      args: [holder],
+    })) as bigint;
+    const address = holder.toLowerCase();
+    await db.holding.upsert({
+      where: { positionId_address: { positionId: position.id, address } },
+      create: { positionId: position.id, address, balance: balance.toString() },
+      update: { balance: balance.toString() },
+    });
+  }
+}
+
+/// Size, entry, capital and settled funding move on every fulfil; re-read them.
+async function refreshPositionMirror(positionId: string, token: Address): Promise<void> {
+  const state = await readPositionState(token);
+  await db.position.update({
+    where: { id: positionId },
+    data: {
+      size: state.size.toString(),
+      entryPrice: state.entryPrice.toString(),
+      capital: state.capital.toString(),
+      fundingSettled: state.fundingSettled.toString(),
+    },
+  });
+}
+
+/// Fold every unattached, un-voided fee this controller paid up to `upToBlock`
+/// into the flow -- the library sums a controller's requests into one fulfil.
+async function attachFees(positionId: string, controller: string, flowId: string, upToBlock: bigint): Promise<void> {
+  const fees = await db.buyInFee.findMany({
+    where: { positionId, controller, flowId: null, voided: false, blockNumber: { lte: upToBlock } },
+  });
+  if (fees.length === 0) return;
+  const flow = await db.flow.findUniqueOrThrow({ where: { id: flowId } });
+  const total = fees.reduce((sum, fee) => sum + BigInt(fee.amount), BigInt(flow.feeAssets));
+  await db.$transaction([
+    db.flow.update({ where: { id: flowId }, data: { feeAssets: total.toString() } }),
+    db.buyInFee.updateMany({ where: { id: { in: fees.map((f) => f.id) } }, data: { flowId } }),
+  ]);
+}
+
+async function recordFlow(
+  entry: AnyLog,
+  data: { type: string; address: string; assets: bigint; shares: bigint; navPerShare: bigint; trigger?: string },
+): Promise<{ id: string; positionId: string } | null> {
+  const position = await positionFor(entry.address);
+  if (!position) return null;
+  const key = logKey(entry);
+  const flow = await db.flow.upsert({
+    where: { txHash_logIndex: { txHash: key.txHash, logIndex: key.logIndex } },
+    create: {
+      positionId: position.id,
+      type: data.type,
+      address: data.address.toLowerCase(),
+      assets: data.assets.toString(),
+      shares: data.shares.toString(),
+      navPerShare: data.navPerShare.toString(),
+      trigger: data.trigger ?? null,
+      txHash: key.txHash,
+      logIndex: key.logIndex,
+      timestamp: await blockTime(entry.blockNumber),
+    },
+    update: {},
+  });
+  await refreshPositionMirror(position.id, entry.address);
+  return { id: flow.id, positionId: position.id };
+}
+
+async function handleDepositFulfilled(entry: AnyLog): Promise<void> {
+  const args = (entry as unknown as {
+    args: { controller: Address; assets: bigint; shares: bigint; navPerShare: bigint };
+  }).args;
+  const position = await positionFor(entry.address);
+  if (!position) return;
+  const controller = args.controller.toLowerCase();
+  const flow = await recordFlow(entry, {
+    // The creator adding to their own position is a top-up, not a buy-in.
+    type: controller === position.userWalletAddress.toLowerCase() ? "top_up" : "buy_in",
+    address: controller,
+    assets: args.assets,
+    shares: args.shares,
+    navPerShare: args.navPerShare,
+  });
+  if (flow) await attachFees(flow.positionId, controller, flow.id, logKey(entry).blockNumber);
+}
+
+async function handleRedeemFulfilled(entry: AnyLog): Promise<void> {
+  const args = (entry as unknown as {
+    args: { controller: Address; shares: bigint; assets: bigint; navPerShare: bigint };
+  }).args;
+  await recordFlow(entry, {
+    type: "redeem",
+    address: args.controller,
+    assets: args.assets,
+    shares: args.shares,
+    navPerShare: args.navPerShare,
+  });
+}
+
+/// A holder's own levels (custom), or back to the defaults (row deleted). An
+/// explicit "none" is a custom row with both levels null.
+async function handleTriggersSet(entry: AnyLog): Promise<void> {
+  const args = (entry as unknown as {
+    args: { holder: Address; stopLoss: bigint; takeProfit: bigint; custom: boolean };
+  }).args;
+  const position = await positionFor(entry.address);
+  if (!position) return;
+  const holder = args.holder.toLowerCase();
+  if (!args.custom) {
+    await db.holderTrigger.deleteMany({ where: { positionId: position.id, holder } });
+    return;
+  }
+  const levels = {
+    stopLoss: args.stopLoss > 0n ? fromPrice18(args.stopLoss) : null,
+    takeProfit: args.takeProfit > 0n ? fromPrice18(args.takeProfit) : null,
+  };
+  await db.holderTrigger.upsert({
+    where: { positionId_holder: { positionId: position.id, holder } },
+    create: { positionId: position.id, holder, ...levels },
+    update: levels,
+  });
+}
+
+/// An SL/TP exit: priced at NAV like a redeem. A personal trigger fires once.
+async function handleTriggerExecuted(entry: AnyLog): Promise<void> {
+  const args = (entry as unknown as {
+    args: { holder: Address; isStopLoss: boolean; usedDefault: boolean; shares: bigint; assets: bigint };
+  }).args;
+  const flow = await recordFlow(entry, {
+    type: "trigger_exit",
+    address: args.holder,
+    assets: args.assets,
+    shares: args.shares,
+    navPerShare: args.shares > 0n ? (args.assets * PRICE_SCALE) / args.shares : 0n,
+    trigger: args.isStopLoss ? "stop_loss" : "take_profit",
+  });
+  if (flow && !args.usedDefault) {
+    await db.holderTrigger.deleteMany({ where: { positionId: flow.positionId, holder: args.holder.toLowerCase() } });
+  }
+}
+
+async function handleDefaultsRetired(entry: AnyLog): Promise<void> {
+  const position = await positionFor(entry.address);
+  if (!position) return;
+  await db.position.update({ where: { id: position.id }, data: { defaultsActive: false } });
+}
+
+/**
+ * The fee is taken at requestDeposit, before the buy-in's Flow exists. The
+ * event carries no controller, so it comes from the DepositRequested in the
+ * same transaction. Held as a BuyInFee until the fulfil folds it in.
+ */
+async function handleCreatorFee(entry: AnyLog): Promise<void> {
+  const args = (entry as unknown as { args: { amount: bigint } }).args;
+  const position = await positionFor(entry.address);
+  if (!position) return;
+  const key = logKey(entry);
+
+  const receipt = await publicClient().getTransactionReceipt({ hash: key.txHash as `0x${string}` });
+  const request = parseEventLogs({ abi: [depositRequestedEvent], logs: receipt.logs, eventName: "DepositRequested" }).find(
+    (item) => item.address.toLowerCase() === entry.address.toLowerCase(),
+  );
+  if (!request) {
+    log.warn("CreatorFeeCollected with no DepositRequested in the same tx", { txHash: key.txHash });
+    return;
+  }
+  const controller = request.args.controller.toLowerCase();
+
+  await db.buyInFee.upsert({
+    where: { txHash_logIndex: { txHash: key.txHash, logIndex: key.logIndex } },
+    create: {
+      positionId: position.id,
+      controller,
+      amount: args.amount.toString(),
+      txHash: key.txHash,
+      logIndex: key.logIndex,
+      blockNumber: key.blockNumber,
+    },
+    update: {},
+  });
+
+  // Normally the fulfil comes minutes later and attaches it. If its Flow is
+  // already on file (live subscriptions can deliver out of order), attach now.
+  const later = await db.flow.findFirst({
+    where: {
+      positionId: position.id,
+      address: controller,
+      type: "buy_in",
+      timestamp: { gte: await blockTime(key.blockNumber) },
+    },
+    orderBy: { timestamp: "asc" },
+  });
+  if (later) await attachFees(position.id, controller, later.id, key.blockNumber);
 }
 
 /**
@@ -389,17 +679,26 @@ async function handleClosed(entry: AnyLog): Promise<void> {
     totalAssets: args.finalNavValue.toString(),
     totalSupply: totalSupply.toString(),
     isFinal: true,
+    // The formula estimate; Settled replaces it with what Arcus returned.
+    provisional: true,
   };
   // A report landing in the very block of the close would share its
-  // timestamp; the final values win that tie.
-  await db.positionReport.upsert({
+  // timestamp; the final values win that tie. Never downgrade a point a
+  // Settled event already rewrote (re-backfill).
+  const existing = await db.positionReport.findUnique({
     where: { positionId_timestamp: { positionId: position.id, timestamp } },
-    create: { positionId: position.id, timestamp, ...values },
-    update: values,
+    select: { isFinal: true, provisional: true },
   });
+  if (!(existing?.isFinal && !existing.provisional)) {
+    await db.positionReport.upsert({
+      where: { positionId_timestamp: { positionId: position.id, timestamp } },
+      create: { positionId: position.id, timestamp, ...values },
+      update: values,
+    });
+  }
 
   await db.position.updateMany({
-    where: { id: position.id, status: { not: "closed" } },
+    where: { id: position.id, status: "open" },
     data: { status: "closed", liquidated: args.wasLiquidated, closedAt: timestamp },
   });
 
@@ -407,6 +706,92 @@ async function handleClosed(entry: AnyLog): Promise<void> {
     positionId: position.id,
     finalNavValue: args.finalNavValue.toString(),
     wasLiquidated: args.wasLiquidated,
+  });
+}
+
+/**
+ * The recovered USDG is recorded: the NAV series' last point becomes
+ * `assets / supply` (replacing PositionClosed's provisional estimate), and the
+ * position is settled. The backend's own settlement flow normally sets the
+ * status first; this is the backstop.
+ */
+async function handleSettled(entry: AnyLog): Promise<void> {
+  const args = (entry as unknown as { args: { assets: bigint; supply: bigint } }).args;
+  const position = await positionFor(entry.address);
+  if (!position) {
+    log.warn("Settled from an unknown position token", { address: entry.address });
+    return;
+  }
+
+  const final = await db.positionReport.findFirst({
+    where: { positionId: position.id, isFinal: true },
+    orderBy: { timestamp: "desc" },
+  });
+  if (final) {
+    await db.positionReport.update({
+      where: { id: final.id },
+      data: { totalAssets: args.assets.toString(), totalSupply: args.supply.toString(), provisional: false },
+    });
+  } else {
+    // PositionClosed not indexed (yet): write the final point from here.
+    const [markPrice, funding] = await readAtBlock(entry.address, entry.blockNumber, ["markPrice", "fundingAccrued"]);
+    const timestamp = await blockTime(entry.blockNumber);
+    await db.positionReport.upsert({
+      where: { positionId_timestamp: { positionId: position.id, timestamp } },
+      create: {
+        positionId: position.id,
+        timestamp,
+        markPrice: markPrice.toString(),
+        funding: funding.toString(),
+        totalAssets: args.assets.toString(),
+        totalSupply: args.supply.toString(),
+        isFinal: true,
+      },
+      update: {},
+    });
+  }
+
+  // No settlements row: the last share left (SL/TP or redeem) and the token
+  // closed and settled itself. The backend still has to recover the float and
+  // free the slot -- settleEmptiedPosition does, then marks the position settled.
+  const emptied = !(await db.settlement.findUnique({ where: { positionId: position.id }, select: { positionId: true } }));
+  if (emptied) {
+    void settleEmptiedPosition(position.id).catch((error) =>
+      log.error("settling an emptied position failed; the resume job retries", {
+        positionId: position.id,
+        ...errorFields(error),
+      }),
+    );
+  } else {
+    await db.position.updateMany({
+      where: { id: position.id, status: { not: "settled" } },
+      data: { status: "settled", closedAt: position.closedAt ?? (await blockTime(entry.blockNumber)) },
+    });
+  }
+  log.info("Settled indexed", { positionId: position.id, assets: args.assets.toString(), supply: args.supply.toString() });
+}
+
+/// A holder's payout. Holdings follow from the burn's own Transfer.
+async function handleClaimed(entry: AnyLog): Promise<void> {
+  const args = (entry as unknown as { args: { holder: Address; shares: bigint; assets: bigint } }).args;
+  const position = await positionFor(entry.address);
+  if (!position) return;
+  const key = logKey(entry);
+  await db.flow.upsert({
+    where: { txHash_logIndex: { txHash: key.txHash, logIndex: key.logIndex } },
+    create: {
+      positionId: position.id,
+      type: "claim",
+      address: args.holder.toLowerCase(),
+      assets: args.assets.toString(),
+      shares: args.shares.toString(),
+      // assets / shares: the settlement rate this holder was paid at.
+      navPerShare: args.shares > 0n ? ((args.assets * PRICE_SCALE) / args.shares).toString() : "0",
+      txHash: key.txHash,
+      logIndex: key.logIndex,
+      timestamp: await blockTime(entry.blockNumber),
+    },
+    update: {},
   });
 }
 
@@ -419,6 +804,15 @@ async function dispatch(kind: EventKind, entry: AnyLog): Promise<void> {
     else if (kind === "listed") await handleListed(entry);
     else if (kind === "depositCancelled") await handleCancelled("deposit", entry);
     else if (kind === "redeemCancelled") await handleCancelled("redeem", entry);
+    else if (kind === "transfer") await handleTransfer(entry);
+    else if (kind === "depositFulfilled") await handleDepositFulfilled(entry);
+    else if (kind === "redeemFulfilled") await handleRedeemFulfilled(entry);
+    else if (kind === "creatorFee") await handleCreatorFee(entry);
+    else if (kind === "settled") await handleSettled(entry);
+    else if (kind === "claimed") await handleClaimed(entry);
+    else if (kind === "triggersSet") await handleTriggersSet(entry);
+    else if (kind === "triggerExecuted") await handleTriggerExecuted(entry);
+    else if (kind === "defaultsRetired") await handleDefaultsRetired(entry);
     else await handleFunding(entry);
   } catch (error) {
     log.error("event handler failed", {
@@ -434,10 +828,10 @@ async function dispatch(kind: EventKind, entry: AnyLog): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Lending-side event handlers -- watch for borrowers to hand to the
-// liquidation bot's health-check loop, nothing more. The bot itself reads
-// healthFactor()/maxLiquidatableDebt() fresh on every tick; these handlers only
-// ever grow the (pool, borrower) watch list, never touch balances or debt.
+// Lending-side event handlers -- the liquidation bot's (pool, borrower) watch
+// list, plus each borrower's collateral and debt for the metrics (holders
+// include posted collateral; "Collateralized" means someone owes). Values are
+// re-read from the pool, never applied as deltas, so replays are harmless.
 // ---------------------------------------------------------------------------
 
 async function recordBorrower(poolAddress: string, borrowerAddress: string): Promise<void> {
@@ -446,29 +840,30 @@ async function recordBorrower(poolAddress: string, borrowerAddress: string): Pro
     log.warn("borrower event from an unknown lending pool", { poolAddress });
     return;
   }
+  const user = borrowerAddress as Address;
+  const read = (functionName: "collateralBalance" | "currentDebt") =>
+    publicClient().readContract({
+      address: poolAddress as Address,
+      abi: lendingPoolAbi,
+      functionName,
+      args: [user],
+    }) as Promise<bigint>;
+  const [collateral, debt] = await Promise.all([read("collateralBalance"), read("currentDebt")]);
+  const values = { collateralShares: collateral.toString(), debt: debt.toString() };
   await db.borrower.upsert({
     where: {
       lendingPoolId_address: { lendingPoolId: pool.id, address: borrowerAddress.toLowerCase() },
     },
-    create: { lendingPoolId: pool.id, address: borrowerAddress.toLowerCase() },
-    update: {},
+    create: { lendingPoolId: pool.id, address: borrowerAddress.toLowerCase(), ...values },
+    update: values,
   });
-}
-
-async function handleCollateralDeposited(entry: AnyLog): Promise<void> {
-  const args = (entry as unknown as { args: { user: Address } }).args;
-  await recordBorrower(entry.address, args.user);
-}
-
-async function handleBorrowed(entry: AnyLog): Promise<void> {
-  const args = (entry as unknown as { args: { user: Address } }).args;
-  await recordBorrower(entry.address, args.user);
 }
 
 async function dispatchLending(kind: LendingEventKind, entry: AnyLog): Promise<void> {
   try {
-    if (kind === "collateral") await handleCollateralDeposited(entry);
-    else await handleBorrowed(entry);
+    const args = (entry as unknown as { args: { user?: Address; borrower?: Address } }).args;
+    const who = kind === "liquidated" ? args.borrower : args.user;
+    if (who) await recordBorrower(entry.address, who);
   } catch (error) {
     log.error("lending event handler failed", {
       kind,
@@ -502,13 +897,18 @@ async function discoverAddresses(fromBlock: bigint, toBlock: bigint): Promise<Se
   // Chain state is the discovery source of truth, but the factory-log window
   // above is bounded by the checkpoint -- fold in whatever the DB already
   // knows was minted so a restart doesn't drop tokens created earlier.
-  // A closed position stays in the set until its final NAV point is indexed,
-  // or a close executeClose recorded while the indexer was down would never
-  // reach the chart.
+  // A closed position stays in the set until it is settled and its final NAV
+  // point is indexed, or a close recorded while the indexer was down would
+  // never reach the chart; a settled one while anyone still holds shares, so
+  // the claim burns and Claimed flows are still indexed.
   const rows = await db.position.findMany({
     where: {
       positionTokenAddress: { not: null },
-      OR: [{ status: { not: "closed" } }, { reports: { none: { isFinal: true } } }],
+      OR: [
+        { status: { not: "settled" } },
+        { reports: { none: { isFinal: true, provisional: false } } },
+        { holdings: { some: { balance: { not: "0" } } } },
+      ],
     },
     select: { positionTokenAddress: true },
   });
@@ -527,7 +927,25 @@ async function backfillPositionTokenEvents(
   if (addresses.length === 0 || fromBlock > toBlock) return;
 
   const client = publicClient();
-  const [deposits, redeems, closes, fundings, closeds, listeds, depositCancels, redeemCancels] = await Promise.all([
+  const [
+    deposits,
+    redeems,
+    closes,
+    fundings,
+    closeds,
+    listeds,
+    depositCancels,
+    redeemCancels,
+    transfers,
+    depositFulfils,
+    redeemFulfils,
+    fees,
+    settleds,
+    claims,
+    triggerSets,
+    triggerExecs,
+    defaultRetires,
+  ] = await Promise.all([
     client.getLogs({ address: addresses, event: depositRequestedEvent, fromBlock, toBlock }),
     client.getLogs({ address: addresses, event: redeemRequestedEvent, fromBlock, toBlock }),
     client.getLogs({ address: addresses, event: closeRequestedEvent, fromBlock, toBlock }),
@@ -536,6 +954,15 @@ async function backfillPositionTokenEvents(
     client.getLogs({ address: addresses, event: listedEvent, fromBlock, toBlock }),
     client.getLogs({ address: addresses, event: depositCancelledEvent, fromBlock, toBlock }),
     client.getLogs({ address: addresses, event: redeemCancelledEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: transferEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: depositFulfilledEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: redeemFulfilledEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: creatorFeeEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: settledEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: claimedEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: triggersSetEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: triggerExecutedEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: defaultTriggersRetiredEvent, fromBlock, toBlock }),
   ]);
 
   // Process in chain order so, e.g., a deposit and a funding update in the
@@ -549,6 +976,15 @@ async function backfillPositionTokenEvents(
     ...listeds.map((entry) => ({ kind: "listed" as const, entry })),
     ...depositCancels.map((entry) => ({ kind: "depositCancelled" as const, entry })),
     ...redeemCancels.map((entry) => ({ kind: "redeemCancelled" as const, entry })),
+    ...transfers.map((entry) => ({ kind: "transfer" as const, entry })),
+    ...depositFulfils.map((entry) => ({ kind: "depositFulfilled" as const, entry })),
+    ...redeemFulfils.map((entry) => ({ kind: "redeemFulfilled" as const, entry })),
+    ...fees.map((entry) => ({ kind: "creatorFee" as const, entry })),
+    ...settleds.map((entry) => ({ kind: "settled" as const, entry })),
+    ...claims.map((entry) => ({ kind: "claimed" as const, entry })),
+    ...triggerSets.map((entry) => ({ kind: "triggersSet" as const, entry })),
+    ...triggerExecs.map((entry) => ({ kind: "triggerExecuted" as const, entry })),
+    ...defaultRetires.map((entry) => ({ kind: "defaultsRetired" as const, entry })),
   ].sort((a, b) => compareLogOrder(a.entry as AnyLog, b.entry as AnyLog));
 
   for (const item of ordered) {
@@ -600,14 +1036,21 @@ async function backfillPoolEvents(addresses: Address[], fromBlock: bigint, toBlo
   if (addresses.length === 0 || fromBlock > toBlock) return;
 
   const client = publicClient();
-  const [deposits, borrows] = await Promise.all([
+  const [deposits, withdrawals, borrows, repays, liquidations] = await Promise.all([
     client.getLogs({ address: addresses, event: collateralDepositedEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: collateralWithdrawnEvent, fromBlock, toBlock }),
     client.getLogs({ address: addresses, event: borrowedEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: repaidEvent, fromBlock, toBlock }),
+    client.getLogs({ address: addresses, event: liquidatedEvent, fromBlock, toBlock }),
   ]);
 
+  const tag = (kind: LendingEventKind) => (entry: unknown) => ({ kind, entry: entry as AnyLog });
   const ordered = [
-    ...deposits.map((entry) => ({ kind: "collateral" as const, entry })),
-    ...borrows.map((entry) => ({ kind: "borrowed" as const, entry })),
+    ...deposits.map(tag("collateral")),
+    ...withdrawals.map(tag("collateralWithdrawn")),
+    ...borrows.map(tag("borrowed")),
+    ...repays.map(tag("repaid")),
+    ...liquidations.map(tag("liquidated")),
   ].sort((a, b) => compareLogOrder(a.entry, b.entry));
 
   for (const item of ordered) {
@@ -647,6 +1090,15 @@ export function startIndexer(): () => void {
         | "Listed"
         | "DepositRequestCancelled"
         | "RedeemRequestCancelled"
+        | "Transfer"
+        | "DepositFulfilled"
+        | "RedeemFulfilled"
+        | "CreatorFeeCollected"
+        | "Settled"
+        | "Claimed"
+        | "TriggersSet"
+        | "TriggerExecuted"
+        | "DefaultTriggersRetired"
       ),
       EventKind,
     ]> = [
@@ -658,6 +1110,15 @@ export function startIndexer(): () => void {
       ["Listed", "listed"],
       ["DepositRequestCancelled", "depositCancelled"],
       ["RedeemRequestCancelled", "redeemCancelled"],
+      ["Transfer", "transfer"],
+      ["DepositFulfilled", "depositFulfilled"],
+      ["RedeemFulfilled", "redeemFulfilled"],
+      ["CreatorFeeCollected", "creatorFee"],
+      ["Settled", "settled"],
+      ["Claimed", "claimed"],
+      ["TriggersSet", "triggersSet"],
+      ["TriggerExecuted", "triggerExecuted"],
+      ["DefaultTriggersRetired", "defaultsRetired"],
     ];
     for (const [eventName, kind] of events) {
       unwatchFns.push(
@@ -679,23 +1140,25 @@ export function startIndexer(): () => void {
     watched.add(key);
 
     const client = publicClient();
-    unwatchFns.push(
-      client.watchContractEvent({
-        address,
-        abi: lendingPoolAbi,
-        eventName: "CollateralDeposited",
-        onLogs: (logs) =>
-          logs.forEach((entry) => void dispatchLending("collateral", entry as unknown as AnyLog)),
-      }),
-    );
-    unwatchFns.push(
-      client.watchContractEvent({
-        address,
-        abi: lendingPoolAbi,
-        eventName: "Borrowed",
-        onLogs: (logs) => logs.forEach((entry) => void dispatchLending("borrowed", entry as unknown as AnyLog)),
-      }),
-    );
+    const events: Array<
+      ["CollateralDeposited" | "CollateralWithdrawn" | "Borrowed" | "Repaid" | "Liquidated", LendingEventKind]
+    > = [
+      ["CollateralDeposited", "collateral"],
+      ["CollateralWithdrawn", "collateralWithdrawn"],
+      ["Borrowed", "borrowed"],
+      ["Repaid", "repaid"],
+      ["Liquidated", "liquidated"],
+    ];
+    for (const [eventName, kind] of events) {
+      unwatchFns.push(
+        client.watchContractEvent({
+          address,
+          abi: lendingPoolAbi,
+          eventName,
+          onLogs: (logs) => logs.forEach((entry) => void dispatchLending(kind, entry as unknown as AnyLog)),
+        }),
+      );
+    }
 
     log.debug("watching lending pool", { address: key });
   }
@@ -723,7 +1186,17 @@ export function startIndexer(): () => void {
         eventName: "PositionCreated",
         onLogs: (logs) => {
           for (const entry of logs) {
-            watchPositionToken((entry as unknown as { args: { positionToken: Address } }).args.positionToken);
+            const token = (entry as unknown as { args: { positionToken: Address } }).args.positionToken;
+            // The genesis mint's Transfer is in the creation block itself --
+            // before any subscription on the token could exist -- so catch the
+            // token up from that block first. Handlers are idempotent, so any
+            // overlap with the live watch is harmless.
+            const from = entry.blockNumber ?? 0n;
+            void client
+              .getBlockNumber()
+              .then((to) => backfillPositionTokenEvents([token], from, to))
+              .catch((error) => log.error("new-token catch-up failed", { token, ...errorFields(error) }))
+              .finally(() => watchPositionToken(token));
           }
         },
       }),

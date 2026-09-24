@@ -1,36 +1,27 @@
-import type { LedgerEntry } from "@prisma/client";
+import type { LedgerEntry, Position } from "@prisma/client";
 import { parseAbiItem, type Address } from "viem";
 
-import { adjustIsolatedMargin, getPositions, placeOrder } from "../arcus/client";
-import { getArcusStream } from "../arcus/ws";
+import { adjustIsolatedMargin } from "../arcus/client";
+import { isLongSide, type OrderSide } from "../arcus/types";
 import { db } from "../config/db";
-import { config } from "../config/env";
-import { PRICE_SCALE, operatorWallet, publicClient, usdgDecimals } from "../chain/clients";
-import { positionTokenAbi } from "../chain/abi";
+import { publicClient } from "../chain/clients";
 import {
   fulfillDepositRequest,
   fulfillRedeemRequest,
   isNoPendingRevert,
-  mintUsdg,
   navPerShare,
   pendingDeposit,
   pendingRedeem,
-  totalSupply,
+  readPositionState,
+  totalPendingDepositAssets,
+  transferUsdg,
   usdgBalanceOf,
 } from "../chain/writes";
-import {
-  applyBps,
-  ceilToStep,
-  compareDecimal,
-  floorToStep,
-  formatDecimal,
-  fromBaseUnits,
-  negateDecimal,
-  parseDecimal,
-} from "../lib/decimal";
 import { alert, createLogger, errorFields } from "../lib/logger";
-import { credentialsFor, getSlotForPosition } from "./allocator";
-import { fundSubaccountFromMint } from "./arcusFunding";
+import { PRICE_SCALE, fromPrice18, fromSize6, fromUsdg6, toPrice18, toSize6 } from "../lib/units";
+import { credentialsFor, getSlotForPosition, type SlotWithWallet } from "./allocator";
+import { ensureInternalWalletFloat, fundSubaccount, walletForSlot } from "./arcusFunding";
+import { awaitWithdrawalApplied, withdrawable6, withdrawToInternalWallet } from "./arcusWithdraw";
 import {
   findEntryForLog,
   markCancelled,
@@ -39,40 +30,41 @@ import {
   recordPending,
   type LedgerType,
 } from "./ledger";
-import { markPriceFor, requireMarket, type ResolvedMarket } from "./markets";
+import { requireMarket, type ResolvedMarket } from "./markets";
+import { clientIdFor, placeMarketOrder } from "./orders";
+import { findLeg, pushFreshReport } from "./reporter";
+import { buyInAddedSize, marginUsed6, redeemClosedSize } from "./sizing";
 
 const log = createLogger("margin");
 
 /**
- * Adding and removing margin on a position that already exists.
+ * Buy-ins and redeems on a live position.
  *
- * The on-chain vault is live here, so it locks the funds before anything
- * reaches Arcus:
+ * The rule: a buy-in or redeem changes how BIG the position is, never how
+ * LEVERAGED. Every share always represents the same slice of the same trade.
  *
- *   requestDeposit() on-chain  ->  margin moves on Arcus  ->
- *   fulfillDepositRequest() on-chain (settles: shares minted to the buyer)
+ *   buy-in of `a` USDG   -> the Arcus position grows by ΔS = a x S / V
+ *   redeem of `s` shares -> it shrinks by f = s / supply; the redeemer gets f x V
  *
- * The middle step is the one that can succeed while the last one fails: the
- * user may have cancelled their request after the 20-minute timeout, in which
- * case the fulfil reverts with "no pending ..." and the Arcus-side move has to
- * be undone. That is a cancellation, not an error -- never retried.
+ * The on-chain vault locks the funds first (requestDeposit / requestRedeem);
+ * the Arcus leg moves; then the fulfil settles in one transaction, priced by
+ * the contract itself at navPerShare(). Buyers pay exactly NAV and redeemers
+ * receive exactly NAV, so NAV per share is continuous through both.
  *
- * A redeem is NOT a plain margin withdrawal, though: pulling margin alone
- * while the Arcus position size stays fixed would raise effective leverage
- * for every remaining holder without their consent. So a redeem additionally
- * places a `reduceOnly` order first, sized to exactly the redeemer's
- * fractional share of the position (shares / totalSupply at request time) --
- * see {reducePositionProportionally}. Size and margin shrink together, so the
- * leverage ratio stays identical for everyone who stays in.
+ * The Arcus leg can succeed while the fulfil fails: the user may have cancelled
+ * after the 20-minute timeout, so the fulfil reverts "no pending ..." and the
+ * Arcus move is undone. That is a cancellation, not an error -- never retried.
  *
- * Known limitations (testnet, where USDG is freely mintable -- fix before
- * mainnet with an operator-only sweep/top-up pair on PositionToken):
- *   - Buy-in USDG stays inside the PositionToken; nothing moves it to Arcus.
- *     The Arcus margin increase is funded from USDG the slot's internal wallet
- *     mints and deposits itself ({fundSubaccountFromMint}).
- *   - fulfillRedeemRequest checks the token's own USDG balance, so before a
- *     redeem is fulfilled the operator mints any shortfall into the token
- *     ({prefundRedeem}). The margin freed on Arcus stays on the subaccount.
+ * Every step records what it learned on the ledger row (`pending` before the
+ * first Arcus call, the fill on `confirmed`), so the reconciler can finish a
+ * fulfil after a restart with the real fill.
+ *
+ * Testnet simplifications (USDG has an open mint):
+ *   - A buyer's USDG stays inside the PositionToken as the payout buffer for
+ *     future redeems. The Arcus side is funded by the slot's internal wallet.
+ *   - A redeem payout the token cannot cover is topped up from the internal
+ *     wallet; freed margin is withdrawn back to it afterwards (off the
+ *     critical path) to refill the float.
  */
 
 type Direction = "add" | "remove";
@@ -101,9 +93,35 @@ export async function handleRedeemRequested(event: RequestEvent): Promise<void> 
 
 const typeFor = (direction: Direction): LedgerType => (direction === "add" ? "margin_add" : "margin_remove");
 
+interface Context {
+  position: Position;
+  positionToken: Address;
+  slot: SlotWithWallet;
+  market: ResolvedMarket;
+  /// The position's own side on Arcus.
+  side: OrderSide;
+}
+
+async function contextFor(positionId: string): Promise<Context | null> {
+  const position = await db.position.findUnique({ where: { id: positionId } });
+  if (!position || position.status !== "open" || !position.positionTokenAddress) {
+    log.warn("margin request for a position that is not open", { positionId, status: position?.status });
+    return null;
+  }
+  const slot = await getSlotForPosition(positionId);
+  if (!slot) throw new Error(`Position ${positionId} has no allocated slot`);
+  return {
+    position,
+    positionToken: position.positionTokenAddress as Address,
+    slot,
+    market: await requireMarket(position.market),
+    side: position.direction === "long" ? "BUY" : "SELL",
+  };
+}
+
 async function handleMarginRequest(direction: Direction, event: RequestEvent): Promise<void> {
   // Indexer replays are normal after a restart; one ledger row per emitting
-  // log keeps a re-read of the same block from double-moving margin.
+  // log keeps a re-read of the same block from double-moving anything.
   const existing = await findEntryForLog(event.txHash, event.logIndex);
   if (existing) {
     log.debug("margin request already recorded", { entryId: existing.id, status: existing.arcusStatus });
@@ -113,34 +131,18 @@ async function handleMarginRequest(direction: Direction, event: RequestEvent): P
     return;
   }
 
-  const position = await db.position.findUnique({ where: { id: event.positionId } });
-  if (!position || position.status !== "open") {
-    log.warn("margin request for a position that is not open", {
-      positionId: event.positionId,
-      status: position?.status,
-    });
-    return;
-  }
+  const ctx = await contextFor(event.positionId);
+  if (!ctx) return;
 
-  const slot = await getSlotForPosition(event.positionId);
-  if (!slot) throw new Error(`Position ${event.positionId} has no allocated slot`);
-
-  const market = await requireMarket(position.market);
-  const credentials = credentialsFor(slot);
-  const decimals = await usdgDecimals();
-
-  // For a redeem the event carries shares, not assets. Value them at the current
-  // NAV per share so the amount pulled off Arcus matches what the vault will owe.
-  const assets =
-    direction === "add"
-      ? event.amount
-      : (event.amount * (await navPerShare(event.positionTokenAddress as Address))) / PRICE_SCALE;
-
-  // `pending` before the Arcus call, always.
+  // `pending` before the first Arcus call, always. A redeem's USDG value is
+  // settled by the contract at fulfil; this is the estimate at request time.
+  const valued =
+    direction === "add" ? event.amount : (event.amount * (await navPerShare(ctx.positionToken))) / PRICE_SCALE;
   const entry = await recordPending({
     positionId: event.positionId,
     type: typeFor(direction),
-    amount: assets.toString(),
+    amount: valued.toString(),
+    requestAmount: event.amount.toString(),
     onchainRequestId: event.requestId,
     controller: event.controller,
     txHash: event.txHash,
@@ -148,171 +150,189 @@ async function handleMarginRequest(direction: Direction, event: RequestEvent): P
     note: `on-chain ${direction === "add" ? "requestDeposit" : "requestRedeem"} ${event.txHash}#${event.logIndex}`,
   });
 
-  if (direction === "add") {
-    // Testnet: the buy-in's USDG stays in the token, so the subaccount is
-    // funded with freshly minted USDG before margin can move onto the leg.
-    await fundSubaccountFromMint(slot, assets);
-  } else {
-    // Shrink the real Arcus position by the same fraction BEFORE pulling
-    // margin, so the two move together and leverage for remaining holders is
-    // unchanged.
-    await reducePositionProportionally({
-      credentials,
-      market,
-      shares: event.amount,
-      positionToken: event.positionTokenAddress as Address,
-    });
-  }
-
-  const dollars = fromBaseUnits(assets, decimals);
-  const amount = direction === "add" ? dollars : negateDecimal(dollars);
-
-  const result = await adjustIsolatedMargin(credentials, {
-    marketId: market.arcusMarketId,
-    amount,
-  });
-
-  await markConfirmed(entry.id, {
-    arcusRequestId: result.requestId,
-    note: `adjustIsolatedMargin ${amount} -> ${result.status}`,
-  });
+  if (direction === "add") await runBuyIn(ctx, entry, event.amount);
+  else await runRedeem(ctx, entry, event.amount);
 
   await completeOnChain(direction, event, entry.id);
 }
 
-/**
- * Shrink the live Arcus position by exactly the redeemer's fractional share
- * (`shares / totalSupply()`), via a `reduceOnly` order on the opposite side --
- * the same mechanism {closePosition.ts} uses for a full exit, just sized to a
- * fraction instead of 100%. The redeemed shares were burned at request time
- * but still count in totalSupply() until fulfilled, so it is still the
- * pre-redeem denominator the fraction is defined against.
- *
- * If there is no live leg (or it floors to zero at the market's step size)
- * there is nothing to reduce -- e.g. the position notional is already so
- * small relative to the redeem that the step grid swallows it. That is safe
- * to skip: the margin-only withdrawal that follows does not change leverage
- * when there is no notional behind it.
- */
-async function reducePositionProportionally(params: {
-  credentials: ReturnType<typeof credentialsFor>;
-  market: ResolvedMarket;
-  /// Redeemed shares, same base-unit scale as PositionToken.totalSupply().
-  shares: bigint;
-  positionToken: Address;
-}): Promise<void> {
-  const { credentials, market, shares, positionToken } = params;
+// ---------------------------------------------------------------------------
+// Buy-in (Arcus spec §5 deposit leg, replaced)
+// ---------------------------------------------------------------------------
 
-  const supply = await totalSupply(positionToken);
-  if (supply === 0n) return;
+async function runBuyIn(ctx: Context, entry: LedgerEntry, assets6: bigint): Promise<void> {
+  const credentials = credentialsFor(ctx.slot);
 
-  const openPositions = await getPositions(credentials.address, credentials.accountIndex);
-  const leg = openPositions.find((entry) => entry.marketId === market.arcusMarketId);
-  if (!leg || compareDecimal(leg.size, "0") <= 0) {
-    log.warn("redeem: no live Arcus leg to reduce, skipping the reduceOnly step", {
-      positionToken,
-      marketId: market.arcusMarketId,
-    });
-    return;
-  }
+  // 1. Fresh report, so navPerShare() is current when the fulfil prices shares.
+  const { mark18 } = await pushFreshReport({ positionToken: ctx.positionToken, credentials, market: ctx.market });
 
-  // leg.size * (shares / supply), kept exact via bigint math at leg.size's own
-  // decimal precision before flooring to the market's step size.
-  const legSize = parseDecimal(leg.size);
-  const rawQuantity = formatDecimal({ units: (legSize.units * shares) / supply, scale: legSize.scale });
-  const quantity = floorToStep(rawQuantity, market.stepSize);
-
-  if (compareDecimal(quantity, "0") <= 0) {
-    log.warn("redeem: proportional size floors to zero at the market step size, skipping", {
-      positionToken,
-      rawQuantity,
-      stepSize: market.stepSize,
-    });
-    return;
-  }
-
-  const side = leg.side === "BUY" ? "SELL" : "BUY";
-  const mark = await markPriceFor(market);
-  const bound =
-    side === "BUY"
-      ? applyBps(mark, config.arcusSlippageBps, 18)
-      : applyBps(mark, -config.arcusSlippageBps, 18);
-  const price = side === "BUY" ? floorToStep(bound, market.tickSize) : ceilToStep(bound, market.tickSize);
-
-  const clientId = `r${positionToken.slice(2, 10)}${Date.now().toString(36)}`.slice(0, 36);
-
-  const stream = getArcusStream();
-  await stream.ensureSubscribed(credentials.address, credentials.accountIndex);
-  const waiter = stream.expectOrder({
-    address: credentials.address,
-    accountIndex: credentials.accountIndex,
-    clientId,
+  // 2. Size the add: the buyer's proportional share, rounded down to the step,
+  //    capped so the order never needs more margin than the buy-in brought.
+  const state = await readPositionState(ctx.positionToken);
+  const addedSize6 = buyInAddedSize({
+    assets6,
+    size6: state.size,
+    totalAssets6: state.totalAssets,
+    leverage: ctx.position.leverage,
+    mark18,
+    grid: ctx.market,
   });
 
-  let result;
-  try {
-    result = await placeOrder(credentials, {
-      marketId: market.arcusMarketId,
-      side,
-      orderType: "MARKET",
-      timeInForce: "IOC",
-      quantity,
-      price,
+  // 3. Fund the subaccount (internal wallet: mint on testnet, float on mainnet)
+  //    and wait for the DEPOSIT credit.
+  const { credited } = await fundSubaccount(ctx.slot, assets6);
+
+  // 4. Grow the position, same side.
+  let filled6 = 0n;
+  let fill18 = 0n;
+  if (addedSize6 > 0n) {
+    const clientId = clientIdFor("b", ctx.positionToken);
+    await db.ledgerEntry.update({ where: { id: entry.id }, data: { arcusClientId: clientId } });
+    const outcome = await placeMarketOrder({
+      credentials,
+      market: ctx.market,
+      side: ctx.side,
+      quantity: fromSize6(addedSize6),
+      clientId,
+    });
+    if (outcome.unfilled) {
+      // The buyer still gets their shares at NAV: the deposit backs the position as margin.
+      log.warn("buy-in order did not fill; adding as margin only", {
+        positionId: ctx.position.id,
+        status: outcome.status,
+        reason: outcome.cancelReason ?? outcome.rejectReason,
+      });
+    } else {
+      filled6 = toSize6(outcome.filledSize);
+      fill18 = toPrice18(outcome.averagePrice);
+    }
+  }
+
+  // 5. Top up the isolated margin with whatever the order did not take, so the
+  //    whole buy-in backs the position (the order only took notional / L_set).
+  const leftover6 = credited - marginUsed6(filled6, fill18, ctx.position.leverage);
+  const movable6 = minBigInt(leftover6, await withdrawable6(ctx.slot));
+  // Cents only: the gateway converts dollars, sub-cent dust stays free.
+  const cents6 = movable6 - (movable6 % 10_000n);
+  let marginNote = "no margin top-up";
+  if (cents6 > 0n) {
+    const result = await adjustIsolatedMargin(credentials, {
+      marketId: ctx.market.arcusMarketId,
+      amount: fromUsdg6(cents6),
+    });
+    marginNote = `adjustIsolatedMargin +${fromUsdg6(cents6)} -> ${result.status}`;
+  }
+
+  await markConfirmed(entry.id, {
+    filledSize: filled6.toString(),
+    fillPrice: fill18.toString(),
+    note: `grew ${fromSize6(filled6)} @ ${fill18 > 0n ? fromPrice18(fill18) : "-"}; ${marginNote}`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Redeem (Arcus spec §5 redeem leg, replaced)
+// ---------------------------------------------------------------------------
+
+async function runRedeem(ctx: Context, entry: LedgerEntry, shares: bigint): Promise<void> {
+  const credentials = credentialsFor(ctx.slot);
+
+  // 1. Fresh report.
+  const { mark18, leg } = await pushFreshReport({ positionToken: ctx.positionToken, credentials, market: ctx.market });
+
+  // 2. Size the reduction: shares / supply of the size (supply still includes
+  //    the pending shares), rounded to the step. Below the minimum order size
+  //    there is no Arcus order -- tiny redeems come out of the buffer.
+  const state = await readPositionState(ctx.positionToken);
+  const closedSize6 = redeemClosedSize({
+    shares,
+    supply: state.totalSupply,
+    size6: state.size,
+    legSize6: leg ? toSize6(leg.size) : 0n,
+    mark18,
+    grid: ctx.market,
+  });
+
+  let filled6 = 0n;
+  let fill18 = 0n;
+  if (closedSize6 > 0n && leg) {
+    const clientId = clientIdFor("r", ctx.positionToken);
+    await db.ledgerEntry.update({ where: { id: entry.id }, data: { arcusClientId: clientId } });
+    const outcome = await placeMarketOrder({
+      credentials,
+      market: ctx.market,
+      side: isLongSide(leg.side) ? "SELL" : "BUY",
+      quantity: fromSize6(closedSize6),
       reduceOnly: true,
       clientId,
-      tickSize: market.tickSize,
-      stepSize: market.stepSize,
     });
-  } catch (error) {
-    waiter.cancel();
-    throw error;
+    if (outcome.unfilled) {
+      throw new Error(
+        `Proportional reduce-only order did not fill (${outcome.status}${outcome.cancelReason ? `: ${outcome.cancelReason}` : ""})`,
+      );
+    }
+    filled6 = toSize6(outcome.filledSize);
+    fill18 = toPrice18(outcome.averagePrice);
   }
 
-  waiter.bindOrderId(result.orderId);
-  const outcome = await waiter.outcome;
-
-  if (outcome.unfilled) {
-    throw new Error(
-      `Proportional reduce-only order did not fill (${outcome.status}${
-        outcome.cancelReason ? `: ${outcome.cancelReason}` : ""
-      })`,
-    );
-  }
-
-  log.info("redeem: reduced Arcus position proportionally", {
-    positionToken,
-    quantity,
-    filledSize: outcome.filledSize,
-    price: outcome.averagePrice,
+  await markConfirmed(entry.id, {
+    filledSize: filled6.toString(),
+    fillPrice: fill18.toString(),
+    note: filled6 > 0n ? `reduced ${fromSize6(filled6)}` : "below minimum order size; paid from buffer",
   });
 }
 
 /**
- * Testnet: make sure the token can pay `shares` out at `fulfillmentPrice`
- * without touching USDG that belongs to still-pending buyers (they can cancel
- * and take it back). Mints any shortfall straight into the token.
+ * 3. Make sure the token can pay: `payout = shares x navPerShare() / 1e18`,
+ * never counting USDG that belongs to still-pending buyers (they can cancel and
+ * take it back). The internal wallet transfers in any shortfall (minting it
+ * first on testnet).
  */
-async function prefundRedeem(positionToken: Address, shares: bigint, fulfillmentPrice: bigint): Promise<void> {
-  const owed = (shares * fulfillmentPrice) / PRICE_SCALE;
-  const [balance, reserved] = await Promise.all([
-    usdgBalanceOf(positionToken),
-    publicClient().readContract({
-      address: positionToken,
-      abi: positionTokenAbi,
-      functionName: "totalPendingDepositAssets",
-    }) as Promise<bigint>,
-  ]);
-  const available = balance > reserved ? balance - reserved : 0n;
-  if (available >= owed) return;
-
-  const shortfall = owed - available;
-  await mintUsdg(operatorWallet(), positionToken, shortfall);
-  log.info("prefunded redeem", { positionToken, shortfall: shortfall.toString() });
+async function ensureRedeemFunds(ctx: Context, shares: bigint): Promise<bigint> {
+  const payout = (shares * (await navPerShare(ctx.positionToken))) / PRICE_SCALE;
+  await fundPayout(ctx.slot, ctx.positionToken, payout);
+  return payout;
 }
 
+/// Tops the token up until what it holds beyond pending buy-ins covers
+/// `payout`. Shared by redeems and SL/TP trigger exits.
+export async function fundPayout(slot: SlotWithWallet, positionToken: Address, payout: bigint): Promise<void> {
+  const [balance, reserved] = await Promise.all([
+    usdgBalanceOf(positionToken),
+    totalPendingDepositAssets(positionToken),
+  ]);
+  const available = balance > reserved ? balance - reserved : 0n;
+  if (available >= payout) return;
+
+  const shortfall = payout - available;
+  await ensureInternalWalletFloat(slot, shortfall);
+  await transferUsdg(walletForSlot(slot), positionToken, shortfall);
+  log.info("payout topped up from the internal wallet", {
+    positionToken,
+    shortfall: fromUsdg6(shortfall),
+  });
+}
+
+/// 5. Recycle, off the critical path: withdraw the margin the reduce freed back
+/// to the internal wallet so the float refills.
+export function recycleFreedMargin(ctx: { slot: SlotWithWallet; position: { id: string } }, amount6: bigint): void {
+  void (async () => {
+    const handle = await withdrawToInternalWallet(ctx.slot, amount6);
+    await awaitWithdrawalApplied(ctx.slot, handle.withdrawalId, { since: handle.submittedAt, amount6: handle.amount6 });
+    log.info("freed margin recycled to the internal wallet", { positionId: ctx.position.id, amount: fromUsdg6(handle.amount6) });
+  })().catch((error) =>
+    log.warn("freed-margin recycle skipped", { positionId: ctx.position.id, ...errorFields(error) }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The on-chain leg
+// ---------------------------------------------------------------------------
+
 /**
- * The on-chain leg. The fulfil settles in the same transaction, so after it
- * succeeds there is nothing left but the ledger write.
+ * Settle with the fill recorded on the ledger row. The fulfil settles in the
+ * same transaction, so after it succeeds there is nothing left but the ledger
+ * write.
  *
  * `pending == 0` before the call means one of two things: the user cancelled
  * (their cancel event is on-chain after the request), or this process already
@@ -323,9 +343,7 @@ async function completeOnChain(direction: Direction, event: RequestEvent, entryI
   const controller = event.controller as Address;
 
   const stillPending =
-    direction === "add"
-      ? await pendingDeposit(positionToken, controller)
-      : await pendingRedeem(positionToken, controller);
+    direction === "add" ? await pendingDeposit(positionToken, controller) : await pendingRedeem(positionToken, controller);
 
   if (stillPending === 0n) {
     if (await wasCancelledSince(direction, positionToken, controller, event.blockNumber)) {
@@ -336,22 +354,29 @@ async function completeOnChain(direction: Direction, event: RequestEvent, entryI
     return;
   }
 
-  const fulfillmentPrice = await navPerShare(positionToken);
+  const entry = await db.ledgerEntry.findUniqueOrThrow({ where: { id: entryId } });
+  const size6 = BigInt(entry.filledSize ?? "0");
+  const price18 = BigInt(entry.fillPrice ?? "0");
 
   try {
-    if (direction === "remove") await prefundRedeem(positionToken, stillPending, fulfillmentPrice);
-
-    const txHash =
-      direction === "add"
-        ? await fulfillDepositRequest({ positionToken, controller, fulfillmentPrice })
-        : await fulfillRedeemRequest({ positionToken, controller, fulfillmentPrice });
+    let txHash: string;
+    if (direction === "add") {
+      txHash = await fulfillDepositRequest({ positionToken, controller, addedSize: size6, fillPrice: price18 });
+    } else {
+      const ctx = await contextFor(event.positionId);
+      if (!ctx) throw new Error(`Position ${event.positionId} is not open; cannot fund the redeem`);
+      const settled = await fulfilRedeemFunded(ctx, controller, stillPending, size6, price18);
+      txHash = settled.txHash;
+      // The reduce freed roughly the redeemer's share of equity as margin.
+      if (size6 > 0n) recycleFreedMargin(ctx, settled.payout);
+    }
 
     await markOnchainFulfilled(entryId);
-    log.info("margin request fulfilled and settled on-chain", {
+    log.info("request fulfilled and settled on-chain", {
       positionId: event.positionId,
       direction,
       txHash,
-      fulfillmentPrice: fulfillmentPrice.toString(),
+      size: fromSize6(size6),
     });
   } catch (error) {
     if (isNoPendingRevert(error)) {
@@ -367,6 +392,32 @@ async function completeOnChain(direction: Direction, event: RequestEvent, entryI
       ...errorFields(error),
     });
     throw error;
+  }
+}
+
+/// Fund, then fulfil. A report landing in between can move NAV up a little;
+/// one re-fund and retry covers it.
+async function fulfilRedeemFunded(
+  ctx: Context,
+  controller: Address,
+  shares: bigint,
+  closedSize6: bigint,
+  fillPrice18: bigint,
+): Promise<{ txHash: string; payout: bigint }> {
+  for (let attempt = 1; ; attempt += 1) {
+    const payout = await ensureRedeemFunds(ctx, shares);
+    try {
+      const txHash = await fulfillRedeemRequest({
+        positionToken: ctx.positionToken,
+        controller,
+        closedSize: closedSize6,
+        fillPrice: fillPrice18,
+      });
+      return { txHash, payout };
+    } catch (error) {
+      const short = /insufficient assets/i.test(error instanceof Error ? error.message : String(error));
+      if (!short || attempt >= 2) throw error;
+    }
   }
 }
 
@@ -428,31 +479,41 @@ export async function cancelEntry(entryId: string, reason: string): Promise<void
   await markCancelled(entryId, reason);
 }
 
+/**
+ * Undo an Arcus leg whose request was cancelled on-chain. The contract never
+ * changed size for it, so Arcus goes back to match:
+ *   - cancelled buy-in: reduce-only close of the size it added, then withdraw
+ *     the funding back to the internal wallet (best effort).
+ *   - cancelled redeem: re-open the size it closed -- the shares came back.
+ */
 async function reverseOnArcus(entry: LedgerEntry): Promise<void> {
-  const position = await db.position.findUnique({ where: { id: entry.positionId } });
-  const slot = await getSlotForPosition(entry.positionId);
-  if (!position || !slot) {
-    throw new Error(`cannot reverse entry ${entry.id}: position or slot missing`);
+  const ctx = await contextFor(entry.positionId);
+  if (!ctx) throw new Error(`cannot reverse entry ${entry.id}: position not open`);
+  const credentials = credentialsFor(ctx.slot);
+  const size6 = BigInt(entry.filledSize ?? "0");
+
+  if (size6 > 0n) {
+    const leg = await findLeg(credentials, ctx.market.arcusMarketId);
+    const opposite: OrderSide = ctx.side === "BUY" ? "SELL" : "BUY";
+    const outcome = await placeMarketOrder({
+      credentials,
+      market: ctx.market,
+      side: entry.type === "margin_add" ? opposite : ctx.side,
+      quantity: fromSize6(entry.type === "margin_add" && leg ? minBigInt(size6, toSize6(leg.size)) : size6),
+      reduceOnly: entry.type === "margin_add",
+      clientId: clientIdFor("x", entry.id),
+    });
+    if (outcome.unfilled) throw new Error(`reversal order for entry ${entry.id} did not fill (${outcome.status})`);
   }
 
-  const market = await requireMarket(position.market);
-  const decimals = await usdgDecimals();
-  const dollars = fromBaseUnits(BigInt(entry.amount), decimals);
-  // Opposite sign of the original move.
-  const amount = entry.type === "margin_add" ? negateDecimal(dollars) : dollars;
-
-  await adjustIsolatedMargin(credentialsFor(slot), { marketId: market.arcusMarketId, amount });
-
-  if (entry.type === "margin_remove") {
-    // The margin goes back, but the proportional reduce-only order is not
-    // re-opened -- that leg is now smaller than the restored share count.
-    // Only reachable when the backend sat on a redeem for 20+ minutes.
-    alert("redeem cancelled after the proportional reduce; Arcus size not restored", {
+  if (entry.type === "margin_add") recycleFreedMargin(ctx, BigInt(entry.amount));
+  if (entry.type === "margin_remove" && size6 > 0n) {
+    alert("redeem cancelled after the reduce; Arcus size re-opened at a new price", {
       entryId: entry.id,
       positionId: entry.positionId,
     });
   }
-  log.warn("reversed a cancelled margin move on Arcus", { entryId: entry.id, amount });
+  log.warn("reversed a cancelled request on Arcus", { entryId: entry.id, type: entry.type, size: fromSize6(size6) });
 }
 
 /// Reconciler hook: retry the on-chain leg of an entry that confirmed on Arcus
@@ -476,4 +537,8 @@ export async function retryFulfil(entryId: string): Promise<void> {
     },
     entry.id,
   );
+}
+
+function minBigInt(a: bigint, b: bigint): bigint {
+  return a < b ? a : b;
 }

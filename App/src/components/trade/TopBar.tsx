@@ -1,6 +1,6 @@
 "use client";
 
-import { BASE_EQUITY, money } from "./data";
+import { BASE_EQUITY, cat, money } from "./data";
 import WalletChip from "../auth/WalletChip";
 import MarketMenu from "./MarketMenu";
 import { posPnl, type TradeEngine } from "./engine";
@@ -58,8 +58,24 @@ export default function TopBar({ engine }: { engine: TradeEngine }) {
             }}
           >
             <Disc sym={st.market} size={26} font={12} />
-            <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.04em", color: "#fdfbf7", whiteSpace: "nowrap" }}>
-              {st.market}-PERP
+            <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.04em", color: "#fdfbf7", whiteSpace: "nowrap", lineHeight: 1.1 }}>
+                {st.market}-PERP
+              </div>
+              <div
+                style={{
+                  maxWidth: 150,
+                  fontSize: 10.5,
+                  fontWeight: 500,
+                  color: "#a79bd0",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  lineHeight: 1.1,
+                }}
+              >
+                {cat(st.market).name}
+              </div>
             </div>
             <svg
               width="12"

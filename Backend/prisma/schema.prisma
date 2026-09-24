@@ -54,7 +54,7 @@ model SubaccountSlot {
   /// Secret name for the matching Ed25519 private key, not the key itself.
   arcusApiSecretRef String @map("arcus_api_secret_ref")
 
-  status               String    @default("free") // 'free' | 'reserved' | 'allocated'
+  status               String    @default("free") // 'free' | 'reserved' | 'allocated' | 'settling'
   reservedForUser      String?   @map("reserved_for_user")
   reservedAt           DateTime? @map("reserved_at")
   /// Set alongside reservedAt; the reclaim sweep frees a slot past it only while
@@ -108,9 +108,18 @@ model Position {
   depositedAmount String? @map("deposited_amount")
   /// VWAP entry, 1e18 fixed point -- matches PositionToken.PRICE_SCALE.
   entryPrice      String? @map("entry_price")
-  /// Filled size in USDG base units per unit of the asset -- the scale
-  /// PositionToken's `size * (mark - entry) / 1e18` needs to land in USDG.
+  /// Base quantity x 1e6 (lib/units.ts) -- the scale PositionToken's
+  /// `size * (mark - entry) / 1e18` needs to land in USDG. Mirrors the token:
+  /// buy-ins and redeems resize it, and the indexer re-reads it after each.
   size            String?
+
+  /// Mirrors of PositionToken state, refreshed by the indexer: `capital` and
+  /// `fundingSettled` on every fulfil, `markPrice` / `fundingAccrued` on every
+  /// FundingUpdated. USDG 6dp (signed for funding); mark at 1e18.
+  capital        String?
+  fundingSettled String  @default("0") @map("funding_settled")
+  markPrice      String? @map("mark_price")
+  fundingAccrued String  @default("0") @map("funding_accrued")
 
   /// Set by the creator's on-chain `list(nickname)`, mirrored by the indexer.
   /// Discovery shows listed positions only. The buy-in fee is the contract's
@@ -118,7 +127,17 @@ model Position {
   listed   Boolean @default(false)
   nickname String  @default("")
 
-  status        String  @default("open") // 'open' | 'closed'
+  /// The creator's stop loss / take profit, set once at createPosition and
+  /// never editable: the defaults for every holder who hasn't set their own.
+  /// Human prices of the underlying ("1900"); null = none. `defaultsActive`
+  /// mirrors the token, flipped off by `DefaultTriggersRetired`.
+  defaultStopLoss   String? @map("default_stop_loss")
+  defaultTakeProfit String? @map("default_take_profit")
+  defaultsActive    Boolean @default(false) @map("defaults_active")
+
+  /// 'open' | 'closed' (close() landed, funds still on Arcus) | 'settled'
+  /// (recovered USDG in the token, holders can claim).
+  status        String  @default("open")
   failureReason String? @map("failure_reason")
 
   /// Distinguishes a normal close from an Arcus-side liquidation -- on-chain
@@ -132,8 +151,13 @@ model Position {
   openedAt  DateTime? @map("opened_at")
   closedAt  DateTime? @map("closed_at")
 
-  ledgerEntries LedgerEntry[]
-  reports       PositionReport[]
+  ledgerEntries  LedgerEntry[]
+  reports        PositionReport[]
+  holdings       Holding[]
+  flows          Flow[]
+  stats          PositionStats?
+  settlement     Settlement?
+  holderTriggers HolderTrigger[]
 
   @@index([status])
   @@index([userWalletAddress])
@@ -164,6 +188,10 @@ model PositionOpenRequest {
   direction          String // 'long' | 'short'
   leverage           Int
   amount             String // USDG base units
+  /// The creator's default SL/TP, human prices; null = none. Passed to
+  /// createPosition once the fill is known.
+  stopLoss           String? @map("stop_loss")
+  takeProfit         String? @map("take_profit")
   paymentTxHash      String? @unique @map("payment_tx_hash") // creator -> internal wallet transfer
   arcusDepositTxHash String? @map("arcus_deposit_tx_hash") // internal wallet -> initiateDeposit
   creditedAmount     String? @map("credited_amount") // what Arcus actually credited, base units
@@ -218,6 +246,9 @@ model PositionReport {
   /// The single point written from `PositionClosed` -- totalAssets is then
   /// `finalNavValue`, and the NAV series ends here.
   isFinal     Boolean @default(false) @map("is_final")
+  /// On the final point only: true from `PositionClosed` (the formula
+  /// estimate) until `Settled` rewrites it with the USDG actually recovered.
+  provisional Boolean @default(false)
 
   timestamp DateTime
   createdAt DateTime @default(now()) @map("created_at")
@@ -240,7 +271,7 @@ model LedgerEntry {
   positionId String   @map("position_id")
   position   Position @relation(fields: [positionId], references: [id])
 
-  type   String // 'deposit' | 'margin_add' | 'margin_remove' | 'close' | 'cancel'
+  type   String // 'deposit' | 'margin_add' | 'margin_remove' | 'trigger_exit' | 'close' | 'cancel'
   /// String, not float -- avoids precision drift on money. USDG base units.
   amount String
 
@@ -261,6 +292,20 @@ model LedgerEntry {
   onchainFulfilledAt DateTime? @map("onchain_fulfilled_at")
 
   arcusRequestId String?  @map("arcus_request_id")
+  /// The request event's own amount: assets (USDG 6dp) for a buy-in, shares
+  /// for a redeem. `amount` above is the USDG value.
+  requestAmount  String?  @map("request_amount")
+  /// Buy-in / redeem Arcus leg, saved as it happens so a restart or the
+  /// reconciler can finish the on-chain fulfil with the real fill. `filledSize`
+  /// is size6, `fillPrice` 1e18; both "0" for a margin-only buy-in or a redeem
+  /// below the minimum order size.
+  arcusClientId  String?  @map("arcus_client_id")
+  filledSize     String?  @map("filled_size")
+  fillPrice      String?  @map("fill_price")
+  /// trigger_exit only: the batch's holders, their shares and closed-size
+  /// slices, with a `done` flag per executeTrigger, so a restart finishes the
+  /// on-chain exits with the same split the Arcus order was sized from.
+  batch          Json?
   note           String?
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
@@ -272,36 +317,56 @@ model LedgerEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Market mapping. Not cosmetic: order signing converts human prices and sizes
-// into the integer ticks and quantums the Ed25519 payload is built from, and
-// that conversion needs tickSize/stepSize. No row here means no trading.
+// Markets -- synced from Arcus `GET /v1/markets` every minute (marketSync.ts).
+// Not cosmetic: order signing converts human prices and sizes into the integer
+// ticks and quantums the Ed25519 payload is built from, and that conversion
+// needs tickSize/stepSize. No row here means no trading. Rows are never
+// deleted -- a market that vanishes from Arcus goes OFFLINE, because positions
+// reference it.
 // ---------------------------------------------------------------------------
 
 model Market {
-  /// bytes32 of the Laxu symbol, right-padded -- what PositionToken stores.
-  laxuMarket String @id @map("laxu_market")
-  /// Laxu-side display symbol, e.g. "TSLA".
-  symbol     String @unique
+  /// bytes32 of the base asset, right-padded ("ETH" -> 0x455448…00). This is
+  /// what PositionToken stores as `market` and renders back into the token's
+  /// name, so it must stay readable ASCII -- never a hash. Never changes.
+  id            String  @id @map("laxu_market")
+  arcusMarketId Int     @unique @map("arcus_market_id")
+  displaySymbol String  @unique @map("display_symbol") // "ETH-USD"
+  baseAsset     String  @unique @map("base_asset") // "ETH"
+  fullAssetName String  @map("full_asset_name") // "Ethereum"
+  /// Arcus's own category, straight through. Drives the filter tabs.
+  assetClass    String  @map("asset_class") // 'CRYPTO' | 'EQUITIES' | 'COMMODITIES' | 'INDICES'
+  status        String // 'ONLINE' | 'OFFLINE'
+  /// Null when neither the metadata endpoint nor the branding path has one --
+  /// the frontend draws a letter avatar.
+  logoUrl       String? @map("logo_url")
 
-  /// Arcus's own four market categories, straight through -- no translation
-  /// layer, no separate "pTokens" bucket (that's a different Arcus product,
-  /// not a market category). Drives the discovery page's filter tabs.
-  assetClass String @map("asset_class") // 'CRYPTO' | 'EQUITIES' | 'COMMODITIES' | 'INDICES'
+  /// Leverage inputs -- see maxLeverage() in services/markets.ts.
+  initialMarginFraction         String  @map("initial_margin_fraction")
+  offHoursInitialMarginFraction String  @map("off_hours_initial_margin_fraction")
+  isOutsideRth                  Boolean @default(false) @map("is_outside_rth")
+  /// { startSecondsOfDay, endSecondsOfDay, timezone, isOvernight }; null for
+  /// 24/7 crypto markets.
+  regularTradingHours           Json?   @map("regular_trading_hours")
 
-  arcusMarketId    Int?    @unique @map("arcus_market_id")
-  /// Arcus display name, e.g. "TSLA-USD".
-  arcusDisplayName String? @map("arcus_display_name")
+  /// Order sizing and signing. Decimal strings, same rule as the ledger.
+  tickSize         String @map("tick_size")
+  stepSize         String @map("step_size")
+  minOrderSize     String @map("min_order_size")
+  maxOrderSize     String @map("max_order_size")
+  minOrderNotional String @map("min_order_notional")
 
-  tickSize     String? @map("tick_size")
-  stepSize     String? @map("step_size")
-  minOrderSize String? @map("min_order_size")
-  maxOrderSize String? @map("max_order_size")
-  status       String  @default("UNRESOLVED") // 'ONLINE' | 'OFFLINE' | 'UNRESOLVED'
-  maxLeverage  Int?    @map("max_leverage")
+  /// Arcus's liquidation line as a fraction of notional. Drives "At Risk":
+  /// equity / notional < 1.5 x this.
+  maintenanceMarginFraction String @default("0") @map("maintenance_margin_fraction")
 
-  refreshedAt DateTime? @map("refreshed_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  /// Display only -- up to a minute stale. The open flow reads Arcus fresh.
+  markPrice      String @map("mark_price")
+  priceChange24h String @map("price_change_24h")
 
+  syncedAt DateTime @updatedAt @map("synced_at")
+
+  @@index([status])
   @@map("markets")
 }
 
@@ -323,14 +388,153 @@ model LendingPool {
 }
 
 model Borrower {
-  id            String      @id @default(cuid())
-  lendingPoolId String      @map("lending_pool_id")
-  lendingPool   LendingPool @relation(fields: [lendingPoolId], references: [id])
-  address       String
-  createdAt     DateTime    @default(now()) @map("created_at")
+  id               String      @id @default(cuid())
+  lendingPoolId    String      @map("lending_pool_id")
+  lendingPool      LendingPool @relation(fields: [lendingPoolId], references: [id])
+  address          String
+  /// Re-read from the pool on every lending event (collateralBalance /
+  /// currentDebt). Shares 6dp; debt USDG 6dp.
+  collateralShares String      @default("0") @map("collateral_shares")
+  debt             String      @default("0")
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @default(now()) @updatedAt @map("updated_at")
 
   @@unique([lendingPoolId, address])
   @@map("borrowers")
+}
+
+// ---------------------------------------------------------------------------
+// Metrics -- discovery, position and portfolio pages. Holding / Flow are
+// written by the indexer from chain events; PositionStats is recomputed every
+// minute straight after the reporter tick (services/positionStats.ts).
+// ---------------------------------------------------------------------------
+
+/// Token balances, re-read from balanceOf on every Transfer (idempotent).
+model Holding {
+  positionId String   @map("position_id")
+  position   Position @relation(fields: [positionId], references: [id])
+  address    String
+  balance    String // shares, 6 decimals
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@id([positionId, address])
+  @@index([address])
+  @@map("holdings")
+}
+
+/// Capital in and out of a position, at the NAV it happened at.
+model Flow {
+  id          String   @id @default(cuid())
+  positionId  String   @map("position_id")
+  position    Position @relation(fields: [positionId], references: [id])
+  type        String // open | buy_in | top_up | redeem | trigger_exit | claim
+  /// trigger_exit only: 'stop_loss' | 'take_profit'.
+  trigger     String?
+  address     String
+  assets      String // USDG 6dp (net of fee for buy-ins)
+  feeAssets   String   @default("0") @map("fee_assets")
+  shares      String
+  navPerShare String   @map("nav_per_share") // 1e18
+  txHash      String   @map("tx_hash")
+  logIndex    Int      @map("log_index")
+  timestamp   DateTime
+
+  @@unique([txHash, logIndex])
+  @@index([positionId, timestamp])
+  @@index([address])
+  @@map("flows")
+}
+
+/// A holder's own SL/TP override, mirrored from `TriggersSet`. No row = the
+/// holder uses the position's defaults (while `defaultsActive`); a row with
+/// both levels null = explicitly none. A personal trigger that fires is
+/// deleted (`TriggerExecuted` with `usedDefault = false`).
+model HolderTrigger {
+  positionId String   @map("position_id")
+  position   Position @relation(fields: [positionId], references: [id])
+  holder     String
+  stopLoss   String?  @map("stop_loss") // human price; null = none
+  takeProfit String?  @map("take_profit")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@id([positionId, holder])
+  @@map("holder_triggers")
+}
+
+/// The 2% buy-in fee, collected at requestDeposit -- before the buy-in's Flow
+/// row exists. Held here until the matching DepositFulfilled folds it into that
+/// Flow's `feeAssets`; voided when the request is cancelled instead.
+model BuyInFee {
+  id          String   @id @default(cuid())
+  positionId  String   @map("position_id")
+  controller  String
+  amount      String // USDG 6dp
+  txHash      String   @map("tx_hash")
+  logIndex    Int      @map("log_index")
+  blockNumber BigInt   @map("block_number")
+  flowId      String?  @map("flow_id")
+  voided      Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([txHash, logIndex])
+  @@index([positionId, controller])
+  @@map("buy_in_fees")
+}
+
+/// Close -> withdraw -> settle -> push claims, one row per closing position.
+/// Every step records what it did here before moving on, and each checks the
+/// chain before acting, so a restart resumes rather than repeating a step that
+/// moves money (services/settlement.ts).
+///
+///   closing -> withdrawing -> settling -> settled
+model Settlement {
+  positionId        String    @id @map("position_id")
+  position          Position  @relation(fields: [positionId], references: [id])
+  trigger           String // 'creator_close' | 'liquidation'
+  /// The close's final price (1e18) and cumulative funding (USDG 6dp),
+  /// written at the fill so a restart calls close() with the real values.
+  finalMarkPrice    String?   @map("final_mark_price")
+  finalFunding      String?   @map("final_funding")
+  closeTxHash       String?   @map("close_tx_hash")
+  /// Set just before the Arcus withdrawal is submitted: a restart that finds
+  /// this without `withdrawalId` looks the withdrawal up on the transfer feed
+  /// instead of submitting a second one.
+  withdrawStartedAt DateTime? @map("withdraw_started_at")
+  withdrawalId      String?   @map("withdrawal_id")
+  recoveredAssets   String?   @map("recovered_assets") // USDG 6dp
+  fundTxHash        String?   @map("fund_tx_hash") // internal wallet -> token top-up
+  settleTxHash      String?   @map("settle_tx_hash")
+  recoverTxHash     String?   @map("recover_tx_hash") // token.recoverExcess
+  claimsPushedAt    DateTime? @map("claims_pushed_at")
+  status            String    @default("closing")
+  error             String?
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("settlements")
+}
+
+/// One row per position, refreshed every minute.
+model PositionStats {
+  positionId        String   @id @map("position_id")
+  position          Position @relation(fields: [positionId], references: [id])
+  navPerShare       String   @map("nav_per_share") // 1e18
+  totalAssets       String   @map("total_assets") // USDG 6dp
+  totalSupply       String   @map("total_supply")
+  pnlBps            Int      @map("pnl_bps") // (nav - 1) in bps
+  markPrice         String   @map("mark_price") // 1e18
+  fundingNet        String   @map("funding_net") // fundingAccrued - fundingSettled, USDG 6dp
+  effectiveLeverage String   @map("effective_leverage") // size x mark / totalAssets, decimal
+  holderCount       Int      @map("holder_count")
+  buyInVolume       String   @map("buy_in_volume") // all-time, gross (assets + fee), USDG 6dp
+  buyInVolume24h    String   @map("buy_in_volume_24h")
+  buyerCount24h     Int      @map("buyer_count_24h")
+  isAtRisk          Boolean  @map("is_at_risk")
+  isCollateralized  Boolean  @map("is_collateralized")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("position_stats")
 }
 
 // ---------------------------------------------------------------------------

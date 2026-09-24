@@ -32,7 +32,7 @@ export default function SpotlightCard({ t, onBuy }: { t: Card; onBuy: () => void
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 11, minWidth: 0 }}>
-          <Disc size={34} font={14} accent={t.accent} logo={t.logo} initial={t.initial} />
+          <Disc size={34} font={14} base={t.base} logo={t.logo} />
           <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
             <Link
               href="/position"

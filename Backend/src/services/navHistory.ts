@@ -1,7 +1,20 @@
 import { db } from "../config/db";
 import { fromBaseUnits } from "../lib/decimal";
 import { notFound } from "../lib/errors";
+import { lifecycleOf } from "./discovery";
 import { bytes32ToSymbol } from "./markets";
+
+/// USDG (6dp) paid to `holder` out of a settled position, summed over its
+/// Claimed events -- the position page's "You received $X".
+export async function claimedBy(positionTokenAddress: string, holder: string): Promise<{ assets: string }> {
+  const position = await findByToken(positionTokenAddress);
+  const flows = await db.flow.findMany({
+    where: { positionId: position.id, type: "claim", address: holder.toLowerCase() },
+    select: { assets: true },
+  });
+  const total = flows.reduce((sum, flow) => sum + BigInt(flow.assets), 0n);
+  return { assets: fromBaseUnits(total, 6) };
+}
 
 /**
  * Position NAV history -- the stepped line on the position page and the
@@ -86,7 +99,7 @@ export async function getNavHistory(positionTokenAddress: string, limit?: number
       navPerToken: navPerToken(1n, 1n),
     },
     points: limit ? downsample(all, limit) : all,
-    closed: position.status === "closed" || reports.some((report) => report.isFinal),
+    closed: position.status !== "open" || reports.some((report) => report.isFinal),
   };
 }
 
@@ -94,7 +107,10 @@ export async function getNavHistory(positionTokenAddress: string, limit?: number
 /// point its charts at the right market and draw the entry marker.
 export async function getPublicPosition(positionTokenAddress: string) {
   const position = await findByToken(positionTokenAddress);
-  const market = await db.market.findUnique({ where: { laxuMarket: position.market } });
+  const [market, settlement] = await Promise.all([
+    db.market.findUnique({ where: { id: position.market.toLowerCase() } }),
+    db.settlement.findUnique({ where: { positionId: position.id }, select: { status: true } }),
+  ]);
 
   let symbol: string | null = null;
   try {
@@ -106,9 +122,14 @@ export async function getPublicPosition(positionTokenAddress: string) {
   return {
     positionTokenAddress: position.positionTokenAddress,
     status: position.status,
+    /// open -> closing (unwinding on Arcus) -> settling (returning funds) -> settled.
+    lifecycle: lifecycleOf(position.status, settlement?.status ?? null),
     symbol,
     /// Arcus market name the candles endpoint takes, e.g. "ETH-USD".
-    arcusMarket: market?.arcusDisplayName ?? null,
+    arcusMarket: market?.displaySymbol ?? null,
+    /// Null when Arcus has no logo -- the page draws a letter avatar.
+    logoUrl: market?.logoUrl ?? null,
+    fullAssetName: market?.fullAssetName ?? null,
     direction: position.direction,
     leverage: position.leverage,
     nickname: position.nickname,

@@ -69,9 +69,8 @@ export default function PositionHeader({ vals }: { vals: PositionVals }) {
             <Disc
               size={58}
               font={22}
-              accent={vals.accent}
+              base={vals.base}
               logo={vals.logo}
-              initial={vals.initial}
               style={{ boxShadow: "0 10px 26px rgba(10,6,28,0.45)" }}
             />
             <div style={{ display: "flex", flexDirection: "column", gap: 9, minWidth: 0 }}>

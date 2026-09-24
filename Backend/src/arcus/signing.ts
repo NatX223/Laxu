@@ -32,6 +32,8 @@ export const OrderSignOp = {
   Cancel: 2,
   Modify: 3,
   PlaceUntriggered: 4,
+  /// WithdrawV1 (API-key-signed USDG withdrawal).
+  Withdraw: 5,
 } as const;
 
 export const OrderSignSide = { Buy: 0, Sell: 1 } as const;

@@ -1,40 +1,17 @@
 import type { CSSProperties } from "react";
-import { initial as initialOf, cat, tintInk } from "./data";
+import MarketIcon from "../MarketIcon";
+import { cat } from "./data";
 
 /** Archivo is set on `body`; the display serif and the mono opt in. */
 export { SERIF } from "../landing/shared";
 export const MONO = "var(--font-ibm-plex-mono), monospace";
 
 /**
- * The tinted market disc. Every instance in the design is the same thing at a
- * different size: a logo image when the market has one, otherwise the first
- * letter of the ticker on the market's tint.
+ * The market disc, at whatever size the design calls for — the shared
+ * MarketIcon: Arcus's logo, or a letter avatar when there is none.
  */
 export function Disc({ sym, size, font, style }: { sym: string; size: number; font: number; style?: CSSProperties }) {
-  const market = cat(sym);
-  return (
-    <div
-      style={{
-        flex: "none",
-        width: size,
-        height: size,
-        borderRadius: "50%",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontSize: font,
-        fontWeight: 700,
-        color: tintInk(sym),
-        backgroundColor: market.tint,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-        backgroundImage: market.logo ? `url(${market.logo})` : undefined,
-        ...style,
-      }}
-    >
-      {initialOf(sym)}
-    </div>
-  );
+  return <MarketIcon logoUrl={cat(sym).logo} baseAsset={sym} size={size} font={font} style={style} />;
 }
 
 /** The all-caps micro label used for every field name on this screen. */
