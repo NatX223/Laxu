@@ -1,0 +1,27 @@
+{
+  "network": "robinhoodTestnet",
+  "chainId": 46630,
+  "admin": "0x9800d7DEcC19B4F6986DA512C5524E61C8040e8d",
+  "operator": "0xA5cA675E99BF088b2000e2ad594a24AFfA1425A7",
+  "usdg": "0x293b337712d4312776a3a2d292f44410e7873bad",
+  "PositionToken": {
+    "address": "0x60101F14631bAAff60f09D5BA0aDF3F940d15e2a",
+    "block": 124055743
+  },
+  "PositionTokenFactory": {
+    "address": "0x15F8DFF61656e17a5C5AE7e03571f9833bBEb84c",
+    "block": 124055824
+  },
+  "LendingVault": {
+    "address": "0x6Defff9515D183AB7bBd3BBcE822C54D852D4bEf",
+    "block": 124055903
+  },
+  "LendingPool": {
+    "address": "0x8b8d3EeE0BF4f42417C2b4d14491D343F162Bd1C",
+    "block": 124055949
+  },
+  "LendingPoolFactory": {
+    "address": "0x6DDb43385fbB07a5c9ee2b84343940eE84f138ab",
+    "block": 124055963
+  }
+}
