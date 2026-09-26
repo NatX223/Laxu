@@ -11,3 +11,6 @@ artifacts
 
 # Ignore Hardhat Ignition default folder
 ignition/deployments
+
+# One-off local scripts
+scripts/sendEth.js

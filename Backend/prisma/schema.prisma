@@ -15,13 +15,44 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 model User {
-  walletAddress String     @id @map("wallet_address")
-  privyUserId   String     @unique @map("privy_user_id")
-  tag           String     @unique
-  createdAt     DateTime   @default(now()) @map("created_at")
+  walletAddress String        @id @map("wallet_address")
+  privyUserId   String        @unique @map("privy_user_id")
+  tag           String        @unique
+  createdAt     DateTime      @default(now()) @map("created_at")
   positions     Position[]
+  faucetClaims  FaucetClaim[]
 
   @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// Test funds faucet (testnet only). A row is inserted as `pending` BEFORE
+// anything is sent, so a double-click cannot pay twice; `sent` and `pending`
+// rows count toward the per-user cooldown and the per-IP limit, `failed` ones
+// do not. Keyed to the user by wallet address, which is User's primary key.
+// ---------------------------------------------------------------------------
+
+model FaucetClaim {
+  id            String   @id @default(cuid())
+  walletAddress String   @map("wallet_address")
+  ip            String?
+  /// Base units, as strings.
+  usdgAmount    String   @map("usdg_amount")
+  /// "0" when the wallet already held the ETH target, or the send was skipped.
+  ethAmountWei  String   @map("eth_amount_wei")
+  usdgTxHash    String?  @map("usdg_tx_hash")
+  ethTxHash     String?  @map("eth_tx_hash")
+  /// Set when the ETH top-up was skipped because the faucet is under reserve.
+  ethSkipped    Boolean  @default(false) @map("eth_skipped")
+  status        String   @default("pending") // 'pending' | 'sent' | 'failed'
+  error         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [walletAddress], references: [walletAddress])
+
+  @@index([walletAddress, createdAt])
+  @@index([ip, createdAt])
+  @@map("faucet_claims")
 }
 
 // ---------------------------------------------------------------------------

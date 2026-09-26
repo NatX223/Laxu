@@ -4,6 +4,7 @@ import { PrivyProvider } from "@privy-io/react-auth";
 import { robinhoodTestnet } from "@/lib/chain";
 import { env } from "@/lib/env";
 import TriggerNotifier from "@/components/TriggerNotifier";
+import { FaucetProvider } from "@/lib/faucet";
 import { NoAuthSessionProvider, SessionProvider } from "@/lib/session";
 
 export function Providers({ children }: { children: React.ReactNode }) {
@@ -21,8 +22,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
       }}
     >
       <SessionProvider>
-        <TriggerNotifier />
-        {children}
+        <FaucetProvider>
+          <TriggerNotifier />
+          {children}
+        </FaucetProvider>
       </SessionProvider>
     </PrivyProvider>
   );

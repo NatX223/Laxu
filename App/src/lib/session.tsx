@@ -9,7 +9,7 @@ import { ApiError, apiFetch, type LaxuUser } from "./api";
  * Privy login state joined to the backend's user row.
  *
  * After every login this calls `POST /users/me` once: it creates the row on a
- * first visit (wallet resolved server-side, default tag, gas drip) and is a
+ * first visit (wallet resolved server-side, default tag) and is a
  * plain read after that. An email user's embedded wallet is created a beat
  * after login, so `WALLET_NOT_READY` is retried briefly.
  */

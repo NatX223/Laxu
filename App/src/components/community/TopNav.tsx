@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { SERIF } from "./shared";
 import AccountMenu from "../auth/AccountMenu";
+import FaucetButton from "../faucet/FaucetButton";
 
 const LINK: React.CSSProperties = {
   fontSize: 13,
@@ -60,6 +61,7 @@ export default function TopNav({ communityHref = "#" }: { communityHref?: string
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <FaucetButton />
         <AccountMenu />
       </div>
     </div>

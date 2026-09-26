@@ -129,7 +129,7 @@ export function withWalletLock<T>(address: string, task: () => Promise<T>): Prom
 
 let faucetInstance: WalletClient | undefined;
 
-/// New-user gas drip only. Kept apart from the roles above for the same
+/// The test funds faucet only (services/faucet.ts). Kept apart from the roles above for the same
 /// reason they are kept apart from each other.
 export function faucetWallet(): WalletClient {
   if (!faucetInstance) {

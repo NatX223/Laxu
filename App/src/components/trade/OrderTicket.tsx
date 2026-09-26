@@ -1,6 +1,7 @@
 "use client";
 
 import { hoursHint } from "@/lib/markets";
+import { FaucetNudge } from "../faucet/FaucetButton";
 import { SIZE_CHIPS, cat, money } from "./data";
 import type { MarketView } from "./derive";
 import { liqOf, triggerProblem, type TradeEngine } from "./engine";
@@ -234,6 +235,8 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
             </div>
           ))}
         </div>
+
+        <FaucetNudge tradeUsdg={st.size} />
 
         <div
           onClick={actions.placeOrder}

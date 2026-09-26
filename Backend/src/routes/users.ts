@@ -17,7 +17,7 @@ const serialise = (user: User) => ({
 });
 
 /// Called once after every login. Creates the row (wallet resolved through
-/// Privy, default tag, gas drip) the first time, returns it unchanged after.
+/// Privy, default tag) the first time, returns it unchanged after.
 usersRouter.post(
   "/me",
   requireUser,

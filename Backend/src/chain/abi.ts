@@ -579,6 +579,19 @@ export const erc20Abi = [
   },
 ] as const;
 
+/// The other testnet-mint shape, `mint(amount)` to the caller -- the faucet's
+/// FAUCET_USDG_MODE=mint_then_transfer. Its own ABI so viem never has to pick
+/// between two `mint` overloads.
+export const usdgSelfMintAbi = [
+  {
+    type: "function",
+    name: "mint",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
+  },
+] as const;
+
 /// Arcus's PaxosDepositProxy -- pulls USDG from `owner` and credits
 /// `(owner, accountIndex)`. `owner` must equal the signer.
 export const depositProxyAbi = [

@@ -4,7 +4,6 @@ import { getAddress, isAddress } from "viem";
 import { resolvePrivyWallet } from "../auth/privy";
 import { db } from "../config/db";
 import { badRequest, conflict, HttpError, unauthorized } from "../lib/errors";
-import { dripGasInBackground } from "./faucet";
 import { allocateTag, isTagCollision, normaliseTag } from "./tags";
 
 /**
@@ -26,8 +25,8 @@ export function normaliseAddress(address: string): string {
 /**
  * `POST /users/me` -- called once after every login. Idempotent by Privy user
  * id: an existing row comes back untouched. On creation the wallet is
- * resolved through the Privy server SDK, never taken from the request, and a
- * new wallet gets a small gas drip.
+ * resolved through the Privy server SDK, never taken from the request. Gas
+ * and test USDG come from the faucet (POST /faucet/claim), not from here.
  */
 export async function upsertPrivyUser(privyUserId: string): Promise<{ user: User; created: boolean }> {
   if (!privyUserId) throw unauthorized();
@@ -51,7 +50,6 @@ export async function upsertPrivyUser(privyUserId: string): Promise<{ user: User
   return allocateTag(async (tag) => {
     try {
       const user = await db.user.create({ data: { walletAddress, privyUserId, tag } });
-      dripGasInBackground(walletAddress);
       return { user, created: true };
     } catch (error) {
       // A concurrent POST /users/me for the same login may have won the race.

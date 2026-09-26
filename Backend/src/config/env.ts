@@ -149,15 +149,63 @@ export const config = {
   /// the SDK fetches it over JWKS instead.
   privyJwtVerificationKey: optional("PRIVY_JWT_VERIFICATION_KEY"),
 
-  // --- Gas faucet ----------------------------------------------------------
+  /// Hops of reverse proxy in front of the API, for `req.ip` (the faucet's
+  /// per-IP limit). Behind one proxy (Render, Railway, Fly), 1; unproxied, 0 --
+  /// otherwise a client could pick its own IP through X-Forwarded-For.
+  trustProxy: num("TRUST_PROXY", 1),
+
+  // --- Admin ---------------------------------------------------------------
+  /// Shared secret for /admin/*, sent as `x-admin-token`. Unset, /admin is off.
+  adminToken: optional("ADMIN_TOKEN"),
+
+  // --- Test funds faucet (testnet only) ------------------------------------
   /// A brand-new embedded wallet holds zero native gas and cannot sign
-  /// anything, so user creation drips it a little. Its own wallet -- none of
-  /// the operator's or the liquidator's roles. Unset, no drip.
+  /// anything, so "Get test funds" sends USDG and tops its ETH up, all paid by
+  /// the faucet wallet. Its own key -- none of the operator's, liquidator's or
+  /// Arcus wallets' roles. See assertFaucetConfig.
+  faucetEnabled: bool("FAUCET_ENABLED", false),
   faucetPrivateKey: optional("FAUCET_PRIVATE_KEY"),
-  /// Human ETH amounts.
-  faucetDripEth: optional("FAUCET_DRIP_ETH", "0.002"),
-  faucetMinBalanceEth: optional("FAUCET_MIN_BALANCE_ETH", "0.001"),
+  /// `direct`: USDG.mint(user, amount). `mint_then_transfer`: USDG.mint(amount)
+  /// to the faucet, then transfer -- for a token whose mint only pays the caller.
+  faucetUsdgMode: optional("FAUCET_USDG_MODE", "direct") as "direct" | "mint_then_transfer",
+  /// Base units (6 decimals); 1_000_000_000 = 1,000 USDG. bigint-parsed in
+  /// assertFaucetConfig.
+  faucetUsdgAmount: optional("FAUCET_USDG_AMOUNT", "1000000000"),
+  /// Tops the user's ETH up TO this (wei), not "sends this much".
+  faucetEthTargetWei: optional("FAUCET_ETH_TARGET_WEI", "500000000000000"),
+  faucetCooldownHours: num("FAUCET_COOLDOWN_HOURS", 24),
+  /// Below this (wei) the faucet stops sending ETH but keeps sending USDG.
+  faucetMinReserveWei: optional("FAUCET_MIN_RESERVE_WEI", "2000000000000000"),
 } as const;
+
+const WEI_OR_UNITS = /^\d+$/;
+
+/// Refuses to boot with FAUCET_ENABLED=true and anything the claim path would
+/// only trip over at a tester's first click. Called from src/index.ts.
+export function assertFaucetConfig(): void {
+  if (!config.faucetEnabled) return;
+  const problems: string[] = [];
+  if (!config.faucetPrivateKey) problems.push("FAUCET_PRIVATE_KEY is required");
+  if (!config.rpcUrl) problems.push("RPC_URL is required");
+  if (!config.usdgAddress) problems.push("USDG_ADDRESS is required");
+  if (config.faucetUsdgMode !== "direct" && config.faucetUsdgMode !== "mint_then_transfer") {
+    problems.push(`FAUCET_USDG_MODE must be direct or mint_then_transfer, got ${config.faucetUsdgMode}`);
+  }
+  for (const [name, value] of [
+    ["FAUCET_USDG_AMOUNT", config.faucetUsdgAmount],
+    ["FAUCET_ETH_TARGET_WEI", config.faucetEthTargetWei],
+    ["FAUCET_MIN_RESERVE_WEI", config.faucetMinReserveWei],
+  ] as const) {
+    if (!WEI_OR_UNITS.test(value)) problems.push(`${name} must be a whole number of base units, got ${value}`);
+  }
+  if (WEI_OR_UNITS.test(config.faucetUsdgAmount) && BigInt(config.faucetUsdgAmount) === 0n) {
+    problems.push("FAUCET_USDG_AMOUNT must be above 0");
+  }
+  if (!(config.faucetCooldownHours > 0)) problems.push("FAUCET_COOLDOWN_HOURS must be above 0");
+  if (problems.length > 0) {
+    throw new Error(`FAUCET_ENABLED=true but: ${problems.join("; ")}`);
+  }
+}
 
 /// Fail loudly at boot for the values the orchestration cannot run without,
 /// rather than at the first trade. Called from src/index.ts only when the

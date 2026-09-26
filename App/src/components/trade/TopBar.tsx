@@ -2,6 +2,7 @@
 
 import { BASE_EQUITY, cat, money } from "./data";
 import AccountMenu from "../auth/AccountMenu";
+import FaucetButton from "../faucet/FaucetButton";
 import MarketMenu from "./MarketMenu";
 import { posPnl, type TradeEngine } from "./engine";
 import { Disc, MONO, SERIF } from "./shared";
@@ -126,6 +127,7 @@ export default function TopBar({ engine }: { engine: TradeEngine }) {
           <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.14em", color: "#a79bd0" }}>EQUITY</div>
           <div style={{ fontFamily: MONO, fontSize: 14, fontWeight: 600, color: "#fdfbf7" }}>{equity}</div>
         </div>
+        <FaucetButton tone="amber" />
         <AccountMenu tone="amber" />
       </div>
     </div>

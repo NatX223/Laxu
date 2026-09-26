@@ -18,4 +18,6 @@ export const env = {
   arcusBrandingUrl: (process.env.NEXT_PUBLIC_ARCUS_BRANDING_URL ?? "https://branding.testnet.arcus.xyz").replace(/\/$/, ""),
   /** USDG, for approvals ahead of buy-ins, repays and lending. */
   usdgAddress: process.env.NEXT_PUBLIC_USDG_ADDRESS ?? "",
+  /** A public testnet-ETH faucet, linked when ours is too low to send gas. */
+  ethFaucetUrl: process.env.NEXT_PUBLIC_ETH_FAUCET_URL ?? "",
 };

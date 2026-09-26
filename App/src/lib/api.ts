@@ -7,6 +7,8 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** The envelope's `details`, e.g. `{ nextClaimAt }` on a faucet 429. */
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -32,8 +34,8 @@ export async function apiFetch<T>(
   const res = await fetch(`${env.apiUrl}${path}`, { ...init, headers });
   const body = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
-    const error = (body as { error?: { code?: string; message?: string } } | null)?.error;
-    throw new ApiError(res.status, error?.code ?? "HTTP_ERROR", error?.message ?? res.statusText);
+    const error = (body as { error?: { code?: string; message?: string; details?: unknown } } | null)?.error;
+    throw new ApiError(res.status, error?.code ?? "HTTP_ERROR", error?.message ?? res.statusText, error?.details);
   }
   return body as T;
 }
@@ -115,3 +117,34 @@ export const getTriggerExits = (address: string) =>
 /** USDG already paid to `holder` out of a settled position, human decimal. */
 export const getClaimed = (token: string, holder: string) =>
   apiFetch<{ assets: string }>(`/positions/token/${token}/claims/${holder}`);
+
+// --- test funds faucet (testnet only) ---------------------------------------
+
+/** Public: whether to offer test funds at all, even to a signed-out visitor. */
+export type FaucetConfig = { enabled: boolean; usdgAmount: string | null };
+
+export type FaucetStatus = {
+  enabled: true;
+  canClaim: boolean;
+  /** ISO time the cooldown (or the per-IP limit) ends; null when `canClaim`. */
+  nextClaimAt: string | null;
+  /** Human USDG per claim, e.g. "1000". */
+  usdgAmount: string;
+  /** The user's live on-chain balances, human decimals. */
+  balances: { usdg: string; eth: string };
+  /** The faucet itself is below its ETH reserve — claims send USDG only. */
+  faucetLow: boolean;
+};
+
+export type FaucetClaimResult = {
+  usdgTxHash: string;
+  ethTxHash: string | null;
+  /** The faucet was too low on ETH to top the user up; USDG still went out. */
+  ethSkipped: boolean;
+  nextClaimAt: string;
+};
+
+export const getFaucetConfig = () => apiFetch<FaucetConfig>("/faucet/config");
+export const getFaucetStatus = () => apiFetch<FaucetStatus>("/faucet/status", { auth: true });
+/** No body: the backend always pays the signed-in user's stored wallet. */
+export const claimFaucet = () => apiFetch<FaucetClaimResult>("/faucet/claim", { auth: true, method: "POST" });

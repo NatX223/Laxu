@@ -2,16 +2,19 @@ import express, { type NextFunction, type Request, type Response } from "express
 import cors from "cors";
 
 import { db } from "./config/db";
-import { assertOrchestrationConfig, config } from "./config/env";
+import { assertFaucetConfig, assertOrchestrationConfig, config } from "./config/env";
 import { HttpError } from "./lib/errors";
 import { createLogger, errorFields } from "./lib/logger";
 import { startIndexer } from "./indexer";
+import { adminRouter } from "./routes/admin";
+import { faucetRouter } from "./routes/faucet";
 import { healthRouter } from "./routes/health";
 import { marketsRouter } from "./routes/markets";
 import { positionsRouter } from "./routes/positions";
 import { usersRouter } from "./routes/users";
 import { verifySlotCredentials } from "./services/allocator";
 import { startSettlementJob } from "./services/closePosition";
+import { startFaucetMonitor } from "./services/faucet";
 import { startLiquidationJob } from "./services/liquidator";
 import { closeArcusStream, getArcusStream, startArcusStream } from "./services/arcusStream";
 import { startMarketSync } from "./services/marketSync";
@@ -23,9 +26,13 @@ import { statsRouter } from "./routes/stats";
 const log = createLogger("server");
 
 const app = express();
+// req.ip from X-Forwarded-For, for the faucet's per-IP limit. See TRUST_PROXY.
+app.set("trust proxy", config.trustProxy);
 app.use(cors());
 app.use(express.json());
 
+app.use("/admin", adminRouter);
+app.use("/faucet", faucetRouter);
 app.use("/health", healthRouter);
 app.use("/markets", marketsRouter);
 app.use("/positions", positionsRouter);
@@ -66,6 +73,15 @@ async function start(): Promise<void> {
     for (const problem of problems) {
       log.error("slot credentials are inconsistent", problem);
     }
+  }
+
+  // Testnet only. A missing key or a malformed amount refuses to boot rather
+  // than failing a tester's first click.
+  if (config.faucetEnabled) {
+    assertFaucetConfig();
+    stopWorkers.push(startFaucetMonitor());
+  } else {
+    log.info("test funds faucet is off (FAUCET_ENABLED != true)");
   }
 
   // Open-position requests are driven in this process; pick up any a restart
@@ -109,6 +125,7 @@ async function start(): Promise<void> {
       reconciler: config.enableReconciler,
       reporter: config.enableReporter,
       liquidator: config.enableLiquidator,
+      faucet: config.faucetEnabled,
     });
   });
 
