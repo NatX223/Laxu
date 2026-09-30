@@ -5,6 +5,7 @@ import BookPanel from "./BookPanel";
 import Chart from "./Chart";
 import InfoPanel from "./InfoPanel";
 import NavRail from "./NavRail";
+import OpenProgress from "./OpenProgress";
 import OrderTicket from "./OrderTicket";
 import PositionsDock from "./PositionsDock";
 import StatsBar from "./StatsBar";
@@ -44,11 +45,11 @@ export default function TradeScreen({
       <div ref={hostRef} style={{ minWidth: 0, display: "flex", flexDirection: "column" }}>
         <TopBar engine={engine} />
 
-        <div style={{ display: "flex", alignItems: "stretch", gap: 8, padding: 8 }}>
+        <div className="laxu-trade-main" style={{ display: "flex", alignItems: "stretch", gap: 8, padding: 8 }}>
           <NavRail engine={engine} />
           <InfoPanel engine={engine} />
 
-          <div style={{ flex: "1 1 380px", minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="laxu-trade-center" style={{ flex: "1 1 380px", minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
             <StatsBar engine={engine} mkt={mkt} />
 
             {isTrade && (
@@ -87,6 +88,8 @@ export default function TradeScreen({
 
         {isTrade && <PositionsDock engine={engine} />}
       </div>
+
+      <OpenProgress open={engine.open} />
     </div>
   );
 }

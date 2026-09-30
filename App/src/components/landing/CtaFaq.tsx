@@ -32,8 +32,8 @@ export default function CtaFaq() {
           position: "relative",
           display: "flex",
           flexDirection: "column",
-          gap: 90,
-          padding: "110px 24px 130px",
+          gap: "clamp(56px, 12vw, 90px)",
+          padding: "clamp(72px, 14vw, 110px) clamp(16px, 4vw, 24px) clamp(80px, 16vw, 130px)",
           maxWidth: 1180,
           margin: "0 auto",
         }}
@@ -46,7 +46,7 @@ export default function CtaFaq() {
             border: "1px solid rgba(255,255,255,0.8)",
             borderRadius: 30,
             boxShadow: "0 34px 74px rgba(26,23,20,0.22)",
-            padding: "56px 44px 48px",
+            padding: "clamp(36px, 8vw, 56px) clamp(20px, 5vw, 44px) clamp(32px, 7vw, 48px)",
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
@@ -241,7 +241,7 @@ export default function CtaFaq() {
                       alignItems: "center",
                       justifyContent: "space-between",
                       gap: 18,
-                      padding: "22px 24px",
+                      padding: "clamp(18px, 4vw, 22px) clamp(18px, 4vw, 24px)",
                       cursor: "pointer",
                       userSelect: "none",
                     }}
@@ -310,7 +310,7 @@ export default function CtaFaq() {
                           lineHeight: 1.65,
                           fontWeight: 500,
                           color: "#2e2822",
-                          padding: "0 24px 24px",
+                          padding: "0 clamp(18px, 4vw, 24px) 24px",
                           maxWidth: "62ch",
                           textWrap: "pretty",
                         }}

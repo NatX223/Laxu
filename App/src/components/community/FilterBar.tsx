@@ -67,6 +67,7 @@ export default function FilterBar({ engine }: { engine: CommunityEngine }) {
           </div>
         ))}
         <div
+          className="laxu-filter-search"
           style={{
             display: "flex",
             alignItems: "center",
@@ -88,7 +89,8 @@ export default function FilterBar({ engine }: { engine: CommunityEngine }) {
             placeholder="Search token or minter"
             aria-label="Search token or minter"
             style={{
-              width: 190,
+              flex: "1 1 190px",
+              minWidth: 0,
               background: "transparent",
               border: "none",
               outline: "none",

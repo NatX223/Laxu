@@ -1,8 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMarkets } from "@/lib/markets";
-import { FREE_MARGIN, INFO_MIN_WIDTH, cat, syms, type Position, type Side } from "./data";
+import { formatUnits } from "viem";
+import { MIN_GAS_ETH } from "../faucet/FaucetButton";
+import { getHealth, getMyPositions, type MyPosition, type SlotStats } from "@/lib/api";
+import { useWalletBalances } from "@/lib/balances";
+import { useMarketRefresh, useMarkets } from "@/lib/markets";
+import { useSession } from "@/lib/session";
+import { INFO_MIN_WIDTH, cat, syms, type Position, type Side } from "./data";
+import { BUSY_MESSAGE, useOpenTrade } from "./openTrade";
 
 export type Candle = { o: number; c: number; h: number; l: number; v: number };
 export type Tape = { p: number; s: number; buy: boolean; t: string };
@@ -35,20 +41,25 @@ export type TradeState = {
   /** False until the client has generated the price series. */
   seeded: boolean;
   w: number;
+  /**
+   * Arcus's mark per market: the chart's live candle for the one on screen,
+   * `GET /markets` for the rest. Absent until Arcus has answered, never simulated.
+   */
   px: Record<string, number>;
+  /** The chart's close ~24h back, per market, so the stats bar's 24h change matches the chart's. */
+  pxRef: Record<string, number>;
   candles: Record<string, Candle[]>;
   tapes: Record<string, Tape[]>;
   mq: string;
   mktTab: string;
   mktCat: string;
   favs: string[];
+  /** The signed-in user's minted positions, from `GET /positions/mine`. */
   positions: Position[];
-  sel: number;
-  stage: "idle" | "filling";
+  /** Whose `positions` those are, so a sign-out or account switch never shows the last user's. */
+  positionsFor: string | null;
+  sel: string | null;
   notice: string;
-  uid: number;
-  mintFor: number | null;
-  mintName: string;
   /** Brief note under the leverage slider, e.g. after a clamp. */
   levNote: string;
 };
@@ -59,8 +70,8 @@ const INITIAL: TradeState = {
   infoOpen: true,
   side: "long",
   otype: "market",
-  lev: 5,
-  size: 2500,
+  lev: 3,
+  size: 50,
   limit: null,
   sl: "",
   tp: "",
@@ -74,23 +85,18 @@ const INITIAL: TradeState = {
   // the prototype read clientWidth here; 1400 is its fallback and keeps the
   // first client render identical to the server's
   w: 1400,
-  px: { TSLA: 431.2, ETH: 4943.8 },
+  px: {},
+  pxRef: {},
   candles: EMPTY_SERIES,
   tapes: EMPTY_TAPES,
   mq: "",
   mktTab: "Perpetuals",
   mktCat: "All",
   favs: ["BTC"],
-  positions: [
-    { id: 1, sym: "ETH", side: "long", lev: 5, qty: 12.4, entry: 4182.5, tokenized: true, addr: "0x7f1c…3c2a", borrowed: 8200, listed: 0, buyin: 0 },
-    { id: 2, sym: "TSLA", side: "short", lev: 3, qty: 58.6, entry: 447.9, tokenized: false, addr: "", borrowed: 0, listed: 0, buyin: 0 },
-  ],
-  sel: 1,
-  stage: "idle",
+  positions: [],
+  positionsFor: null,
+  sel: null,
   notice: "",
-  uid: 2,
-  mintFor: null,
-  mintName: "",
   levNote: "",
 };
 
@@ -167,12 +173,46 @@ export const posPnl = (p: Position, mark: number) => {
   const d = (mark - p.entry) * p.qty;
   return p.side === "long" ? d : -d;
 };
-export const posEquity = (p: Position, mark: number) => (p.qty * p.entry) / p.lev + posPnl(p, mark);
+export const posEquity = (p: Position, mark: number) => p.margin + posPnl(p, mark);
 /** Liquidation sits 92% of the maintenance band away from the mark. */
 export const liqOf = (mark: number, side: Side, lev: number) =>
   mark * (side === "long" ? 1 - 0.92 / lev : 1 + 0.92 / lev);
 
-export const defaultAlias = (p: Position) => `${p.sym} ${p.side} ${p.lev}×`;
+/** A backend row as the dock / tokens view draw it. Rows that never minted are dropped. */
+function toPosition(row: MyPosition): Position | null {
+  if (!row.positionTokenAddress || !row.symbol) return null;
+  return {
+    id: row.id,
+    sym: row.symbol,
+    side: row.direction,
+    lev: row.leverage,
+    qty: row.size ? Number(formatUnits(BigInt(row.size), 6)) : 0,
+    entry: row.entryPrice ? Number(formatUnits(BigInt(row.entryPrice), 18)) : 0,
+    margin: Number(formatUnits(BigInt(row.depositedAmount ?? row.requestedAmount), 6)),
+    addr: row.positionTokenAddress,
+    pool: row.lendingPoolAddress,
+    nickname: row.nickname,
+    listed: row.listed,
+    status: row.status,
+    liquidated: row.liquidated,
+  };
+}
+
+const POSITIONS_POLL_MS = 30_000;
+/** How often `GET /markets` refreshes the marks of markets the chart isn't streaming. */
+const MARKS_POLL_MS = 5_000;
+/**
+ * A chart-streamed mark this recent beats the polled one: the two Arcus
+ * endpoints can disagree at the same instant, and the price shouldn't flick
+ * between them.
+ */
+const STREAM_FRESH_MS = 15_000;
+const HEALTH_POLL_MS = 15_000;
+/** The backend's MIN_OPEN_AMOUNT: Arcus won't withdraw under $1, which is how a refund travels. */
+export const MIN_TRADE_USDG = 1;
+
+/** A USDG amount as the decimal string the backend wants ("50", "12.5"), never exponent notation. */
+export const usdgString = (n: number) => n.toFixed(6).replace(/\.?0+$/, "");
 
 /**
  * The contract's rule for the creator's SL/TP, checked against the entry
@@ -190,16 +230,9 @@ export function triggerProblem(side: Side, sl: string, tp: string, mark: number 
   return null;
 }
 
-export function aliasTicker(p: Position, name: string) {
-  const trimmed = (name || "").trim();
-  const base = trimmed ? trimmed.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6) : p.sym;
-  return "p" + (base || p.sym) + (p.side === "long" ? "L" : "S") + p.lev;
-}
-
 export function useTradeEngine(liveTicks = true) {
   const [st, setSt] = useState<TradeState>(INITIAL);
   const hostEl = useRef<HTMLDivElement | null>(null);
-  const fillTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const levNoteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -220,42 +253,55 @@ export function useTradeEngine(liveTicks = true) {
     [measure],
   );
 
-  // Live markets from `GET /markets`; re-renders the whole screen on refresh.
+  // Live markets from `GET /markets`, refetched every few seconds for their marks.
   const markets = useMarkets();
+  useMarketRefresh(MARKS_POLL_MS);
   // Symbols whose series were generated from a live Arcus mark (rather than
-  // the design's placeholder base) — each is seeded once, then walks.
+  // the design's placeholder base) — each is seeded once.
   const liveSeeded = useRef(new Set<string>());
+  // When the chart last streamed each market's mark.
+  const streamedAt = useRef<Record<string, number>>({});
 
-  // seed every market on the client — `genCandles` is random, so running it
-  // during render would break hydration. Re-runs as the live list arrives, so
-  // new markets get a series and the design's placeholders are replaced by
-  // real prices.
+  // Each refresh takes Arcus's mark for every market the chart isn't streaming.
+  // The decorative series (sparklines, tape) are seeded on the client, since
+  // `genCandles` is random and would break hydration during render. A market
+  // with no live data gets no mark at all rather than the design's sample one.
   useEffect(() => {
     setSt((s) => {
       const candles = { ...s.candles };
       const tapes = { ...s.tapes };
       const px = { ...s.px };
       let changed = !s.seeded;
+      const now = Date.now();
       syms().forEach((sym) => {
-        const live = !!cat(sym).live;
-        if (candles[sym] && (!live || liveSeeded.current.has(sym))) {
-          // already seeded: pull the simulated walk back to Arcus's mark
-          if (live) {
-            px[sym] = cat(sym).base;
-            changed = true;
-          }
-          return;
+        const live = cat(sym).live;
+        const mark = live ? Number(live.markPrice) : 0;
+        const streaming = now - (streamedAt.current[sym] ?? 0) < STREAM_FRESH_MS;
+        if (mark > 0 && !streaming && px[sym] !== mark) {
+          px[sym] = mark;
+          changed = true;
         }
+        if (candles[sym] && (!live || liveSeeded.current.has(sym))) return;
         if (live) liveSeeded.current.add(sym);
-        const b = cat(sym).base;
-        px[sym] = b;
+        const b = px[sym] ?? cat(sym).base;
         candles[sym] = genCandles(b);
         tapes[sym] = genTape(b);
         changed = true;
       });
-      return changed ? { ...s, candles, tapes, px, now: Date.now(), seeded: true } : s;
+      return changed ? { ...s, candles, tapes, px, now, seeded: true } : s;
     });
   }, [markets]);
+
+  /** The chart's live Arcus candle for `sym`: its close is the mark, `ref` the close ~24h back. */
+  const setLiveMark = useCallback((sym: string, mark: number, ref: number) => {
+    if (!(mark > 0)) return;
+    streamedAt.current[sym] = Date.now();
+    setSt((s) =>
+      s.px[sym] === mark && s.pxRef[sym] === ref
+        ? s
+        : { ...s, px: { ...s.px, [sym]: mark }, pxRef: { ...s.pxRef, [sym]: ref } },
+    );
+  }, []);
 
   useEffect(() => {
     measure();
@@ -276,18 +322,17 @@ export function useTradeEngine(liveTicks = true) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // 1.3s price walk: extends the live bar, rolling a fresh one every 7th tick
+  // 1.3s tick: carries the real mark into the decorative series (the sparkline's
+  // live bar, a fresh one every 7th tick, and the tape). It never moves the mark.
   useEffect(() => {
     if (!liveTicks || !st.seeded) return;
     const id = setInterval(() => {
       setSt((s) => {
-        const px = { ...s.px };
+        const px = s.px;
         const candles = { ...s.candles };
         const tapes = { ...s.tapes };
         Object.keys(px).forEach((m) => {
           if (px[m] == null) return;
-          const drift = (Math.random() - 0.48) * px[m] * 0.0016;
-          px[m] = Math.max(px[m] * 0.5, px[m] + drift);
           const arr = (candles[m] || []).slice();
           if (arr.length) {
             const last = { ...arr[arr.length - 1] };
@@ -304,7 +349,7 @@ export function useTradeEngine(liveTicks = true) {
           }
           tapes[m] = [makeTrade(px[m], 0)].concat((tapes[m] || []).slice(0, 14));
         });
-        return { ...s, px, candles, tapes, tick: s.tick + 1, now: Date.now() };
+        return { ...s, candles, tapes, tick: s.tick + 1, now: Date.now() };
       });
     }, 1300);
     return () => clearInterval(id);
@@ -312,7 +357,6 @@ export function useTradeEngine(liveTicks = true) {
 
   useEffect(
     () => () => {
-      if (fillTimer.current) clearTimeout(fillTimer.current);
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
       if (levNoteTimer.current) clearTimeout(levNoteTimer.current);
     },
@@ -325,71 +369,90 @@ export function useTradeEngine(liveTicks = true) {
     noticeTimer.current = setTimeout(() => setSt((s) => ({ ...s, notice: "" })), 3200);
   }, []);
 
-  const placeOrder = useCallback(() => {
-    let started = false;
-    setSt((s) => {
-      if (s.stage !== "idle") return s;
-      if (triggerProblem(s.side, s.sl, s.tp, s.px[s.market])) return s;
-      started = true;
-      return { ...s, stage: "filling" };
-    });
-    if (!started) return;
-    if (fillTimer.current) clearTimeout(fillTimer.current);
-    fillTimer.current = setTimeout(() => {
-      setSt((s) => {
-        const price = s.px[s.market];
-        const id = s.uid + 1;
-        const pos: Position = {
-          id,
-          sym: s.market,
-          side: s.side,
-          lev: Math.min(s.lev, cat(s.market).lev),
-          qty: (s.size * Math.min(s.lev, cat(s.market).lev)) / price,
-          entry: price,
-          tokenized: false,
-          addr: "",
-          borrowed: 0,
-          listed: 0,
-          buyin: 0,
-        };
-        return { ...s, positions: [pos].concat(s.positions), sel: id, uid: id, stage: "idle", view: "trade" };
-      });
-      flash("Filled on Arcus — position open. Mint it below.");
-    }, 850);
-  }, [flash]);
+  const { authenticated, wallet, user, login } = useSession();
+  const owner = user?.walletAddress ?? null;
+  const balances = useWalletBalances(owner);
 
-  const mintPos = useCallback((id: number) => {
-    setSt((s) => {
-      const p = s.positions.find((x) => x.id === id);
-      if (!p || p.tokenized) return s;
-      return { ...s, mintFor: id, sel: id, mintName: "" };
-    });
+  // The user's real positions; dropped on sign-out or account switch.
+  const loadPositions = useCallback(() => {
+    if (!owner) return;
+    getMyPositions()
+      .then(({ positions }) => {
+        const rows = positions.map(toPosition).filter((p): p is Position => p !== null && p.status !== "settled");
+        setSt((s) => ({
+          ...s,
+          positions: rows,
+          positionsFor: owner,
+          sel: rows.some((p) => p.id === s.sel) ? s.sel : (rows[0]?.id ?? null),
+        }));
+      })
+      .catch((error) => console.error("GET /positions/mine failed", error));
+  }, [owner]);
+
+  useEffect(() => {
+    if (!owner) return;
+    loadPositions();
+    const id = setInterval(loadPositions, POSITIONS_POLL_MS);
+    return () => clearInterval(id);
+  }, [owner, loadPositions]);
+
+  // Slot pool: `free > 0` gates the ticket before anyone pays.
+  const [slots, setSlots] = useState<SlotStats | null>(null);
+  const loadSlots = useCallback(() => {
+    getHealth()
+      .then((health) => setSlots(health.slots))
+      .catch(() => setSlots(null));
   }, []);
+  useEffect(() => {
+    loadSlots();
+    const id = setInterval(loadSlots, HEALTH_POLL_MS);
+    return () => clearInterval(id);
+  }, [loadSlots]);
 
-  const closeMint = useCallback(() => setSt((s) => ({ ...s, mintFor: null, mintName: "" })), []);
+  const refreshBalances = balances.refresh;
+  const onOpenSettled = useCallback(() => {
+    refreshBalances();
+    loadPositions();
+    loadSlots();
+  }, [refreshBalances, loadPositions, loadSlots]);
+  const open = useOpenTrade(onOpenSettled);
 
-  const confirmMint = useCallback(() => {
-    let minted: { alias: string; sym: string; side: Side; lev: number } | null = null;
-    setSt((s) => {
-      const p = s.positions.find((x) => x.id === s.mintFor);
-      if (!p || p.tokenized) return s;
-      const alias = s.mintName.trim() || defaultAlias(p);
-      const hex = () => Math.floor(Math.random() * 65535).toString(16).padStart(4, "0");
-      const addr = "0x" + hex() + "a3…" + hex();
-      minted = { alias, sym: p.sym, side: p.side, lev: p.lev };
-      return {
-        ...s,
-        positions: s.positions.map((x) => (x.id === p.id ? { ...x, tokenized: true, addr, alias } : x)),
-        sel: p.id,
-        mintFor: null,
-        mintName: "",
-      };
+  /** Leverage is clamped to the active market's cap. */
+  const lev = Math.min(st.lev, cat(st.market).lev);
+
+  /**
+   * Why the ticket can't submit right now, or null. `nudge`: the fix is test
+   * funds, so the ticket shows the faucet nudge alongside.
+   */
+  const blocker = useMemo((): { reason: string; nudge?: boolean; signIn?: boolean } | null => {
+    if (!authenticated) return { reason: "Sign in to trade", signIn: true };
+    if (!wallet || !owner) return { reason: "Loading your wallet\u2026" };
+    if (!(st.size >= MIN_TRADE_USDG)) return { reason: `Minimum trade is ${MIN_TRADE_USDG} USDG` };
+    if (balances.usdg === null || balances.eth === null) return { reason: "Checking your balances\u2026" };
+    if (balances.usdg < st.size) return { reason: "Not enough USDG for this trade", nudge: true };
+    if (balances.eth <= MIN_GAS_ETH) return { reason: "Not enough ETH for gas", nudge: true };
+    if (slots && slots.free <= 0) return { reason: BUSY_MESSAGE };
+    if (triggerProblem(st.side, st.sl, st.tp, st.px[st.market])) return { reason: "Fix the stop loss / take profit" };
+    if (open.phase.kind !== "idle" && open.phase.kind !== "error") return { reason: "Opening your position\u2026" };
+    return null;
+  }, [authenticated, wallet, owner, st.size, st.side, st.sl, st.tp, st.px, st.market, balances.usdg, balances.eth, slots, open.phase.kind]);
+
+  const startOpen = open.start;
+  const placeOrder = useCallback(() => {
+    if (blocker?.signIn) {
+      login();
+      return;
+    }
+    if (blocker) return;
+    void startOpen({
+      market: cat(st.market).live?.displaySymbol ?? st.market,
+      direction: st.side,
+      leverage: lev,
+      amount: usdgString(st.size),
+      stopLoss: st.sl || undefined,
+      takeProfit: st.tp || undefined,
     });
-    // read after the updater has run so the toast names the minted position
-    queueMicrotask(() => {
-      if (minted) flash(`“${minted.alias}” minted — ${minted.sym} ${minted.side}, ${minted.lev}×`);
-    });
-  }, [flash]);
+  }, [blocker, login, startOpen, st.market, st.side, st.size, st.sl, st.tp, lev]);
 
   const toggleFav = useCallback((sym: string) => {
     setSt((s) => ({
@@ -420,13 +483,16 @@ export function useTradeEngine(liveTicks = true) {
     });
   }, []);
 
-  /** Leverage is clamped to the active market's cap. */
-  const lev = Math.min(st.lev, cat(st.market).lev);
-  const selected = useMemo(() => st.positions.find((p) => p.id === st.sel) ?? null, [st.positions, st.sel]);
+  // Positions loaded for another wallet (or none signed in) are hidden, not cleared.
+  const view = useMemo<TradeState>(
+    () => (st.positionsFor === owner ? st : { ...st, positions: [], sel: null }),
+    [st, owner],
+  );
+  const selected = useMemo(() => view.positions.find((p) => p.id === view.sel) ?? null, [view.positions, view.sel]);
   const infoShown = st.infoOpen && st.w >= INFO_MIN_WIDTH;
 
   return {
-    st,
+    st: view,
     set,
     setSt,
     mounted: st.seeded,
@@ -434,8 +500,11 @@ export function useTradeEngine(liveTicks = true) {
     lev,
     selected,
     infoShown,
-    freeMargin: FREE_MARGIN,
-    actions: { placeOrder, mintPos, closeMint, confirmMint, toggleFav, pickMarket, flash },
+    balances,
+    slots,
+    blocker,
+    open,
+    actions: { placeOrder, toggleFav, pickMarket, flash, reloadPositions: loadPositions, setLiveMark },
   };
 }
 

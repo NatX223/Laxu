@@ -59,7 +59,18 @@ export default function Chart({ engine, mkt }: { engine: TradeEngine; mkt: Marke
   const [bar, setBar] = useState<LiveBar | null>(null);
   const [scaleMode, setScaleMode] = useState<ScaleMode>("normal");
   const [autoScale, setAutoScale] = useState(true);
-  const onBar = useCallback((b: LiveBar) => setBar(b), []);
+  // The live candle's close is Arcus's mark: the rest of the screen reads it from here.
+  const { setLiveMark } = engine.actions;
+  const sym = st.market;
+  const onBar = useCallback(
+    (b: LiveBar) => {
+      // a bar still in flight from the market just switched away from
+      if (b.market !== market) return;
+      setBar(b);
+      setLiveMark(sym, b.c, b.ref);
+    },
+    [setLiveMark, sym, market],
+  );
 
   // a readout from the previous market would be wrong for a frame; blank it instead
   const [shownFor, setShownFor] = useState(market);
@@ -77,6 +88,7 @@ export default function Chart({ engine, mkt }: { engine: TradeEngine; mkt: Marke
 
   return (
     <div
+      className="laxu-chart"
       style={{
         flex: 1,
         minHeight: 560,

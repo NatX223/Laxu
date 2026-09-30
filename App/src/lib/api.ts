@@ -148,3 +148,41 @@ export const getFaucetConfig = () => apiFetch<FaucetConfig>("/faucet/config");
 export const getFaucetStatus = () => apiFetch<FaucetStatus>("/faucet/status", { auth: true });
 /** No body: the backend always pays the signed-in user's stored wallet. */
 export const claimFaucet = () => apiFetch<FaucetClaimResult>("/faucet/claim", { auth: true, method: "POST" });
+
+// --- health / slot pool -----------------------------------------------------
+
+/** Subaccount slots by status. `free` is how many positions can open right now. */
+export type SlotStats = { free: number; reserved: number; allocated: number; settling: number; total: number };
+
+/** `slots` is null when the backend couldn't count them (database down). */
+export const getHealth = () => apiFetch<{ status: string; slots: SlotStats | null }>("/health");
+
+// --- the signed-in user's own positions ------------------------------------
+
+export type MyPosition = {
+  id: string;
+  /** open → closed (unwinding / returning funds) → settled */
+  status: "open" | "closed" | "settled";
+  symbol: string | null;
+  direction: "long" | "short";
+  leverage: number;
+  nickname: string;
+  listed: boolean;
+  /** Null only for a row that never minted. */
+  positionTokenAddress: string | null;
+  /** Null while createPool is still being retried. */
+  lendingPoolAddress: string | null;
+  /** USDG base units (6 dp). */
+  requestedAmount: string;
+  depositedAmount: string | null;
+  /** 1e18 fixed point. */
+  entryPrice: string | null;
+  /** Base-asset size, 1e6 fixed point. */
+  size: string | null;
+  liquidated: boolean;
+  createdAt: string;
+  openedAt: string | null;
+  closedAt: string | null;
+};
+
+export const getMyPositions = () => apiFetch<{ positions: MyPosition[] }>("/positions/mine", { auth: true });

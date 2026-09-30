@@ -1,22 +1,22 @@
 "use client";
 
-import { BASE_EQUITY, cat, money } from "./data";
+import { cat, money } from "./data";
 import AccountMenu from "../auth/AccountMenu";
 import FaucetButton from "../faucet/FaucetButton";
 import MarketMenu from "./MarketMenu";
-import { posPnl, type TradeEngine } from "./engine";
+import type { TradeEngine } from "./engine";
 import { Disc, MONO, SERIF } from "./shared";
 
-/** Wordmark, market switcher, info toggle, equity readout and account menu. */
+/** Wordmark, market switcher, info toggle, wallet USDG readout and account menu. */
 export default function TopBar({ engine }: { engine: TradeEngine }) {
-  const { st, set, infoShown } = engine;
+  const { st, set, infoShown, balances } = engine;
 
-  // the prototype folds only the oldest position's P&L into the header equity
-  const last = st.positions[st.positions.length - 1];
-  const equity = money(BASE_EQUITY + (last ? posPnl(last, st.px[last.sym] ?? 0) : 0), 0);
+  // The wallet's live USDG: what a new trade can draw on.
+  const equity = balances.usdg === null ? "—" : money(balances.usdg, 2);
 
   return (
     <div
+      className="laxu-topbar"
       style={{
         display: "flex",
         alignItems: "center",
@@ -28,7 +28,7 @@ export default function TopBar({ engine }: { engine: TradeEngine }) {
         borderBottom: "1px solid rgba(255,255,255,0.12)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+      <div className="laxu-topbar-left" style={{ display: "flex", alignItems: "center", gap: 20 }}>
         <div
           style={{
             fontFamily: SERIF,
@@ -42,7 +42,7 @@ export default function TopBar({ engine }: { engine: TradeEngine }) {
           Laxu
         </div>
 
-        <div style={{ position: "relative" }}>
+        <div className="laxu-topbar-mkt" style={{ position: "relative", minWidth: 0 }}>
           <div
             onClick={() => set("mktMenu", !st.mktMenu)}
             className="laxu-mkt-pill"
@@ -97,7 +97,8 @@ export default function TopBar({ engine }: { engine: TradeEngine }) {
 
         <div
           onClick={() => set("infoOpen", !st.infoOpen)}
-          className="laxu-info-btn"
+          className="laxu-info-btn laxu-topbar-info"
+          title={infoShown ? "Hide market info" : "Market info"}
           style={{
             display: "flex",
             alignItems: "center",
@@ -118,13 +119,13 @@ export default function TopBar({ engine }: { engine: TradeEngine }) {
             <line x1="12" y1="11" x2="12" y2="16" />
             <line x1="12" y1="8" x2="12" y2="8" />
           </svg>
-          <span>{infoShown ? "Hide market info" : "Market info"}</span>
+          <span className="laxu-info-label">{infoShown ? "Hide market info" : "Market info"}</span>
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div className="laxu-topbar-right" style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1, padding: "0 6px" }}>
-          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.14em", color: "#a79bd0" }}>EQUITY</div>
+          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.14em", color: "#a79bd0" }}>USDG</div>
           <div style={{ fontFamily: MONO, fontSize: 14, fontWeight: 600, color: "#fdfbf7" }}>{equity}</div>
         </div>
         <FaucetButton tone="amber" />

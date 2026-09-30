@@ -16,7 +16,7 @@ export type PositionProps = {
   leverage?: number;
   /** creator's cut of every buy-in, in basis points */
   creatorFeeBps?: number;
-  /** shows the loan chip when the position backs a borrow */
+  /** shows the "Collateralized" chip: the connected wallet has tokens posted in the LendingPool */
   collateralized?: boolean;
   /** A real buy-in for a minted token: resolves to the toast to show. Unset, the ticket is the prototype's. */
   onBuy?: (amountUsd: number) => Promise<string>;
@@ -44,7 +44,7 @@ export function usePositionEngine(props: PositionProps) {
       side: side || "long",
       leverage: leverage ?? 5,
       creatorFeeBps: creatorFeeBps ?? 85,
-      collateralized: collateralized ?? true,
+      collateralized: collateralized ?? false,
     }),
     [nickname, symbol, status, side, leverage, creatorFeeBps, collateralized],
   );

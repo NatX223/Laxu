@@ -171,7 +171,6 @@ export function derive(series: Series, s: ViewState, cfg: PositionConfig) {
     sideInk: side === "long" ? "#5fe3a8" : "#ff7d92",
     levLabel: lev + "× LEVERAGE",
     collateralized,
-    loanLabel: "LOAN #4417",
 
     navPrice: usd((last.nav / SUPPLY) * 1000, 3),
     navChg: (up ? "+" : "") + navPct.toFixed(2) + "%",

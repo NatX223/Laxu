@@ -1,12 +1,6 @@
-import type { Metadata } from "next";
-import PositionScreen from "@/components/position/PositionScreen";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = {
-  title: "Laxu — Lunar Ladder",
-  description:
-    "One token, one position. Entry, size, leverage and NAV, replayed from every oracle report the contract saw — buy in and you hold a slice of it.",
-};
-
+/** The bare route was the design's "Lunar Ladder" demo; real positions live at /position/[address]. */
 export default function PositionPage() {
-  return <PositionScreen />;
+  redirect("/trade");
 }

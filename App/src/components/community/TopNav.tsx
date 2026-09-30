@@ -20,6 +20,7 @@ const LINK: React.CSSProperties = {
 export default function TopNav({ communityHref = "#" }: { communityHref?: string }) {
   return (
     <div
+      className="laxu-topnav"
       style={{
         display: "flex",
         alignItems: "center",
@@ -31,7 +32,7 @@ export default function TopNav({ communityHref = "#" }: { communityHref?: string
         borderBottom: "1px solid rgba(255,255,255,0.12)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 26 }}>
+      <div className="laxu-topnav-left" style={{ display: "flex", alignItems: "center", gap: 26 }}>
         <div
           style={{
             fontFamily: SERIF,
@@ -44,7 +45,7 @@ export default function TopNav({ communityHref = "#" }: { communityHref?: string
         >
           Laxu
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <div className="laxu-topnav-links" style={{ display: "flex", alignItems: "center", gap: 4 }}>
           <Link href="/trade" className="laxu-nav-link" style={LINK}>
             Trade
           </Link>
@@ -60,7 +61,7 @@ export default function TopNav({ communityHref = "#" }: { communityHref?: string
         </div>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div className="laxu-topnav-right" style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <FaucetButton />
         <AccountMenu />
       </div>

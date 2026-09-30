@@ -24,6 +24,8 @@ export default function BookPanel({
 }) {
   const { st, set } = engine;
   const { mark, chgColor, dp } = mkt;
+  /** A ladder price `f` times the mark; a dash until Arcus has a mark. */
+  const at = (f: number) => (mark === null ? "—" : (mark * f).toFixed(dp));
 
   // ladder sizes come from the deterministic hash so they only move with ticks
   const asks: { p: string; s: string; depth: string }[] = [];
@@ -31,14 +33,14 @@ export default function BookPanel({
   for (let i = 7; i >= 0; i--) {
     const sz = 4 + rnd(i + 30, st.tick) * 28;
     cum += sz;
-    asks.push({ p: (mark * (1 + 0.0004 * (i + 1))).toFixed(dp), s: sz.toFixed(2), depth: Math.min(100, cum * 2.4) + "%" });
+    asks.push({ p: at(1 + 0.0004 * (i + 1)), s: sz.toFixed(2), depth: Math.min(100, cum * 2.4) + "%" });
   }
   const bids: { p: string; s: string; depth: string }[] = [];
   cum = 0;
   for (let i = 0; i < 8; i++) {
     const sz = 4 + rnd(i + 70, st.tick) * 28;
     cum += sz;
-    bids.push({ p: (mark * (1 - 0.0004 * (i + 1))).toFixed(dp), s: sz.toFixed(2), depth: Math.min(100, cum * 2.4) + "%" });
+    bids.push({ p: at(1 - 0.0004 * (i + 1)), s: sz.toFixed(2), depth: Math.min(100, cum * 2.4) + "%" });
   }
 
   const tapes = (st.tapes[st.market] || []).map((t, i) => ({
@@ -50,7 +52,7 @@ export default function BookPanel({
   }));
 
   return (
-    <div style={{ flex: "0 1 184px", minWidth: 128, display: "flex", flexDirection: "column", gap: 10 }}>
+    <div className="laxu-trade-book" style={{ flex: "0 1 184px", minWidth: 128, display: "flex", flexDirection: "column", gap: 10 }}>
       <div
         style={{
           flex: "none",
@@ -103,9 +105,11 @@ export default function BookPanel({
               }}
             >
               <div style={{ fontFamily: MONO, fontSize: 14, fontWeight: 600, color: chgColor }}>
-                ${mark.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp })}
+                {mark === null
+                  ? "—"
+                  : "$" + mark.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp })}
               </div>
-              <div style={{ fontFamily: MONO, fontSize: 10.5, color: "#a79bd0" }}>spread {(mark * 0.0008).toFixed(dp)}</div>
+              <div style={{ fontFamily: MONO, fontSize: 10.5, color: "#a79bd0" }}>spread {at(0.0008)}</div>
             </div>
 
             {bids.map((b, i) => (

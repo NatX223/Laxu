@@ -4,7 +4,7 @@ import { hoursHint } from "@/lib/markets";
 import { FaucetNudge } from "../faucet/FaucetButton";
 import { SIZE_CHIPS, cat, money } from "./data";
 import type { MarketView } from "./derive";
-import { liqOf, triggerProblem, type TradeEngine } from "./engine";
+import { liqOf, triggerProblem, usdgString, type TradeEngine } from "./engine";
 import { MONO } from "./shared";
 
 const LABEL: React.CSSProperties = { fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#a79bd0" };
@@ -22,26 +22,30 @@ const INPUT: React.CSSProperties = {
 
 /** The order ticket column, with the fill toast docked to its bottom edge. */
 export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt: MarketView }) {
-  const { st, set, lev, freeMargin, actions } = engine;
+  const { st, set, lev, balances, blocker, open, actions } = engine;
   const { mark, dp } = mkt;
 
   const market = cat(st.market);
   const levMax = market.lev;
   const hint = market.live ? hoursHint(market.live) : null;
   const notional = st.size * lev;
-  const liq = liqOf(mark, st.side, lev);
+  const liq = mark === null ? null : liqOf(mark, st.side, lev);
   const healthPct = Math.max(8, 100 - lev * 4.2);
   const healthColor = healthPct > 66 ? "#2fd18c" : healthPct > 38 ? "#ffb765" : "#ff6b57";
   const healthLabel = healthPct > 66 ? "Healthy" : healthPct > 38 ? "Watch" : "At risk";
-  const filling = st.stage === "filling";
-  const slTpProblem = triggerProblem(st.side, st.sl, st.tp, mark);
+  // An open is in flight: the progress modal is up and the ticket waits.
+  const filling = open.phase.kind === "reserving" || open.phase.kind === "paying" || open.phase.kind === "tracking";
+  const blocked = Boolean(blocker && !blocker.signIn);
+  const walletUsdg = balances.usdg;
+  const slTpProblem = triggerProblem(st.side, st.sl, st.tp, mark ?? undefined);
   // A stop past the liquidation price never gets to fire.
-  const slPastLiq = !slTpProblem && st.sl !== "" && (st.side === "long" ? Number(st.sl) <= liq : Number(st.sl) >= liq);
+  const slPastLiq =
+    !slTpProblem && liq !== null && st.sl !== "" && (st.side === "long" ? Number(st.sl) <= liq : Number(st.sl) >= liq);
 
   const facts = [
     { k: "Notional", v: money(notional, 0), c: "#fdfbf7" },
-    { k: "Entry (est.)", v: money(mark, dp), c: "#fdfbf7" },
-    { k: "Liquidation", v: money(liq, dp), c: "#ffb765" },
+    { k: "Entry (est.)", v: mark === null ? "—" : money(mark, dp), c: "#fdfbf7" },
+    { k: "Liquidation", v: liq === null ? "—" : money(liq, dp), c: "#ffb765" },
     { k: "Fees", v: money(notional * 0.00055, 2), c: "#e3ddf4" },
   ];
 
@@ -49,7 +53,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
   const levTicks = [...new Set([1, Math.round(levMax * 0.25), Math.round(levMax * 0.5), levMax])];
 
   return (
-    <div style={{ flex: "0 1 262px", minWidth: 208, display: "flex", flexDirection: "column", gap: 10, position: "relative" }}>
+    <div className="laxu-trade-ticket" style={{ flex: "0 1 262px", minWidth: 208, display: "flex", flexDirection: "column", gap: 10, position: "relative" }}>
       <div
         style={{
           flex: "1 1 auto",
@@ -90,7 +94,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          {(["market", "limit"] as const).map((t) => (
+          {(["market"] as const).map((t) => (
             <div
               key={t}
               onClick={() => set("otype", t)}
@@ -107,13 +111,14 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
               {t.toUpperCase()}
             </div>
           ))}
+          <div style={{ fontSize: 10.5, color: "#998dbd" }}>Fills immediately on Arcus</div>
         </div>
 
         {st.otype === "limit" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div style={LABEL}>LIMIT PRICE</div>
             <input
-              value={st.limit ?? mark.toFixed(dp)}
+              value={st.limit ?? mark?.toFixed(dp) ?? ""}
               onChange={(e) => set("limit", e.target.value)}
               style={{ ...INPUT, fontSize: 15, padding: "11px 12px" }}
             />
@@ -123,7 +128,9 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div style={LABEL}>SIZE (USDG)</div>
-            <div style={{ fontFamily: MONO, fontSize: 10.5, color: "#998dbd" }}>free {money(freeMargin, 0)}</div>
+            <div style={{ fontFamily: MONO, fontSize: 10.5, color: "#998dbd" }}>
+              wallet {walletUsdg === null ? "\u2014" : money(walletUsdg, 2)}
+            </div>
           </div>
           <input
             value={String(st.size)}
@@ -131,10 +138,15 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
             style={{ ...INPUT, fontSize: 17, fontWeight: 600, padding: 12 }}
           />
           <div style={{ display: "flex", gap: 5 }}>
-            {SIZE_CHIPS.map((v) => (
+            {[...SIZE_CHIPS, "max" as const].map((v) => (
               <div
                 key={v}
-                onClick={() => set("size", v)}
+                onClick={() => {
+                  // MAX: the whole wallet balance, floored to the cent.
+                  if (v === "max") {
+                    if (walletUsdg !== null) set("size", Number(usdgString(Math.floor(walletUsdg * 100) / 100)));
+                  } else set("size", v);
+                }}
                 className="laxu-size-chip"
                 style={{
                   flex: 1,
@@ -149,7 +161,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
                   cursor: "pointer",
                 }}
               >
-                {v === freeMargin ? "MAX" : "$" + (v >= 1000 ? v / 1000 + "k" : v)}
+                {v === "max" ? "MAX" : "$" + (v >= 1000 ? v / 1000 + "k" : v)}
               </div>
             ))}
           </div>
@@ -238,25 +250,39 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
 
         <FaucetNudge tradeUsdg={st.size} />
 
-        <div
+        <button
+          type="button"
           onClick={actions.placeOrder}
+          disabled={blocked}
+          aria-disabled={blocked}
           className="laxu-submit"
           style={{
             textAlign: "center",
+            fontFamily: "inherit",
             fontSize: 14,
             fontWeight: 700,
             letterSpacing: "0.02em",
             padding: "15px 0",
+            border: "none",
             borderRadius: 12,
-            cursor: slTpProblem ? "default" : "pointer",
-            opacity: slTpProblem ? 0.55 : 1,
+            cursor: blocked ? "default" : "pointer",
+            opacity: blocked && !filling ? 0.55 : 1,
             transition: "transform 0.2s ease, background 0.2s ease",
             color: "#fdfbf7",
             background: filling ? "rgba(255,255,255,0.14)" : st.side === "long" ? "#0b7a55" : "#b23a28",
           }}
         >
-          {filling ? "Routing to Arcus…" : (st.side === "long" ? "Buy / Long " : "Sell / Short ") + st.market}
-        </div>
+          {filling
+            ? "Opening on Arcus\u2026"
+            : blocker?.signIn
+              ? "Sign in to trade"
+              : (st.side === "long" ? "Buy / Long " : "Sell / Short ") + st.market}
+        </button>
+        {blocker && !blocker.signIn && !filling && (
+          <div role="status" style={{ marginTop: -6, fontSize: 11, fontWeight: 600, lineHeight: 1.45, color: "#ffb765", textAlign: "center" }}>
+            {blocker.reason}
+          </div>
+        )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

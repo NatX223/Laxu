@@ -123,33 +123,36 @@ export function kmoney(n: number) {
 
 export type Side = "long" | "short";
 
+/** One of the signed-in user's own minted positions (`GET /positions/mine`). */
 export type Position = {
-  id: number;
+  id: string;
   sym: string;
   side: Side;
   lev: number;
+  /** Base-asset size. */
   qty: number;
   entry: number;
-  tokenized: boolean;
+  /** USDG the creator put in. */
+  margin: number;
+  /** PositionToken address. */
   addr: string;
-  alias?: string;
-  borrowed: number;
-  listed: number;
-  buyin: number;
+  /** Null while the backend is still creating it. */
+  pool: string | null;
+  nickname: string;
+  listed: boolean;
+  status: "open" | "closed" | "settled";
+  liquidated: boolean;
 };
 
 export const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1D"] as const;
 export const RANGES = ["5y", "1y", "6m", "3m", "1m", "5d", "1d"] as const;
 export const MARKET_TABS = ["Spot", "Perpetuals"] as const;
 export const MARKET_CATS = ["All", "Crypto", "Equities", "Commodities", "Indices"] as const;
-export const SIZE_CHIPS = [500, 2500, 10000, 18400];
+/** Quick sizes in USDG; the ticket adds MAX (the wallet's balance) after these. */
+export const SIZE_CHIPS = [25, 50, 100];
 
 /** Minutes per bar, used to space the chart's time axis. */
 export const TF_MINUTES: Record<string, number> = { "1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1D": 1440 };
-
-/** Free margin is a fixed number in the prototype; MAX chip matches it. */
-export const FREE_MARGIN = 18400;
-export const BASE_EQUITY = 48250;
 
 /** Below this width the market-info panel collapses regardless of `infoOpen`. */
 export const INFO_MIN_WIDTH = 1180;

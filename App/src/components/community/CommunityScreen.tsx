@@ -31,6 +31,10 @@ export default function CommunityScreen(props: CommunityProps) {
       <Grain zIndex={8} />
 
       <TopNav />
+      {/* Until this screen reads GET /positions, everything on it is the design's sample data. */}
+      <div role="note" className="laxu-preview-banner">
+        Preview, sample data. These positions aren&rsquo;t real; open your own from Trade.
+      </div>
       <HeroBand vals={vals} />
 
       <div
@@ -39,7 +43,7 @@ export default function CommunityScreen(props: CommunityProps) {
           zIndex: 2,
           maxWidth: 1320,
           margin: "0 auto",
-          padding: "34px 28px 70px",
+          padding: "34px clamp(16px, 4vw, 28px) 70px",
           display: "flex",
           flexDirection: "column",
           gap: 34,
@@ -52,7 +56,7 @@ export default function CommunityScreen(props: CommunityProps) {
               ranked by 24h return &middot; updated live
             </div>
           </div>
-          <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
+          <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(min(300px, 100%), 1fr))" }}>
             {vals.spotlight.map((t) => (
               <SpotlightCard key={t.sym} t={t} onBuy={() => buy(t.token)} />
             ))}
@@ -76,7 +80,8 @@ export default function CommunityScreen(props: CommunityProps) {
             position: "fixed",
             zIndex: 40,
             left: "50%",
-            bottom: 28,
+            // clears the fixed testnet banner
+            bottom: "calc(var(--laxu-testnet-banner-h, 30px) + 16px)",
             transform: "translateX(-50%)",
             display: "flex",
             alignItems: "center",

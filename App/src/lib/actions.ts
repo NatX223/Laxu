@@ -1,4 +1,12 @@
-import { erc20Abi, parseUnits, type Address, type Hash } from "viem";
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  UserRejectedRequestError,
+  erc20Abi,
+  parseUnits,
+  type Address,
+  type Hash,
+} from "viem";
 import { apiFetch } from "./api";
 import { publicClient } from "./chain";
 import { env } from "./env";
@@ -87,6 +95,9 @@ const positionTokenAbi = [
   { type: "function", name: "listed", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
   { type: "function", name: "closed", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
   { type: "function", name: "closeRequested", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
+  { type: "function", name: "convertToAssets", stateMutability: "view", inputs: [{ name: "shares", type: "uint256" }], outputs: [{ name: "", type: "uint256" }] },
+  /** Unix seconds of the operator's last mark-price report; LendingPool refuses risk-adding calls once it is too old. */
+  { type: "function", name: "lastReportTimestamp", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
   /** Personal SL/TP for the caller's own wallet balance; 0 = none for that side. Prices at 1e18. */
   {
     type: "function",
@@ -123,6 +134,17 @@ const lendingPoolAbi = [
     inputs: [{ name: "amount", type: "uint256" }],
     outputs: [{ name: "repaid", type: "uint256" }],
   },
+  /** WAD (1e18). type(uint256).max with no debt; below 1e18 the borrower can be liquidated. */
+  { type: "function", name: "healthFactor", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  /** USDG base units: principal + interest, including interest accrued since the last write. */
+  { type: "function", name: "currentDebt", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  /** USDG base units still borrowable at the LTV cap. */
+  { type: "function", name: "availableToBorrow", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  /** USDG base units: the posted shares' live convertToAssets value. */
+  { type: "function", name: "collateralValue", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+  /** Resolved once, from the position's leverage tier. */
+  { type: "function", name: "ltvBps", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+  { type: "function", name: "liquidationThresholdBps", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
 ] as const;
 
 /** LendingVault is a plain synchronous ERC-4626. */
@@ -155,6 +177,41 @@ const vaultAbi = [
 function usdg(): Address {
   if (!env.usdgAddress) throw new Error("NEXT_PUBLIC_USDG_ADDRESS is not set");
   return env.usdgAddress as Address;
+}
+
+/** Shown in place of LendingPool's "stale oracle data" revert. */
+export const STALE_ORACLE_MESSAGE = "Prices updating, try again shortly.";
+
+/**
+ * One line for the user from whatever a write threw: a wallet rejection, the
+ * revert reason for a revert, otherwise viem's short message. A stale
+ * LendingPool oracle gets its own plain-language line.
+ */
+export function txErrorMessage(error: unknown): string {
+  if (isUserRejection(error)) return "Cancelled in your wallet";
+  const text = errorText(error);
+  if (text.includes("stale oracle data")) return STALE_ORACLE_MESSAGE;
+  if (error instanceof BaseError) {
+    const revert = error.walk((e) => e instanceof ContractFunctionRevertedError);
+    if (revert instanceof ContractFunctionRevertedError && revert.reason) return revert.reason;
+    const reason = /reverted with the following reason:\s*([^\n]+)/.exec(text)?.[1];
+    if (reason) return reason.trim();
+    return error.shortMessage;
+  }
+  return (error instanceof Error ? error.message : String(error)).split("\n")[0];
+}
+
+/** The user closed or refused the wallet prompt. */
+export function isUserRejection(error: unknown): boolean {
+  if (error instanceof BaseError && error.walk((e) => e instanceof UserRejectedRequestError)) return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === 4001 || code === "ACTION_REJECTED") return true;
+  return /user rejected|user denied|rejected the request|request rejected/i.test(errorText(error));
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof BaseError) return `${error.shortMessage}\n${error.details ?? ""}\n${error.message}`;
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function confirm(hash: Hash): Promise<Hash> {
@@ -217,6 +274,9 @@ export type OpenRequest = {
   leverage: number;
   amount: string;
   creditedAmount: string | null;
+  /** The Arcus fill, human decimals; set from `order_filled` on. */
+  entryPrice: string | null;
+  filledSize: string | null;
   paymentTxHash: string | null;
   positionTokenAddress: string | null;
   lendingPoolAddress: string | null;
@@ -232,6 +292,11 @@ export type OpenRequest = {
  *
  * `wallet` must be the wallet the backend knows as this user — the payment is
  * checked against it — which is what the session's `wallet` is.
+ *
+ * `hooks.onReserved` fires before the wallet prompt and `hooks.onSubmitted` as
+ * soon as the transfer has a hash, so the caller can persist the request id
+ * (and hash) and resume after a page refresh: a transfer that landed but was
+ * never reported is re-reported with {reportOpenPayment}.
  */
 export async function openPosition(
   wallet: LaxuWalletClient,
@@ -245,27 +310,54 @@ export async function openPosition(
     stopLoss?: string;
     takeProfit?: string;
   },
+  hooks: {
+    onReserved?: (reservation: OpenReservation) => void;
+    onSubmitted?: (reservation: OpenReservation, hash: Hash) => void;
+  } = {},
 ): Promise<{ reservation: OpenReservation; hash: Hash }> {
   const reservation = await apiFetch<OpenReservation>("/positions/open", {
     auth: true,
     method: "POST",
     body: JSON.stringify(request),
   });
-  const hash = await confirm(
-    await wallet.writeContract({
-      address: reservation.usdg as Address,
-      abi: erc20Abi,
-      functionName: "transfer",
-      args: [reservation.payTo as Address, BigInt(reservation.amount)],
-    }),
-  );
-  await apiFetch<OpenRequest>(`/positions/open/${reservation.openRequestId}/paid`, {
-    auth: true,
-    method: "POST",
-    body: JSON.stringify({ txHash: hash }),
+  hooks.onReserved?.(reservation);
+
+  // Never pay a lapsed reservation (the slot may be someone else's by now) or
+  // one asking for a token other than the USDG this app was built against.
+  if (Date.parse(reservation.expiresAt) <= Date.now()) {
+    throw new ReservationRejected("The trading slot reservation expired before payment. Try again.");
+  }
+  if (reservation.usdg.toLowerCase() !== usdg().toLowerCase()) {
+    throw new ReservationRejected("The backend asked for payment in an unexpected token, so nothing was sent.");
+  }
+
+  const hash = await wallet.writeContract({
+    address: reservation.usdg as Address,
+    abi: erc20Abi,
+    functionName: "transfer",
+    args: [reservation.payTo as Address, BigInt(reservation.amount)],
   });
+  hooks.onSubmitted?.(reservation, hash);
+  await confirm(hash);
+  await reportOpenPayment(reservation.openRequestId, hash);
   return { reservation, hash };
 }
+
+/** Thrown before any USDG moves: the reservation can't safely be paid. */
+export class ReservationRejected extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReservationRejected";
+  }
+}
+
+/** Tell the backend the USDG transfer for `openRequestId` landed. Idempotent for the same hash. */
+export const reportOpenPayment = (openRequestId: string, txHash: Hash) =>
+  apiFetch<OpenRequest>(`/positions/open/${openRequestId}/paid`, {
+    auth: true,
+    method: "POST",
+    body: JSON.stringify({ txHash }),
+  });
 
 export const getOpenRequest = (openRequestId: string) =>
   apiFetch<OpenRequest>(`/positions/open/${openRequestId}`, { auth: true });
@@ -482,6 +574,119 @@ export async function readHolderState(
 
 // --- lending pool -----------------------------------------------------------
 
+export type LendingState = {
+  /** Position-token shares this wallet has posted. */
+  collateralShares: bigint;
+  /** Their live value, USDG base units. */
+  collateralValue: bigint;
+  debt: bigint;
+  /** What the pool will lend right now, against posted collateral only. */
+  available: bigint;
+  /**
+   * What the pool would lend once the wallet's tokens are posted too:
+   * convertToAssets(wallet + posted) × LTV − debt, floored at zero.
+   */
+  borrowCapacity: bigint;
+  /**
+   * The last price report is older than LendingPool.MAX_REPORT_AGE, so borrow
+   * and withdraw would revert. Never true once the position is closed.
+   */
+  oracleStale: boolean;
+  /** WAD; null with no debt (the contract returns uint256 max). */
+  healthFactor: bigint | null;
+  ltvBps: bigint;
+  liquidationThresholdBps: bigint;
+  /** Position tokens still in the wallet. */
+  walletShares: bigint;
+  /** The wallet's USDG, for repays. */
+  walletUsdg: bigint;
+  /** The position token's decimals, which are USDG's: shares and dollars format alike. */
+  decimals: number;
+};
+
+/** LendingPool.WAD */
+export const WAD = BigInt(10) ** BigInt(18);
+/** LendingPool.MAX_REPORT_AGE, in seconds. */
+export const MAX_REPORT_AGE_S = 7 * 60;
+const BPS = BigInt(10_000);
+const MAX_UINT256 = (BigInt(1) << BigInt(256)) - BigInt(1);
+
+/** Everything the lending panel shows for `account`, read in one round. */
+export async function readLendingState(pool: Address, positionToken: Address, account: Address): Promise<LendingState> {
+  const client = publicClient();
+  const read = <T>(functionName: string, args: readonly unknown[] = []) =>
+    client.readContract({ address: pool, abi: lendingPoolAbi, functionName, args } as never) as Promise<T>;
+  const readToken = <T>(functionName: string, args: readonly unknown[] = []) =>
+    client.readContract({ address: positionToken, abi: positionTokenAbi, functionName, args } as never) as Promise<T>;
+  const [
+    collateralShares,
+    collateralValue,
+    debt,
+    available,
+    healthFactor,
+    ltvBps,
+    liquidationThresholdBps,
+    walletShares,
+    walletUsdg,
+    decimals,
+    closed,
+    lastReport,
+    block,
+  ] = await Promise.all([
+      read<bigint>("collateralBalance", [account]),
+      read<bigint>("collateralValue", [account]),
+      read<bigint>("currentDebt", [account]),
+      read<bigint>("availableToBorrow", [account]),
+      read<bigint>("healthFactor", [account]),
+      read<bigint>("ltvBps"),
+      read<bigint>("liquidationThresholdBps"),
+      client.readContract({ address: positionToken, abi: erc20Abi, functionName: "balanceOf", args: [account] }),
+      client.readContract({ address: usdg(), abi: erc20Abi, functionName: "balanceOf", args: [account] }),
+      client.readContract({ address: positionToken, abi: erc20Abi, functionName: "decimals" }),
+      readToken<boolean>("closed"),
+      readToken<bigint>("lastReportTimestamp"),
+      // The chain's clock, not the browser's: the pool compares against block.timestamp.
+      client.getBlock({ blockTag: "latest" }),
+    ]);
+  const combinedValue =
+    walletShares === BigInt(0) ? collateralValue : await readToken<bigint>("convertToAssets", [walletShares + collateralShares]);
+  const cap = (combinedValue * ltvBps) / BPS;
+  return {
+    collateralShares,
+    collateralValue,
+    debt,
+    available,
+    borrowCapacity: cap > debt ? cap - debt : BigInt(0),
+    oracleStale: !closed && block.timestamp - lastReport > BigInt(MAX_REPORT_AGE_S),
+    healthFactor: debt === BigInt(0) || healthFactor === MAX_UINT256 ? null : healthFactor,
+    ltvBps,
+    liquidationThresholdBps,
+    walletShares,
+    walletUsdg,
+    decimals,
+  };
+}
+
+/**
+ * Dry-run a pool call first, so a doomed transaction fails with its revert
+ * reason ("LendingPool: exceeds LTV") instead of a wallet prompt and a vague
+ * gas-estimation error.
+ */
+async function simulatePool(
+  wallet: LaxuWalletClient,
+  pool: Address,
+  functionName: "depositCollateral" | "withdrawCollateral" | "borrow" | "repay",
+  amount: bigint,
+): Promise<void> {
+  await publicClient().simulateContract({
+    account: wallet.account.address,
+    address: pool,
+    abi: lendingPoolAbi,
+    functionName,
+    args: [amount],
+  });
+}
+
 /** Post position tokens as collateral: approve the pool for the shares, then deposit. */
 export async function postCollateral(
   wallet: LaxuWalletClient,
@@ -490,23 +695,66 @@ export async function postCollateral(
   shares: bigint,
 ): Promise<Hash> {
   await approveIfNeeded(wallet, positionToken, pool, shares);
+  await simulatePool(wallet, pool, "depositCollateral", shares);
   return confirm(
     await wallet.writeContract({ address: pool, abi: lendingPoolAbi, functionName: "depositCollateral", args: [shares] }),
   );
 }
 
+export type BorrowStep = "approve" | "deposit" | "borrow";
+
+/**
+ * Borrow in one go: post `shares` from the wallet (approving the pool first if
+ * its allowance falls short), then borrow `amount`. `onStep` fires as each step
+ * starts; a skipped approval never fires. With `shares` of zero it is a plain
+ * borrow. A failure after the deposit leaves the tokens posted — the caller
+ * should say so.
+ */
+export async function depositAndBorrow(
+  wallet: LaxuWalletClient,
+  positionToken: Address,
+  pool: Address,
+  shares: bigint,
+  amount: bigint,
+  onStep: (step: BorrowStep) => void,
+): Promise<Hash> {
+  if (shares > BigInt(0)) {
+    const allowance = await publicClient().readContract({
+      address: positionToken,
+      abi: erc20Abi,
+      functionName: "allowance",
+      args: [wallet.account.address, pool],
+    });
+    if (allowance < shares) {
+      onStep("approve");
+      await approveIfNeeded(wallet, positionToken, pool, shares);
+    }
+    onStep("deposit");
+    await simulatePool(wallet, pool, "depositCollateral", shares);
+    await confirm(
+      await wallet.writeContract({ address: pool, abi: lendingPoolAbi, functionName: "depositCollateral", args: [shares] }),
+    );
+  }
+  onStep("borrow");
+  return borrow(wallet, pool, amount);
+}
+
 export async function withdrawCollateral(wallet: LaxuWalletClient, pool: Address, shares: bigint): Promise<Hash> {
+  await simulatePool(wallet, pool, "withdrawCollateral", shares);
   return confirm(
     await wallet.writeContract({ address: pool, abi: lendingPoolAbi, functionName: "withdrawCollateral", args: [shares] }),
   );
 }
 
 export async function borrow(wallet: LaxuWalletClient, pool: Address, amount: bigint): Promise<Hash> {
+  await simulatePool(wallet, pool, "borrow", amount);
   return confirm(await wallet.writeContract({ address: pool, abi: lendingPoolAbi, functionName: "borrow", args: [amount] }));
 }
 
+/** Over-payment is trimmed on-chain to what's owed, so "repay all" can carry a small buffer. */
 export async function repay(wallet: LaxuWalletClient, pool: Address, amount: bigint): Promise<Hash> {
   await approveIfNeeded(wallet, usdg(), pool, amount);
+  await simulatePool(wallet, pool, "repay", amount);
   return confirm(await wallet.writeContract({ address: pool, abi: lendingPoolAbi, functionName: "repay", args: [amount] }));
 }
 

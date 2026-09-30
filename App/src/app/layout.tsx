@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Archivo, IBM_Plex_Mono, Instrument_Serif } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
+import TestnetBanner from "@/components/TestnetBanner";
 
 const archivo = Archivo({
   variable: "--font-archivo",
@@ -36,6 +37,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="en" className={`${archivo.variable} ${instrumentSerif.variable} ${ibmPlexMono.variable}`}>
       <body>
         <Providers>{children}</Providers>
+        <TestnetBanner />
       </body>
     </html>
   );

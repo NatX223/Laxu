@@ -53,7 +53,7 @@ export default function HeroBand({ vals }: { vals: Derived }) {
           zIndex: 2,
           maxWidth: 1320,
           margin: "0 auto",
-          padding: "56px 28px 40px",
+          padding: "clamp(36px, 8vw, 56px) clamp(16px, 4vw, 28px) 40px",
           display: "flex",
           flexDirection: "column",
           gap: 30,
@@ -87,6 +87,7 @@ export default function HeroBand({ vals }: { vals: Derived }) {
             {vals.heroStats.map((s) => (
               <div
                 key={s.k}
+                className="laxu-hero-stat"
                 style={{
                   minWidth: 150,
                   display: "flex",

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { COPY, POSITION_CARDS } from "./data";
 import PositionCard from "./PositionCard";
 import { Grain, SERIF } from "./shared";
-import { useRevealed } from "@/lib/landing";
+import { useNarrow, useRevealed } from "@/lib/landing";
 
 /** The orbit is authored at a fixed 1200px square and scaled down to fit. */
 const STAGE = 1200;
@@ -14,6 +14,7 @@ export default function OrbitStage() {
   const { ref: hostRef, revealed } = useRevealed<HTMLElement>(0.12);
   const [scale, setScale] = useState(1);
   const [hover, setHover] = useState(false);
+  const narrow = useNarrow();
 
   const fit = useCallback(() => {
     const el = hostRef.current;
@@ -43,6 +44,37 @@ export default function OrbitStage() {
     >
       <Grain />
 
+      {narrow ? (
+        // phones: the ring would shrink the cards past legibility, so they swipe instead
+        <div
+          style={{
+            position: "relative",
+            transition: "opacity 1s ease",
+            opacity: revealed ? 1 : 0,
+          }}
+        >
+          <Headline titleSize="clamp(34px, 9vw, 46px)" style={{ padding: "72px 20px 8px" }} />
+          <div
+            className="laxu-swipe-row"
+            style={{
+              display: "flex",
+              gap: 16,
+              overflowX: "auto",
+              scrollSnapType: "x mandatory",
+              padding: "28px 20px 76px",
+            }}
+          >
+            {POSITION_CARDS.map((card) => (
+              <div
+                key={card.title}
+                style={{ flex: "none", width: "min(300px, 80vw)", scrollSnapAlign: "center" }}
+              >
+                <PositionCard card={card} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
       <div
         style={{
           position: "relative",
@@ -103,56 +135,69 @@ export default function OrbitStage() {
             ))}
           </div>
 
-          <div
+          <Headline
+            titleSize={50}
             style={{
               position: "absolute",
               left: "50%",
               top: "50%",
               width: 420,
               transform: "translate(-50%, -50%)",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 14,
-              textAlign: "center",
             }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                letterSpacing: "0.2em",
-                color: "#5b2fd6",
-              }}
-            >
-              YOUR POSITION, TOKENIZED
-            </div>
-            <div
-              style={{
-                fontFamily: SERIF,
-                fontSize: 50,
-                lineHeight: 1.06,
-                letterSpacing: "-0.015em",
-                color: "#1a1714",
-              }}
-            >
-              Every trade becomes an <i>asset</i>
-            </div>
-            <div
-              style={{
-                fontSize: 16,
-                lineHeight: 1.6,
-                fontWeight: 500,
-                color: "#2e2822",
-                textWrap: "pretty",
-              }}
-            >
-              Tokenize a trade. From there it lends, trades and splits like any other token on
-              Robinhood Chain.
-            </div>
-          </div>
+          />
         </div>
       </div>
+      )}
     </section>
+  );
+}
+
+/** Eyebrow, title and blurb: centred in the ring, or stacked above the cards on phones. */
+function Headline({ titleSize, style }: { titleSize: number | string; style?: React.CSSProperties }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 14,
+        textAlign: "center",
+        ...style,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: "0.2em",
+          color: "#5b2fd6",
+        }}
+      >
+        YOUR POSITION, TOKENIZED
+      </div>
+      <div
+        style={{
+          fontFamily: SERIF,
+          fontSize: titleSize,
+          lineHeight: 1.06,
+          letterSpacing: "-0.015em",
+          color: "#1a1714",
+        }}
+      >
+        Every trade becomes an <i>asset</i>
+      </div>
+      <div
+        style={{
+          fontSize: 16,
+          lineHeight: 1.6,
+          fontWeight: 500,
+          color: "#2e2822",
+          textWrap: "pretty",
+        }}
+      >
+        Tokenize a trade. From there it lends, trades and splits like any other token on
+        Robinhood Chain.
+      </div>
+    </div>
   );
 }

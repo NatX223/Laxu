@@ -30,7 +30,7 @@ export default function FlowSection() {
           display: narrow ? "block" : "grid",
           gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
           gap: 60,
-          padding: "90px 32px 110px",
+          padding: "clamp(60px, 12vw, 90px) clamp(16px, 4vw, 32px) clamp(70px, 14vw, 110px)",
           maxWidth: 1180,
           margin: "0 auto",
           alignItems: "start",

@@ -23,7 +23,7 @@ export default function SiteFooter() {
           position: "relative",
           maxWidth: 1180,
           margin: "0 auto",
-          padding: "84px 24px 0",
+          padding: "clamp(60px, 12vw, 84px) clamp(16px, 4vw, 24px) 0",
         }}
       >
         <div

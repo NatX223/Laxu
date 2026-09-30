@@ -22,6 +22,7 @@ export default function InfoPanel({ engine }: { engine: TradeEngine }) {
 
   return (
     <div
+      className={infoShown ? "laxu-info-panel is-open" : "laxu-info-panel"}
       style={{
         flex: "none",
         minWidth: 0,
@@ -32,6 +33,7 @@ export default function InfoPanel({ engine }: { engine: TradeEngine }) {
       }}
     >
       <div
+        className="laxu-info-inner"
         style={{
           width: 214,
           height: "100%",

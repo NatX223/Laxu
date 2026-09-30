@@ -14,12 +14,17 @@ import TopNav from "../community/TopNav";
 import BuyPanel from "./BuyPanel";
 import HolderActions from "./HolderActions";
 import HolderBase from "./HolderBase";
+import LendingPanel from "./LendingPanel";
 import LeverageView from "./LeverageView";
 import PositionHeader from "./PositionHeader";
 import Reactions from "./Reactions";
 import StateGrid from "./StateGrid";
 import TriggersPanel from "./TriggersPanel";
 import { usePositionEngine, type PositionProps } from "./engine";
+import { liveVals, useTokenState } from "./onchain";
+
+/** The listed page's cells the contract can't answer yet; they keep the prototype's figures. */
+const LISTED_ONLY = ["HOLDERS", "BUY-IN VOLUME", "CREATOR FEE"];
 
 /**
  * A single position token, transcribed from `Laxu Position.dc.html`.
@@ -32,6 +37,11 @@ import { usePositionEngine, type PositionProps } from "./engine";
  * and status override them, both charts go live, and the buy-in ticket signs a
  * real `requestDeposit`. The ticket only shows once the creator has listed the
  * position; HolderActions carries List / Close / Redeem / Cancel.
+ *
+ * A minted position's header and state grid are read off the token itself.
+ * Unlisted — reached from the trade page, not the community — it is the
+ * creator's alone: no nickname, one holder, no buy-in figures, and no
+ * reactions or holder base.
  */
 export default function PositionScreen({
   positionTokenAddress,
@@ -44,7 +54,14 @@ export default function PositionScreen({
   const onBuy = useBuyIn(live, bumpRefresh);
   // Keys the wallet's own panels: a sign-out or account switch remounts them,
   // so nothing read for the previous wallet stays on screen.
-  const account = useSession().wallet?.address ?? "signed-out";
+  const viewer = useSession().wallet?.address;
+  const account = viewer ?? "signed-out";
+  const chain = useTokenState(live?.positionTokenAddress);
+  const unlisted = live !== null && !live.listed;
+  // The header's "Collateralized" chip: only when this wallet has tokens posted.
+  const [collateral, setCollateral] = useState<{ account: string; posted: boolean } | null>(null);
+  const onCollateralChange = useCallback((posted: boolean) => setCollateral({ account, posted }), [account]);
+  const collateralized = collateral?.account === account && collateral.posted;
 
   const engine = usePositionEngine({
     ...props,
@@ -54,10 +71,27 @@ export default function PositionScreen({
       side: live.direction,
       leverage: live.leverage,
       status: live.status === "open" ? "Open" : "Closed",
+      collateralized,
       onBuy,
     }),
   });
-  const { st, vals } = engine;
+  const { st } = engine;
+
+  const vals = (() => {
+    if (!live) return engine.vals;
+    const { isCreator, stats, ...header } = liveVals(live, chain, viewer);
+    const rest = unlisted
+      ? [
+          {
+            k: "HOLDERS",
+            v: "1",
+            c: "#fdfbf7",
+            sub: isCreator ? "just you, until you list it" : "the creator, until it's listed",
+          },
+        ]
+      : engine.vals.stats.filter((s) => LISTED_ONLY.includes(s.k));
+    return { ...engine.vals, ...header, stats: [...stats, ...rest] };
+  })();
 
   return (
     <div
@@ -68,15 +102,16 @@ export default function PositionScreen({
       <Grain zIndex={8} />
 
       <TopNav communityHref="/community" />
-      <PositionHeader vals={vals} />
+      <PositionHeader vals={vals} back={unlisted ? { href: "/trade", label: "Trade" } : undefined} />
 
       <div
+        className="laxu-position-main"
         style={{
           position: "relative",
           zIndex: 2,
           maxWidth: 1280,
           margin: "0 auto",
-          padding: "26px 28px 70px",
+          padding: "26px clamp(16px, 4vw, 28px) 70px",
           display: "grid",
           gap: 20,
           gridTemplateColumns: "minmax(0, 1fr) 340px",
@@ -91,16 +126,25 @@ export default function PositionScreen({
             awaitingLive={Boolean(positionTokenAddress) && !live}
             previewSide={props.side}
           />
-          <Reactions engine={engine} />
+          {!unlisted && <Reactions engine={engine} />}
           <TradingViewCredit />
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, position: "sticky", top: 18 }}>
-          {live && <HolderActions key={account} live={live} refreshKey={refreshKey} onDone={engine.flash} />}
-          {live && <TriggersPanel key={account} live={live} refreshKey={refreshKey} onDone={engine.flash} />}
+        <div className="laxu-position-side" style={{ display: "flex", flexDirection: "column", gap: 16, position: "sticky", top: 18 }}>
+          {live && <HolderActions key={`actions-${account}`} live={live} refreshKey={refreshKey} onDone={engine.flash} />}
+          {live && (
+            <LendingPanel
+              key={`lending-${account}`}
+              live={live}
+              refreshKey={refreshKey}
+              onDone={engine.flash}
+              onCollateralChange={onCollateralChange}
+            />
+          )}
+          {live && <TriggersPanel key={`triggers-${account}`} live={live} refreshKey={refreshKey} onDone={engine.flash} />}
           {/* Buy-ins open only once the creator lists the position, and close with it. */}
           {(!live || (live.listed && live.lifecycle === "open")) && <BuyPanel engine={engine} />}
-          <HolderBase holders={vals.holdersList} />
+          {!unlisted && <HolderBase holders={vals.holdersList} />}
         </div>
       </div>
 
@@ -112,7 +156,8 @@ export default function PositionScreen({
             position: "fixed",
             zIndex: 40,
             left: "50%",
-            bottom: 28,
+            // clears the fixed testnet banner
+            bottom: "calc(var(--laxu-testnet-banner-h, 30px) + 16px)",
             transform: "translateX(-50%)",
             display: "flex",
             alignItems: "center",
@@ -133,20 +178,28 @@ export default function PositionScreen({
   );
 }
 
+/** While the backend is still creating the LendingPool, re-read until its address appears. */
+const POOL_POLL_MS = 5000;
+
 function usePublicPosition(positionTokenAddress: string | undefined): PublicPosition | null {
   const [live, setLive] = useState<PublicPosition | null>(null);
+  const poolPending = live !== null && !live.lendingPoolAddress;
   useEffect(() => {
     if (!positionTokenAddress) return;
     let cancelled = false;
-    getPublicPosition(positionTokenAddress)
-      .then((position) => {
-        if (!cancelled) setLive(position);
-      })
-      .catch((error) => console.error("could not load position", error));
+    const load = () =>
+      getPublicPosition(positionTokenAddress)
+        .then((position) => {
+          if (!cancelled) setLive(position);
+        })
+        .catch((error) => console.error("could not load position", error));
+    if (!poolPending) void load();
+    const id = poolPending ? setInterval(load, POOL_POLL_MS) : null;
     return () => {
       cancelled = true;
+      if (id) clearInterval(id);
     };
-  }, [positionTokenAddress]);
+  }, [positionTokenAddress, poolPending]);
   return positionTokenAddress ? live : null;
 }
 

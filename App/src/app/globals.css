@@ -334,6 +334,11 @@ body:has(.laxu-position-root) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+/* An unlisted position's six cells: 3 + 3 instead of a ragged 4 + 2. */
+.laxu-state-grid--3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 @media (max-width: 860px) {
   .laxu-state-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -381,5 +386,295 @@ body:has(.laxu-position-root) {
   .laxu-position-root *::before,
   .laxu-position-root *::after {
     animation: none !important;
+  }
+}
+
+/* --- testnet banner: fixed to the bottom of every page ------------------- */
+
+body {
+  padding-bottom: var(--laxu-testnet-banner-h, 30px);
+}
+
+.laxu-testnet-banner {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  box-sizing: border-box;
+  min-height: 30px;
+  padding: 7px 16px;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: center;
+  color: #1c1638;
+  background: #ffc98a;
+  border-top: 1px solid rgba(28, 22, 56, 0.25);
+}
+
+.laxu-testnet-banner strong {
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  body {
+    --laxu-testnet-banner-h: 48px;
+  }
+}
+
+/* trade dock rows are links to each position's page */
+.laxu-dock-row:hover {
+  background: rgba(150, 112, 255, 0.12);
+}
+
+/* community page: sample-data notice */
+.laxu-preview-banner {
+  position: relative;
+  z-index: 3;
+  padding: 10px 16px;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: center;
+  color: #1c1638;
+  background: #d5c6ff;
+}
+
+/* --- responsive layout --------------------------------------------------
+ * Components style themselves inline, so these overrides hook the layout
+ * containers by class and need !important to beat the inline declarations.
+ * Tablet: <=1100px. Phone: <=760px (the landing page's NARROW_BREAKPOINT).
+ */
+
+@media (max-width: 760px) {
+  /* nothing should push the page sideways; wide tables scroll inside themselves */
+  body {
+    overflow-x: clip;
+  }
+}
+
+.laxu-toast {
+  max-width: calc(100vw - 32px);
+}
+
+/* landing: the orbit cards swipe on phones */
+.laxu-swipe-row {
+  scrollbar-width: none;
+}
+.laxu-swipe-row::-webkit-scrollbar {
+  display: none;
+}
+
+/* trade workspace, tablet: chart across the top, ticket and book side by side below */
+@media (max-width: 1100px) {
+  .laxu-trade-main {
+    display: grid !important;
+    grid-template-columns: auto auto minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "rail info center center"
+      "rail info ticket book";
+  }
+  .laxu-trade-rail {
+    grid-area: rail;
+  }
+  .laxu-info-panel {
+    grid-area: info;
+  }
+  /* a collapsed dossier still owns a grid gap; take it back */
+  .laxu-info-panel:not(.is-open) {
+    margin-left: -8px;
+  }
+  .laxu-trade-center {
+    grid-area: center;
+  }
+  .laxu-trade-ticket {
+    grid-area: ticket;
+    min-width: 0 !important;
+  }
+  .laxu-trade-book {
+    grid-area: book;
+    min-width: 0 !important;
+  }
+}
+
+/* trade workspace, phone: one column — rail, dossier, chart, ticket, book */
+@media (max-width: 760px) {
+  .laxu-trade-main {
+    display: flex !important;
+    flex-direction: column;
+  }
+  .laxu-trade-rail {
+    order: 0;
+    flex-direction: row !important;
+    width: auto !important;
+    padding: 5px !important;
+    justify-content: flex-start;
+  }
+  .laxu-rail-foot {
+    display: none !important;
+  }
+  .laxu-info-panel {
+    order: 1;
+    margin-left: 0;
+  }
+  .laxu-info-panel:not(.is-open) {
+    display: none;
+  }
+  .laxu-info-panel,
+  .laxu-info-inner {
+    width: 100% !important;
+  }
+  .laxu-trade-center {
+    order: 2;
+  }
+  .laxu-trade-ticket {
+    order: 3;
+  }
+  .laxu-trade-book {
+    order: 4;
+  }
+  .laxu-trade-center,
+  .laxu-trade-ticket,
+  .laxu-trade-book {
+    flex: none !important;
+    min-width: 0 !important;
+  }
+
+  .laxu-chart {
+    min-height: 0 !important;
+  }
+  .laxu-chart-canvas {
+    min-height: 320px !important;
+  }
+
+  /* mark on its own line, the six stats in a grid under it */
+  .laxu-stats {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px 10px !important;
+    padding: 12px 14px !important;
+  }
+  .laxu-stats > :first-child {
+    grid-column: 1 / -1;
+    padding-right: 0 !important;
+  }
+  .laxu-stats-divider {
+    display: none;
+  }
+  .laxu-stats-cell {
+    min-width: 0;
+    padding: 0 !important;
+  }
+  .laxu-stats-cell > * {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* top bar: wordmark + wallet on the first line, market switcher under it */
+  .laxu-topbar {
+    height: auto !important;
+    flex-wrap: wrap;
+    gap: 8px 10px !important;
+    padding: 8px 12px !important;
+  }
+  .laxu-topbar-left {
+    display: contents !important;
+  }
+  .laxu-topbar-right {
+    order: 1;
+    margin-left: auto;
+    gap: 8px !important;
+  }
+  /* line break: the market switcher and info toggle always start row two */
+  .laxu-topbar::after {
+    content: "";
+    order: 1;
+    flex-basis: 100%;
+    height: 0;
+    margin-top: -8px;
+  }
+  .laxu-topbar-mkt {
+    order: 2;
+  }
+  .laxu-topbar-info {
+    order: 3;
+    padding: 9px !important;
+  }
+  .laxu-info-label {
+    display: none;
+  }
+
+  /* market picker: name, price and 24h only */
+  .laxu-mkt-overlay {
+    padding: 12px 10px !important;
+  }
+  .laxu-mkt-grid {
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) !important;
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+  }
+  .laxu-mkt-grid > :nth-child(n + 4) {
+    display: none;
+  }
+  .laxu-mkt-grid > * {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* positions dock: keep its columns and scroll sideways */
+  .laxu-dock-table {
+    overflow-x: auto;
+  }
+  .laxu-dock-grid {
+    min-width: 640px;
+  }
+
+  /* community / position top nav: section tabs drop to their own scrolling row */
+  .laxu-topnav {
+    height: auto !important;
+    flex-wrap: wrap;
+    gap: 8px 10px !important;
+    padding: 10px 12px !important;
+  }
+  .laxu-topnav-left {
+    display: contents !important;
+  }
+  .laxu-topnav-right {
+    margin-left: auto;
+  }
+  .laxu-topnav-links {
+    order: 3;
+    flex: 1 1 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .laxu-topnav-links > * {
+    flex: none;
+  }
+}
+
+/* position page: the action column drops under the charts */
+@media (max-width: 960px) {
+  .laxu-position-main {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .laxu-position-side {
+    position: static !important;
+  }
+}
+
+@media (max-width: 639px) {
+  .laxu-position-nav {
+    align-items: flex-start !important;
+  }
+
+  /* community hero stats: two a row */
+  .laxu-hero-stat {
+    flex: 1 1 calc(50% - 5px);
+    min-width: 0 !important;
+  }
+  .laxu-filter-search {
+    flex: 1 1 100%;
   }
 }

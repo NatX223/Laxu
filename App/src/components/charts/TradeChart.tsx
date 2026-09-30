@@ -25,7 +25,8 @@ const COUNTBACK = 1500;
 
 export type ScaleMode = "normal" | "log" | "percent";
 
-export type LiveBar = { o: number; h: number; l: number; c: number; v: number; ref: number };
+/** `market` is the one the bar came from, so a late bar from the previous market can be told apart. */
+export type LiveBar = { market: string; o: number; h: number; l: number; c: number; v: number; ref: number };
 
 export type TradeChartProps = {
   /** Arcus market name, e.g. "TSLA-USD". */
@@ -123,6 +124,7 @@ export default function TradeChart({ market, timeframe, windowSec, scaleMode, au
       const dayAgo = last.openTime - 86_400 * 1_000_000;
       const ref = [...history].reverse().find((c) => c.openTime <= dayAgo) ?? history[0];
       onBarRef.current?.({
+        market,
         o: Number(last.open),
         h: Number(last.high),
         l: Number(last.low),
@@ -171,7 +173,7 @@ export default function TradeChart({ market, timeframe, windowSec, scaleMode, au
   }, [scaleMode, autoScale]);
 
   return (
-    <div style={{ position: "relative", flex: 1, minHeight: 450 }}>
+    <div className="laxu-chart-canvas" style={{ position: "relative", flex: 1, minHeight: 450 }}>
       <div ref={el} style={{ position: "absolute", inset: 0 }} />
       {error && (
         <div

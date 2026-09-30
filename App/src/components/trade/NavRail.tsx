@@ -29,13 +29,14 @@ const ICONS: Record<View, React.ReactNode> = {
 
 const TITLES: Record<View, string> = { trade: "Trade", tokens: "Position tokens", portfolio: "Portfolio" };
 
-/** 46px icon rail: the three views, with a mint count on the tokens tab. */
+/** 46px icon rail: the three views, with a position-token count on the tokens tab. */
 export default function NavRail({ engine }: { engine: TradeEngine }) {
   const { st, set } = engine;
-  const minted = st.positions.filter((p) => p.tokenized).length;
+  const minted = st.positions.length;
 
   return (
     <div
+      className="laxu-trade-rail"
       style={{
         flex: "none",
         width: 46,
@@ -97,9 +98,10 @@ export default function NavRail({ engine }: { engine: TradeEngine }) {
         );
       })}
 
-      <div style={{ flex: 1 }} />
-      <div style={{ width: 30, height: 1, background: "rgba(255,255,255,0.14)" }} />
+      <div className="laxu-rail-foot" style={{ flex: 1 }} />
+      <div className="laxu-rail-foot" style={{ width: 30, height: 1, background: "rgba(255,255,255,0.14)" }} />
       <div
+        className="laxu-rail-foot"
         style={{
           fontSize: 9,
           fontWeight: 700,

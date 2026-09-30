@@ -3,8 +3,18 @@ import { Disc } from "../community/shared";
 import { Badge, MONO, SERIF } from "./shared";
 import type { PositionVals } from "./derive";
 
-/** The gradient band: back link, the position's identity, and NAV per token. */
-export default function PositionHeader({ vals }: { vals: PositionVals }) {
+/**
+ * The gradient band: back link, the position's identity, and NAV per token.
+ * An unlisted position has no nickname, so its structured name
+ * ("TSLA Short 5×") takes the heading instead.
+ */
+export default function PositionHeader({
+  vals,
+  back = { href: "/community", label: "Community tokens" },
+}: {
+  vals: PositionVals;
+  back?: { href: string; label: string };
+}) {
   return (
     <div
       style={{
@@ -21,14 +31,14 @@ export default function PositionHeader({ vals }: { vals: PositionVals }) {
           zIndex: 2,
           maxWidth: 1280,
           margin: "0 auto",
-          padding: "22px 28px 30px",
+          padding: "22px clamp(16px, 4vw, 28px) 30px",
           display: "flex",
           flexDirection: "column",
           gap: 22,
         }}
       >
         <Link
-          href="/community"
+          href={back.href}
           className="laxu-back"
           style={{
             display: "inline-flex",
@@ -53,7 +63,7 @@ export default function PositionHeader({ vals }: { vals: PositionVals }) {
           >
             <polyline points="15 6 9 12 15 18" />
           </svg>
-          Community tokens
+          {back.label}
         </Link>
 
         <div
@@ -80,15 +90,17 @@ export default function PositionHeader({ vals }: { vals: PositionVals }) {
                     margin: 0,
                     fontFamily: SERIF,
                     fontWeight: 400,
-                    fontSize: 40,
+                    fontSize: "clamp(28px, 7vw, 40px)",
                     lineHeight: 1,
                     letterSpacing: "-0.02em",
                     color: "#fdfbf7",
                   }}
                 >
-                  {vals.nickname}
+                  {vals.nickname || vals.structuredName}
                 </h1>
-                <div style={{ fontSize: 16, fontWeight: 600, color: "#c2b6e4" }}>{vals.structuredName}</div>
+                {vals.nickname && (
+                  <div style={{ fontSize: 16, fontWeight: 600, color: "#c2b6e4" }}>{vals.structuredName}</div>
+                )}
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -158,7 +170,7 @@ export default function PositionHeader({ vals }: { vals: PositionVals }) {
                       <rect x="4" y="10" width="16" height="10" rx="2.4" />
                       <path d="M8 10V7a4 4 0 0 1 8 0v3" />
                     </svg>
-                    COLLATERALIZED &middot; {vals.loanLabel}
+                    COLLATERALIZED
                   </Badge>
                 )}
               </div>
@@ -185,11 +197,11 @@ export default function PositionHeader({ vals }: { vals: PositionVals }) {
             </div>
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+          <div className="laxu-position-nav" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
             <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#a79bd0" }}>
               NAV PER TOKEN
             </div>
-            <div style={{ fontFamily: MONO, fontSize: 38, lineHeight: 1, fontWeight: 600, color: "#fdfbf7" }}>
+            <div style={{ fontFamily: MONO, fontSize: "clamp(28px, 7vw, 38px)", lineHeight: 1, fontWeight: 600, color: "#fdfbf7" }}>
               {vals.navPrice}
             </div>
             <div style={{ fontFamily: MONO, fontSize: 15, fontWeight: 600, color: vals.pnlColor }}>

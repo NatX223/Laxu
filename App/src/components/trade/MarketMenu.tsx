@@ -52,6 +52,7 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
   return (
     <div
       onClick={() => set("mktMenu", false)}
+      className="laxu-mkt-overlay"
       style={{
         position: "fixed",
         inset: 0,
@@ -182,6 +183,7 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
         </div>
 
         <div
+          className="laxu-mkt-grid"
           style={{
             flex: "none",
             display: "grid",
@@ -221,7 +223,7 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
               <div
                 key={sym}
                 onClick={() => actions.pickMarket(sym)}
-                className="laxu-mkt-row"
+                className="laxu-mkt-row laxu-mkt-grid"
                 style={{
                   display: "grid",
                   alignItems: "center",

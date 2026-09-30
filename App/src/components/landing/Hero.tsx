@@ -28,7 +28,7 @@ export default function Hero() {
           alignItems: "center",
           justifyContent: "space-between",
           gap: 16,
-          padding: "22px 32px",
+          padding: "22px clamp(16px, 4vw, 32px)",
         }}
       >
         {/* eslint-disable-next-line @next/next/no-img-element -- intrinsic-height mark, no layout box to reserve */}
@@ -71,7 +71,7 @@ export default function Hero() {
           alignItems: "center",
           justifyContent: "center",
           gap: 26,
-          padding: "40px 32px 90px",
+          padding: "40px clamp(16px, 4vw, 32px) 90px",
           textAlign: "center",
         }}
       >

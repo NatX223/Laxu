@@ -11,8 +11,14 @@ export default function StatsBar({ engine, mkt }: { engine: TradeEngine; mkt: Ma
   const m = cat(st.market);
   const { mark, open, chg, chgColor, dp } = mkt;
 
+  const known = mark !== null && open !== null;
+
   const cells = [
-    { k: "24H CHANGE", v: (chg >= 0 ? "+" : "") + money(Math.abs(mark - open), dp), c: chgColor },
+    {
+      k: "24H CHANGE",
+      v: known ? (chg >= 0 ? "+" : "−") + money(Math.abs(mark - open), dp) : "—",
+      c: known ? chgColor : "#e3ddf4",
+    },
     { k: "FUNDING / 1H", v: "+0.0091%", c: "#2fd18c" },
     { k: "NEXT FUNDING", v: "00:" + String(38 - (st.tick % 38)).padStart(2, "0"), c: "#e3ddf4" },
     { k: "OPEN INTEREST", v: m.oi, c: "#e3ddf4" },
@@ -22,6 +28,7 @@ export default function StatsBar({ engine, mkt }: { engine: TradeEngine; mkt: Ma
 
   return (
     <div
+      className="laxu-stats"
       style={{
         display: "flex",
         alignItems: "center",
@@ -36,19 +43,29 @@ export default function StatsBar({ engine, mkt }: { engine: TradeEngine; mkt: Ma
       <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingRight: 16 }}>
         <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#a79bd0" }}>MARK</div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <div style={{ fontFamily: MONO, fontSize: 24, fontWeight: 600, letterSpacing: "-0.01em", color: chgColor }}>
-            {money(mark, dp)}
+          <div
+            style={{
+              fontFamily: MONO,
+              fontSize: 24,
+              fontWeight: 600,
+              letterSpacing: "-0.01em",
+              color: known ? chgColor : "#e3ddf4",
+            }}
+          >
+            {mark === null ? "—" : money(mark, dp)}
           </div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: chgColor }}>
-            {(chg >= 0 ? "+" : "") + chg.toFixed(2)}%
-          </div>
+          {known && (
+            <div style={{ fontSize: 13, fontWeight: 700, color: chgColor }}>
+              {(chg >= 0 ? "+" : "") + chg.toFixed(2)}%
+            </div>
+          )}
         </div>
       </div>
 
-      <div style={{ width: 1, height: 34, background: "rgba(255,255,255,0.12)" }} />
+      <div className="laxu-stats-divider" style={{ width: 1, height: 34, background: "rgba(255,255,255,0.12)" }} />
 
       {cells.map((s) => (
-        <div key={s.k} style={{ display: "flex", flexDirection: "column", gap: 3, padding: "0 12px" }}>
+        <div key={s.k} className="laxu-stats-cell" style={{ display: "flex", flexDirection: "column", gap: 3, padding: "0 12px" }}>
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#a79bd0", whiteSpace: "nowrap" }}>
             {s.k}
           </div>

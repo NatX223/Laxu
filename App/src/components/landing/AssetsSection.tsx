@@ -29,7 +29,7 @@ export default function AssetsSection() {
           display: "flex",
           flexDirection: "column",
           gap: 40,
-          padding: "100px 24px 120px",
+          padding: "clamp(64px, 13vw, 100px) clamp(16px, 4vw, 24px) clamp(72px, 15vw, 120px)",
           maxWidth: 1320,
           margin: "0 auto",
         }}
@@ -144,6 +144,8 @@ export default function AssetsSection() {
                       gridTemplateColumns: narrow
                         ? "1fr"
                         : "minmax(0, 0.92fr) minmax(0, 1.08fr)",
+                      // stacked: the copy keeps its height, the image takes what's left
+                      gridTemplateRows: narrow ? "minmax(0, 1fr) auto" : undefined,
                     }}
                   >
                     <div
@@ -153,7 +155,7 @@ export default function AssetsSection() {
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        padding: 30,
+                        padding: narrow ? 18 : 30,
                         background: item.glow,
                       }}
                     >
@@ -177,11 +179,11 @@ export default function AssetsSection() {
                         display: "flex",
                         flexDirection: "column",
                         justifyContent: "center",
-                        gap: 16,
-                        padding: "36px 44px 36px 8px",
+                        gap: narrow ? 12 : 16,
+                        padding: narrow ? "6px 22px 24px" : "36px 44px 36px 8px",
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
                         <div
                           style={{
                             fontFamily: SERIF,
@@ -211,7 +213,7 @@ export default function AssetsSection() {
                       <p
                         style={{
                           margin: 0,
-                          fontSize: 18,
+                          fontSize: narrow ? 15 : 18,
                           lineHeight: 1.6,
                           fontWeight: 500,
                           color: "#2e2822",
