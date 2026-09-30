@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { parseAbiItem, parseEventLogs, zeroAddress, type Address, type Log } from "viem";
 
 import { db } from "../config/db";
@@ -999,6 +1000,23 @@ async function backfillPositionTokenEvents(
   });
 }
 
+/**
+ * Record a lending pool. The open flow records the same pool in its own
+ * transaction and upsert is not atomic, so losing that race (P2002) just means
+ * the row is already there.
+ */
+async function recordPool(pool: Address, positionToken: Address): Promise<void> {
+  try {
+    await db.lendingPool.upsert({
+      where: { poolAddress: pool.toLowerCase() },
+      create: { poolAddress: pool.toLowerCase(), positionTokenAddress: positionToken.toLowerCase() },
+      update: {},
+    });
+  } catch (error) {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
+  }
+}
+
 /// Same dual-source shape as {discoverAddresses}: factory logs for the
 /// checkpoint's window, unioned with every pool the DB already knows about so
 /// a restart never drops one discovered before that window. Also upserts a
@@ -1018,11 +1036,7 @@ async function discoverPools(fromBlock: bigint, toBlock: bigint): Promise<Set<Ad
       const args = (entry as unknown as { args: { pool: Address; positionToken: Address } }).args;
       const poolAddress = args.pool.toLowerCase() as Address;
       known.add(poolAddress);
-      await db.lendingPool.upsert({
-        where: { poolAddress },
-        create: { poolAddress, positionTokenAddress: args.positionToken.toLowerCase() },
-        update: {},
-      });
+      await recordPool(poolAddress, args.positionToken);
     }
   }
 
@@ -1221,13 +1235,10 @@ export function startIndexer(): () => void {
               for (const entry of logs) {
                 const pool = entry.args.pool as Address;
                 const positionToken = entry.args.positionToken as Address;
-                void db.lendingPool
-                  .upsert({
-                    where: { poolAddress: pool.toLowerCase() },
-                    create: { poolAddress: pool.toLowerCase(), positionTokenAddress: positionToken.toLowerCase() },
-                    update: {},
-                  })
-                  .then(() => watchPool(pool));
+                // A rejection here would be unhandled and take the whole process down.
+                void recordPool(pool, positionToken)
+                  .then(() => watchPool(pool))
+                  .catch((error) => log.error("recording a new lending pool failed", { pool, ...errorFields(error) }));
               }
             },
           }),

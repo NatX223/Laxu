@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { ArcusMarketInfo } from "../arcus/types";
 import { HttpError } from "../lib/errors";
-import { checkOpenAgainstMarket } from "./openPosition";
+import { checkEntryLiquidity, checkOpenAgainstMarket, sizeEntry } from "./openPosition";
 
 const eth = { arcusDisplayName: "ETH-USD" };
 
@@ -62,4 +62,44 @@ test("rejects a position below the minimum size", () => {
     () => checkOpenAgainstMarket(eth, live({ minOrderSize: "0.01" }), { leverage: 5, amount: "1" }),
     /Minimum position size for ETH-USD is \$26\.5/,
   );
+});
+
+// TSLA off-hours, 2026-09-26: mark pinned at the upper band, every ask beyond it.
+const tsla = { arcusDisplayName: "TSLA-USD" };
+const pinned = live({
+  marketDisplayName: "TSLA-USD",
+  markPrice: "394.95",
+  isOutsideRth: true,
+  upperTradingBound: "394.97",
+  lowerTradingBound: "357.37",
+  upperExpectedExpansionAt: 1790467457,
+});
+const tslaBook = {
+  bids: [["394.95", "396.99"], ["384.64", "2.59"]] as [string, string][],
+  asks: [["398.14", "138.99"], ["398.54", "180.69"]] as [string, string][],
+};
+
+test("refuses a long when every ask is beyond the off-hours band", () => {
+  rejects(() => checkEntryLiquidity(tsla, pinned, tslaBook, "long"), "OUTSIDE_PRICE_BAND");
+});
+
+test("allows a short against a bid inside the band", () => {
+  checkEntryLiquidity(tsla, pinned, tslaBook, "short");
+});
+
+test("refuses an entry with no liquidity within the slippage bound", () => {
+  rejects(() => checkEntryLiquidity(eth, live(), { bids: [], asks: [["9999", "1"]] }, "long"), "NO_LIQUIDITY");
+});
+
+test("sizes the entry so margin, fee and worst-case slippage fit the collateral", () => {
+  const { quantity } = sizeEntry({
+    collateral: "50",
+    leverage: 3,
+    mark: "393.34",
+    side: "SELL",
+    market: { tickSize: "0.01", stepSize: "0.0000001" },
+  });
+  const notional = Number(quantity) * 393.34;
+  assert.ok(notional / 3 + notional * 0.00045 + notional * 0.09 <= 50);
+  assert.ok(notional > 117); // and still puts nearly all of it to work
 });

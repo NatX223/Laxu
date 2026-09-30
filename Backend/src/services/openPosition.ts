@@ -2,8 +2,8 @@ import type { PositionOpenRequest } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import type { Address, Hash } from "viem";
 
-import { getPositions, placeOrder, setLeverage } from "../arcus/client";
-import type { ArcusMarketInfo } from "../arcus/types";
+import { getL2OrderBook, getPositions, placeOrder, setLeverage } from "../arcus/client";
+import type { ArcusL2OrderBook, ArcusMarketInfo } from "../arcus/types";
 import { db } from "../config/db";
 import { config } from "../config/env";
 import { usdgAddress, usdgDecimals } from "../chain/clients";
@@ -156,6 +156,17 @@ export async function requestOpenPosition(request: OpenPositionRequest): Promise
   });
   checkDefaultLevels(request, markOf(live));
 
+  // Off-hours, the book can sit entirely outside the price band (asks above
+  // the upper edge), so no entry fills at any size. Caught here rather than
+  // after the creator has paid. A failed read is not a reason to refuse.
+  let book: ArcusL2OrderBook | undefined;
+  try {
+    book = await getL2OrderBook(market.arcusDisplayName);
+  } catch (error) {
+    log.warn("order book read failed; skipping the liquidity check", { market: market.arcusDisplayName, ...errorFields(error) });
+  }
+  if (book) checkEntryLiquidity(market, live, book, request.direction);
+
   const user = await requireRegisteredUser(request.userWalletAddress);
 
   const { slot, result: openRequest } = await reserveSlot(
@@ -225,6 +236,46 @@ function defaultLevelsAtEntry(request: PositionOpenRequest, entry18: bigint): { 
 }
 
 /**
+ * Refuse an open whose entry IOC could not fill at all: no level on the side
+ * it takes from lies strictly inside the off-hours price band and within the
+ * slippage bound. Arcus rejects any fill at or beyond a band edge
+ * (FILL_WILL_EXCEED_TRADING_BOUND), so an empty band means a sure refund.
+ */
+export function checkEntryLiquidity(
+  market: Pick<ResolvedMarket, "arcusDisplayName">,
+  live: ArcusMarketInfo,
+  book: ArcusL2OrderBook,
+  direction: "long" | "short",
+): void {
+  const mark = markOf(live);
+  if (!mark) return; // checkOpenAgainstMarket already refused this
+  const long = direction === "long";
+  const levels = long ? book.asks : book.bids;
+  const edge = (long ? live.upperTradingBound : live.lowerTradingBound) ?? undefined;
+  const slipBound = applyBps(mark, long ? config.arcusSlippageBps : -config.arcusSlippageBps, 18);
+
+  const inBand = (price: string) =>
+    !edge || (long ? compareDecimal(price, edge) < 0 : compareDecimal(price, edge) > 0);
+  const inSlippage = (price: string) =>
+    long ? compareDecimal(price, slipBound) <= 0 : compareDecimal(price, slipBound) >= 0;
+  if (levels.some(([price]) => inBand(price) && inSlippage(price))) return;
+
+  const name = market.arcusDisplayName;
+  const side = long ? "Longs" : "Shorts";
+  const best = levels[0]?.[0];
+  if (edge && best && !inBand(best)) {
+    const expandsAt = long ? live.upperExpectedExpansionAt : live.lowerExpectedExpansionAt;
+    const when = expandsAt ? ` It is expected to widen around ${new Date(expandsAt * 1000).toISOString().slice(11, 16)} UTC.` : "";
+    throw badRequest(
+      `${name} is at its off-hours price limit of $${edge}, with no ${long ? "sellers" : "buyers"} inside it. ${side} can't fill until the limit widens.${when}`,
+      "OUTSIDE_PRICE_BAND",
+      { bound: edge, expectedExpansionAt: expandsAt ?? null },
+    );
+  }
+  throw badRequest(`No ${long ? "sellers" : "buyers"} on ${name} near the current price right now. ${side} can't fill.`, "NO_LIQUIDITY");
+}
+
+/**
  * Everything about the market that can reject an open, checked before a slot
  * is reserved or anything is paid: the market is ONLINE, leverage is within
  * the limit that applies right now, and `amount x leverage` clears Arcus's
@@ -267,7 +318,9 @@ export function checkOpenAgainstMarket(
     // One dollar figure covering both limits, for the message only.
     const minUsd = Math.max(Number(minNotional), Number(live.minOrderSize) * Number(mark));
     const min = (Math.ceil(minUsd * 100) / 100).toFixed(2).replace(/\.00$/, "");
-    const minAmount = (Math.ceil((minUsd / request.leverage) * 100) / 100).toFixed(2).replace(/\.00$/, "");
+    const minAmount = (Math.ceil(collateralForNotional(minUsd, request.leverage) * 100) / 100)
+      .toFixed(2)
+      .replace(/\.00$/, "");
     throw badRequest(
       `Minimum position size for ${name} is $${min} -- at ${request.leverage}x that needs at least ${minAmount} USDG`,
       "POSITION_TOO_SMALL",
@@ -532,7 +585,28 @@ async function depositPayment(request: PositionOpenRequest, slot: SlotWithWallet
   const since = request.createdAt;
   const existing = await findCredit(slot, since);
 
+  // A deposit that went out but whose hash was never saved (the DB dropped
+  // right after the send) shows up as a wallet that no longer holds this
+  // payment. Sending again would spend another creator's held money -- wait
+  // for the credit instead.
+  let alreadySent = false;
   if (!existing && !request.arcusDepositTxHash) {
+    const walletAddress = slot.operatorWallet.address as Address;
+    const [balance, held] = await Promise.all([
+      usdgBalanceOf(walletAddress),
+      heldForOpenRequests(walletAddress, request.id),
+    ]);
+    alreadySent = balance < held + BigInt(request.amount);
+    if (alreadySent) {
+      log.warn("payment no longer on the internal wallet; assuming the deposit went out", {
+        openRequestId: request.id,
+        balance: balance.toString(),
+        held: held.toString(),
+      });
+    }
+  }
+
+  if (!existing && !request.arcusDepositTxHash && !alreadySent) {
     let txHash: Hash;
     try {
       txHash = await depositToSubaccount(slot, BigInt(request.amount));
@@ -716,11 +790,35 @@ async function placeEntryOrder(params: {
  * Size the entry from the collateral actually credited.
  *
  * With isolated margin at `leverage`, the initial margin requirement is
- * notional / leverage -- so putting the whole deposit to work means a notional
- * of `collateral * leverage`, and a size of that over the mark price. The result
- * is floored to the market's step size; the remainder stays as free collateral
- * rather than rounding the order up past what the deposit can margin.
+ * notional / leverage -- but a deposit sized to exactly that is rejected
+ * UNDERCOLLATERALIZED: the taker fee comes out of the same collateral, and the
+ * IOC may fill anywhere up to the slippage bound, marking the leg at a loss of
+ * up to `slippage x notional` straight away. So the collateral must cover
+ * `notional x (1/leverage + fee + slippage)`, i.e.
+ *
+ *   notional = collateral x leverage / (1 + leverage x (fee + slippage))
+ *
+ * and the size is that over the mark price, floored to the market's step size;
+ * the remainder stays as free collateral.
  */
+export function entryNotional(collateral: string, leverage: number): string {
+  const c = parseDecimal(collateral);
+  const lev = BigInt(leverage);
+  const bufferPpm = BigInt(config.arcusTakerFeePpm) + BigInt(config.arcusSlippageBps) * 100n;
+  // Six extra places so a whole-dollar collateral does not truncate to dollars.
+  return formatDecimal({
+    units: (c.units * lev * 1_000_000n * 1_000_000n) / (1_000_000n + lev * bufferPpm),
+    scale: c.scale + 6,
+  });
+}
+
+/// The collateral an entry of `notional` needs -- the inverse of {entryNotional}.
+export function collateralForNotional(notional: number, leverage: number): number {
+  const buffer = (config.arcusTakerFeePpm + config.arcusSlippageBps * 100) / 1_000_000;
+  return notional * (1 / leverage + buffer);
+}
+
+/// Quantity and protective price for an entry backed by `collateral`; see {entryNotional}.
 export function sizeEntry(params: {
   collateral: string;
   leverage: number;
@@ -728,11 +826,7 @@ export function sizeEntry(params: {
   side: "BUY" | "SELL";
   market: Pick<ResolvedMarket, "tickSize" | "stepSize">;
 }): { price: string; quantity: string; notional: string } {
-  const collateral = parseDecimal(params.collateral);
-  const notional = formatDecimal({
-    units: collateral.units * BigInt(params.leverage),
-    scale: collateral.scale,
-  });
+  const notional = entryNotional(params.collateral, params.leverage);
 
   const markPrice = parseDecimal(params.mark);
   const notionalValue = parseDecimal(notional);

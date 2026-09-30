@@ -27,7 +27,7 @@ function bool(name: string, fallback: boolean): boolean {
 }
 
 export const config = {
-  port: num("PORT", 3000),
+  port: num("PORT", 4000),
   nodeEnv: optional("NODE_ENV", "development"),
   logLevel: optional("LOG_LEVEL", "info"),
 
@@ -64,6 +64,9 @@ export const config = {
   /// Slippage bound on the protective MARKET price, in basis points. Arcus
   /// rejects anything beyond 10% of mark, so this must stay under 1000.
   arcusSlippageBps: num("ARCUS_SLIPPAGE_BPS", 900),
+  /// Taker fee in parts per million (GET /v1/feetiers, Base tier). Entry sizing
+  /// holds it back from the collateral so the fill is never undercollateralized.
+  arcusTakerFeePpm: num("ARCUS_TAKER_FEE_PPM", 450),
   /// goodTilTime is mandatory on every order, including IOC, and must sit at
   /// least one month ahead. Two months of headroom absorbs clock skew.
   arcusGoodTilDays: num("ARCUS_GOOD_TIL_DAYS", 60),

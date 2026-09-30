@@ -96,6 +96,9 @@ function serialiseOpenRequest(request: PositionOpenRequest) {
     stopLoss: request.stopLoss,
     takeProfit: request.takeProfit,
     creditedAmount: request.creditedAmount,
+    /// The Arcus fill, human decimals -- set from `order_filled` on.
+    entryPrice: request.entryPrice,
+    filledSize: request.filledSize,
     paymentTxHash: request.paymentTxHash,
     positionTokenAddress: request.positionTokenAddress,
     lendingPoolAddress: request.lendingPoolAddress,

@@ -6,7 +6,7 @@ import { config } from "../config/env";
 import { resolveSecret } from "../config/secrets";
 import { publicKeyHex, loadEd25519PrivateKey } from "../arcus/ed25519";
 import type { ArcusCredentials } from "../arcus/types";
-import { conflict } from "../lib/errors";
+import { serviceUnavailable } from "../lib/errors";
 import { createLogger } from "../lib/logger";
 
 const log = createLogger("allocator");
@@ -131,8 +131,10 @@ export async function reserveSlot<T>(
   });
 
   if (!claimed) {
-    throw conflict(
-      "No free subaccount slot is available. Every slot in the operator pool is in use.",
+    // 503, not 409: nothing is wrong with the request, the pool is just full
+    // for now. Nothing has been reserved or paid, so a retry is always safe.
+    throw serviceUnavailable(
+      "All trading slots are busy right now. Try again in a few minutes.",
       "NO_FREE_SLOT",
     );
   }
@@ -269,9 +271,26 @@ export async function verifySlotCredentials(): Promise<
   return problems;
 }
 
-export async function poolStats(): Promise<Record<string, number>> {
-  const grouped = await db.subaccountSlot.groupBy({ by: ["status"], _count: { _all: true } });
-  const stats: Record<string, number> = { free: 0, reserved: 0, allocated: 0 };
-  for (const row of grouped) stats[row.status] = row._count._all;
+export interface PoolStats {
+  free: number;
+  reserved: number;
+  allocated: number;
+  settling: number;
+  total: number;
+}
+
+/// Slot counts by status -- slots on a retired wallet are not counted, since
+/// reserveSlot never hands them out.
+export async function poolStats(): Promise<PoolStats> {
+  const grouped = await db.subaccountSlot.groupBy({
+    by: ["status"],
+    where: { operatorWallet: { status: "active" } },
+    _count: { _all: true },
+  });
+  const stats: PoolStats = { free: 0, reserved: 0, allocated: 0, settling: 0, total: 0 };
+  for (const row of grouped) {
+    if (row.status in stats && row.status !== "total") stats[row.status as keyof PoolStats] = row._count._all;
+    stats.total += row._count._all;
+  }
   return stats;
 }

@@ -77,9 +77,10 @@ export async function reconcileOnce(): Promise<ReconcileReport> {
       }
 
       const expected = toDollars(await expectedMargin(positionId), decimals);
-      // Equity, not free collateral: the ledger tracks capital committed to the
-      // position, which sits in the isolated leg once the order fills.
-      const actual = account.equity;
+      // Net deposits, not equity: the ledger tracks money moved in and out, and
+      // equity also carries unrealized PnL, which would flag every position
+      // whose price moves more than the tolerance.
+      const actual = account.netDeposits;
       const drift = subtractDecimal(actual, expected);
 
       if (compareDecimal(absDecimal(drift), config.reconcileDriftTolerance) > 0) {

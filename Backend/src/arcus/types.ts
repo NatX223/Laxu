@@ -49,6 +49,19 @@ export interface ArcusMarketInfo {
   isOutsideRth?: boolean;
   /// Null for 24/7 markets.
   regularTradingHours?: ArcusTradingHours | null;
+  /// Off-hours price band. A fill at or beyond either edge is rejected
+  /// (FILL_WILL_EXCEED_TRADING_BOUND); each side widens on its own schedule.
+  upperTradingBound?: string | null;
+  lowerTradingBound?: string | null;
+  /// Epoch seconds of the next expected widening, null when not pending.
+  upperExpectedExpansionAt?: number | null;
+  lowerExpectedExpansionAt?: number | null;
+}
+
+/// `GET /v1/l2OrderBook/{market}`: `[price, size]` levels, best first.
+export interface ArcusL2OrderBook {
+  bids: [string, string][];
+  asks: [string, string][];
 }
 
 /// One record from `GET /v1/api-meta/markets`, keyed by ticker (the base

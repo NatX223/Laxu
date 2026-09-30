@@ -19,6 +19,7 @@ import type {
   AdjustIsolatedMarginResult,
   ArcusAccount,
   ArcusCredentials,
+  ArcusL2OrderBook,
   ArcusMarketInfo,
   ArcusMarketMeta,
   ArcusOrderStatus,
@@ -43,6 +44,8 @@ function http(): AxiosInstance {
 const client = http();
 
 function fail(action: string, error: unknown): never {
+  // Already carries the HTTP status and body (from expectOk) -- keep them.
+  if (error instanceof ArcusError) throw error;
   if (error instanceof AxiosError) {
     throw new ArcusError(
       `${action} failed: ${error.message}`,
@@ -114,6 +117,16 @@ export async function getMarkets(market?: string): Promise<ArcusMarketInfo[]> {
   }
 }
 
+export async function getL2OrderBook(market: string, nLevels = 20): Promise<ArcusL2OrderBook> {
+  try {
+    const res = await client.get(`/v1/l2OrderBook/${encodeURIComponent(market)}`, { params: { nLevels } });
+    const body = expectOk("getL2OrderBook", res.status, res.data) as Partial<ArcusL2OrderBook>;
+    return { bids: body.bids ?? [], asks: body.asks ?? [] };
+  } catch (error) {
+    return fail("getL2OrderBook", error);
+  }
+}
+
 /// Market metadata (name, logo) from `GET /v1/api-meta/markets`. With a
 /// ticker, that one record or null (a 404 means Arcus has no metadata for it);
 /// without, the whole list.
@@ -150,7 +163,11 @@ export async function getPositions(
     const res = await client.get("/v1/positions", { params: { address, accountIndex } });
     if (res.status === 404) return [];
     const body = expectOk("getPositions", res.status, res.data);
-    return Array.isArray(body) ? body : ((body as { positions?: ArcusPosition[] }).positions ?? []);
+    if (Array.isArray(body)) return body;
+    // `{ positions: { "<marketId>": {...} }, total }` -- keyed by market, not a list.
+    const positions = (body as { positions?: ArcusPosition[] | Record<string, ArcusPosition> }).positions;
+    if (!positions) return [];
+    return Array.isArray(positions) ? positions : Object.values(positions);
   } catch (error) {
     return fail("getPositions", error);
   }
@@ -190,9 +207,10 @@ export async function getAccountTransferUpdates(
     });
     if (res.status === 404) return [];
     const body = expectOk("getAccountTransferUpdates", res.status, res.data);
-    return Array.isArray(body)
-      ? body
-      : ((body as { transfers?: AccountTransferUpdate[] }).transfers ?? []);
+    // The feed is wrapped as `{ accountTransferUpdates: [...], total }`.
+    if (Array.isArray(body)) return body;
+    const wrapped = body as { accountTransferUpdates?: AccountTransferUpdate[]; transfers?: AccountTransferUpdate[] };
+    return wrapped.accountTransferUpdates ?? wrapped.transfers ?? [];
   } catch (error) {
     return fail("getAccountTransferUpdates", error);
   }
