@@ -1,36 +1,33 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Laxu App
 
-## Getting Started
+The Laxu frontend: Next.js 16, React 19, Privy (auth and embedded wallets), viem, and TradingView Lightweight Charts.
 
-First, run the development server:
+For what Laxu is and how it works, see the [root README](../README.md) and the [litepaper](../docs/LITEPAPER.md).
+
+## Run it
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # variables are listed in the root README, "Run it locally → Frontend"
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The app expects the Laxu backend at `NEXT_PUBLIC_API_URL` (default `http://localhost:4000`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Layout
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Path | What it is |
+|---|---|
+| `src/app/` | Routes: landing (`page.tsx`), `trade`, `position`, `community` |
+| `src/components/trade/` | Trade screen: chart, order ticket, book, positions dock |
+| `src/components/position/` | Position page: borrow/repay, buy-in/redeem, stop-loss/take-profit panel |
+| `src/components/faucet/` | "Get test funds" |
+| `src/lib/actions.ts` | Contract writes; checks `LendingPool` reverts (e.g. "exceeds LTV", stale prices) before the wallet prompt |
+| `src/lib/arcus.ts` | Public Arcus market data (candles, marks) |
+| `src/lib/api.ts` | Backend client |
 
-## Learn More
+## Known limits
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- The main chart and mark price are live Arcus data. The order book, tape and market-menu sparklines are simulated.
+- The positions dock's PnL ignores funding.
+- The community page shows sample data, labelled as a preview.

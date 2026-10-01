@@ -101,7 +101,7 @@ export default function Hero() {
             maxWidth: "18ch",
           }}
         >
-          Shapeshift your <i>positions</i>
+          Make your position <i>capital efficient</i>
         </h1>
 
         <p

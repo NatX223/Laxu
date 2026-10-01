@@ -5,8 +5,34 @@ as collateral (`LendingVault` / `LendingPool` / `LendingPoolFactory`).
 
 ```
 npm run compile
-npm test
+npm test        # 114 tests: PositionToken 76, lending 38
 ```
+
+The design rationale, invariants and trust model are written up in the
+[litepaper](../docs/LITEPAPER.md).
+
+---
+
+## Position token
+
+One EIP-1167 clone per Arcus trade (`PositionTokenFactory.createPosition`, callable only by the
+backend operator, after a real fill). ERC-20 shares, valued on-chain:
+
+```
+totalAssets = capital + size × (mark − entry) / 1e18 (negated for shorts) + (funding − fundingSettled)
+```
+
+Buy-ins and redeems are ERC-7540 async requests that the operator fulfils after the Arcus side has
+moved; both auto-settle in the fulfil transaction and keep NAV per share constant. Either can be
+cancelled after 20 minutes (`REQUEST_CANCEL_TIMEOUT`). Non-creator buy-ins pay a 2% fee
+(`BUY_IN_FEE_BPS`) to the creator at request time.
+
+**What the operator (`arcusOperator`) supplies:** mark/funding reports (`applyReport`, strictly
+increasing timestamps), fill size and price on `fulfillDepositRequest` / `fulfillRedeemRequest` /
+`executeTrigger`, the final mark and funding on `close`, and the recovered amount on `settle`.
+**What it can't do:** set a share price directly, mint itself shares, exit a holder whose own
+trigger isn't hit, pay a claim to anyone but the holder, or take pending buy-in USDG or unclaimed
+settlement funds (`recoverExcess` only returns the balance above both).
 
 ---
 
@@ -60,7 +86,7 @@ which alone puts it in the volatile/exotic bracket. Two things push it lower sti
 **worse as leverage climbs**, which is the reason for tiering rather than one flat number: the
 underlying Arcus position can be liquidated, which steps `PositionToken` value down in one move
 rather than letting it drift, and a bigger step at higher leverage; and `markPrice` arrives in
-periodic CRE reports, not continuously, so for the same real-world price move a 20× position's
+periodic reports from Laxu's backend price reporter, not continuously, so for the same real-world price move a 20× position's
 value swings ~4× faster than a 5× position's — a higher-leverage position has a meaningfully higher
 chance of gapping straight through its liquidation threshold between two report intervals. Lower
 LTV at higher leverage buys more cushion before the trigger; the rising bonus pays liquidators more
@@ -88,8 +114,9 @@ protocols use an insurance fund or governance write-offs. Out of scope for hacka
 **2. Leverage above 20× is not covered by the tier table.** `LendingPool._riskTierFor` has three
 brackets (1–5×, 6–10×, 11–20×) and no upper bound check — a position above 20× silently falls
 through to the 11–20× tier rather than reverting or getting its own bracket. Not a live problem
-today because `PositionToken` creation currently keeps leverage within that range, but nothing in
-`LendingPool` itself enforces that cap, so this is a real gap if the platform ever supports higher
+today because Laxu's backend caps leverage at 20× (`LAXU_MAX_LEVERAGE` in
+`Backend/src/services/markets.ts`) before it opens a position, but neither `PositionToken` nor
+`LendingPool` enforces that cap, so this is a real gap if the platform ever supports higher
 leverage. Revisit then; `test/Lending.js` documents the current fall-through behavior explicitly
 rather than leaving it implicit.
 
@@ -103,10 +130,16 @@ leverage, duplicates are a liquidity-fragmentation inefficiency, not a safety ho
 `factory.primaryPool()` gives the UI one canonical answer.
 
 **5. `MAX_REPORT_AGE` (7 minutes) still wants real-world validation.** It is not an independent
-guess — it is the CRE workflow's 5-minute deviation+heartbeat write policy (see
-`cre-workflow-spec.md`) plus a buffer for normal execution/confirmation lag — but that buffer is
+guess — it is the backend reporter's 1% deviation / 5-minute heartbeat write policy (see
+`Backend/src/services/reporter.ts`) plus a buffer for normal execution/confirmation lag — but that buffer is
 sized on paper, not against an observed live lag. See "Oracle staleness guard" below for what the
 guard does and doesn't cover.
+
+**6. Fills and settlement amounts are operator-reported.** `settle(assets)` only checks that the
+token holds `assets` plus pending buy-ins; it can't check that `assets` matches what Arcus actually
+returned, and `recoverExcess` sends anything above that to an address the operator picks. Fill
+prices passed to `fulfillDepositRequest` move `entryPrice` for every holder. Same trust as the
+price reports: the operator is trusted to pass Arcus's numbers through honestly.
 
 ---
 
@@ -114,14 +147,18 @@ guard does and doesn't cover.
 
 `LendingPool.borrow()` and `withdrawCollateral()` are gated by a `freshOracle` modifier: both
 revert if `block.timestamp - PositionToken.lastReportTimestamp() > MAX_REPORT_AGE` (7 minutes —
-the CRE workflow's 5-minute heartbeat plus a lag buffer, not a round-number guess). Both are
+the reporter's 5-minute heartbeat plus a lag buffer, not a round-number guess). Both are
 actions that *open* new risk against a live collateral read, so both need that read to be recent.
 
+A **closed** position is exempt: its value is final, and reports stop at close, so without the
+exemption `withdrawCollateral()` would fail permanently seven minutes after close and borrowers
+could never get their collateral back to claim. `borrow()` against a closed position is refused
+separately. `repay()` is never gated.
+
 `liquidate()` and `healthFactor()` are deliberately **not** gated, and this is not an oversight.
-Multiple/whitelisted CRE nodes don't fix this either way — a DON reaching consensus protects
-against one node lying about the data (an integrity problem), not against how long ago the last
-successful report was (a recency problem); every node calls the same backend endpoint, so more
-nodes just means more agreement on the same stale number. Blocking liquidation during a staleness
+More reporters wouldn't fix this either way — agreement between several reporters protects
+against one of them lying about the data (an integrity problem), not against how long ago the last
+successful report was (a recency problem). Blocking liquidation during a staleness
 window would trade a small risk (acting on a slightly-old price) for a much bigger one (bad debt
 accumulating unchecked while liquidation sits frozen) — liquidating on last-known data is safer
 than refusing to liquidate at all, so `liquidate()` keeps working exactly as spec'd, unguarded.
@@ -139,7 +176,8 @@ directly is also strictly less code. The liquidator picks their own exit afterwa
 clock, bearing that timing risk themselves.
 
 **`liquidate()` is a plain public function.** No allowlist, no role, nothing to configure. The
-backend runs this today and can run several independent wallets doing it, because nothing in the
-contract treats "liquidator" as an identity. Worth funding those wallets separately from
+backend ships a liquidator bot (`ENABLE_LIQUIDATOR`, off by default on testnet to save gas) and
+could run several independent wallets doing it, because nothing in the contract treats
+"liquidator" as an identity. Worth funding those wallets separately from
 `arcusOperator` and the deployer: they hold none of the protocol's privileged roles and can still
 liquidate. `test/Lending.js` asserts exactly that.

@@ -27,7 +27,7 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "Laxu — Shapeshift your positions",
+  title: "Laxu — Make your position capital efficient",
   description:
     "Open a leveraged position and mint it as an ERC-20 you actually own. One token, one position — its own entry, size and leverage.",
 };
