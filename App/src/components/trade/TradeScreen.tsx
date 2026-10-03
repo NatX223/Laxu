@@ -7,13 +7,13 @@ import InfoPanel from "./InfoPanel";
 import NavRail from "./NavRail";
 import OpenProgress from "./OpenProgress";
 import OrderTicket from "./OrderTicket";
+import PortfolioView from "./PortfolioView";
 import PositionsDock from "./PositionsDock";
 import StatsBar from "./StatsBar";
 import TokensView from "./TokensView";
 import TopBar from "./TopBar";
 import { deriveMarket } from "./derive";
 import { useTradeEngine } from "./engine";
-import { SERIF } from "./shared";
 
 /**
  * The trade workspace, transcribed from `Laxu Trade.dc.html`.
@@ -60,22 +60,7 @@ export default function TradeScreen({
 
             {st.view === "tokens" && <TokensView engine={engine} />}
 
-            {st.view === "portfolio" && (
-              <div
-                style={{
-                  padding: "80px 20px",
-                  textAlign: "center",
-                  background: "rgba(255,255,255,0.045)",
-                  border: "1px solid rgba(255,255,255,0.1)",
-                  borderRadius: 16,
-                }}
-              >
-                <div style={{ fontFamily: SERIF, fontSize: 34, color: "#fdfbf7" }}>Portfolio</div>
-                <div style={{ fontSize: 14, fontWeight: 500, color: "#a79bd0", paddingTop: 8 }}>
-                  Equity curve, realized P&amp;L and pool interest — next screen up.
-                </div>
-              </div>
-            )}
+            {st.view === "portfolio" && <PortfolioView />}
           </div>
 
           {isTrade && (

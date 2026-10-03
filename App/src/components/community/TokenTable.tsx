@@ -29,7 +29,8 @@ const PAGER: React.CSSProperties = {
 
 /** Everything below the spotlight: the ranked rows and the pager. */
 export default function TokenTable({ engine }: { engine: CommunityEngine }) {
-  const { vals, buy, goto, prev, next } = engine;
+  const { st, vals, buy, goto, prev, next } = engine;
+  const filtered = st.kind !== "all" || st.query.trim() !== "";
 
   return (
     <div
@@ -58,9 +59,9 @@ export default function TokenTable({ engine }: { engine: CommunityEngine }) {
           <div>POSITION TOKEN</div>
           <div>SIDE</div>
           <div style={{ textAlign: "right" }}>PRICE</div>
-          <div style={{ textAlign: "right" }}>24H</div>
-          <div style={{ textAlign: "center" }}>7D TREND</div>
-          <div style={{ textAlign: "right" }}>VOL. 24H</div>
+          <div style={{ textAlign: "right" }}>PNL</div>
+          <div style={{ textAlign: "center" }}>NAV TREND</div>
+          <div style={{ textAlign: "right" }}>BUY-IN VOL.</div>
           <div style={{ textAlign: "right" }}>HOLDERS</div>
           <div style={{ textAlign: "right" }}>NOTIONAL</div>
           <div />
@@ -68,7 +69,7 @@ export default function TokenTable({ engine }: { engine: CommunityEngine }) {
 
         {vals.rows.map((t) => (
           <div
-            key={t.sym}
+            key={t.token.address}
             className="laxu-row"
             style={{ ...GRID, padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.07)" }}
           >
@@ -78,7 +79,7 @@ export default function TokenTable({ engine }: { engine: CommunityEngine }) {
               <Disc size={28} font={12} base={t.base} logo={t.logo} />
               <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
                 <Link
-                  href="/position"
+                  href={t.href}
                   className="laxu-row-title"
                   style={{
                     fontSize: 13.5,
@@ -130,7 +131,6 @@ export default function TokenTable({ engine }: { engine: CommunityEngine }) {
             <div>
               <Sparkline
                 positionTokenAddress={t.token.positionTokenAddress}
-                series={t.token.series}
                 color={t.c}
                 height={30}
               />
@@ -164,7 +164,7 @@ export default function TokenTable({ engine }: { engine: CommunityEngine }) {
 
         {vals.empty && (
           <div style={{ padding: "54px 20px", textAlign: "center", fontSize: 13.5, fontWeight: 500, color: "#a79bd0" }}>
-            No position tokens match that search.
+            {filtered ? "No position tokens match that search." : "Every listed token is in the top performers above."}
           </div>
         )}
       </div>

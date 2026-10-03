@@ -153,19 +153,17 @@ flowchart LR
 6. **Repay all**, then withdraw your collateral.
 7. **Try a failure on purpose:** borrow more than the maximum. The app shows the contract's "exceeds LTV" reason instead of sending the transaction. *(If the last price report is more than 7 minutes old, you'll see "Prices updating, try again shortly." instead.)*
 
-**One real example of each step on the explorer** (⚠ TODO: fill in tx hashes):
+**One real example of each step on the explorer:**
 
 | Step | Transaction |
 |---|---|
-| USDG payment to the Arcus wallet | ⚠ TODO |
-| `initiateDeposit` | ⚠ TODO |
-| `createPosition` | ⚠ TODO |
-| `createPool` | ⚠ TODO |
-| `depositCollateral` | ⚠ TODO |
-| `borrow` | ⚠ TODO |
-| `repay` | ⚠ TODO |
-
-Example position token: ⚠ TODO · its LendingPool: ⚠ TODO
+| `createPosition` | [`0xc455f5ccc99a07a38481f944d0330dda0d330be23e56394ced3616a6603c374e`](https://explorer.testnet.chain.robinhood.com/tx/0xc455f5ccc99a07a38481f944d0330dda0d330be23e56394ced3616a6603c374e) |
+| `createPool` | [`0xeaa4b2f2a927c00142bef2ad161eeb0b6eb239dda308ad8181cbb4494f1ffc8c`](https://explorer.testnet.chain.robinhood.com/tx/0xeaa4b2f2a927c00142bef2ad161eeb0b6eb239dda308ad8181cbb4494f1ffc8c) |
+| `depositCollateral` | [`0xfc05328643ca1032dd2ea649c4781116148eaf3b8b416f88d778c0bee16380ae`](https://explorer.testnet.chain.robinhood.com/tx/0xfc05328643ca1032dd2ea649c4781116148eaf3b8b416f88d778c0bee16380ae) |
+| `borrow` | [`0x88f292627ef809d54fad666c9fd79855865a611a8c63cce983115c5ebe3312a1`](https://explorer.testnet.chain.robinhood.com/tx/0x88f292627ef809d54fad666c9fd79855865a611a8c63cce983115c5ebe3312a1) |
+| `repay` | [`0xc6030f2302afafc487e0a2ddfcdbcaede38595fa60fba810886ebe0c97519023`](https://explorer.testnet.chain.robinhood.com/tx/0xc6030f2302afafc487e0a2ddfcdbcaede38595fa60fba810886ebe0c97519023) |
+| `list` | [`0xd872ed0b251dcef4b94e955a7341a2632da20b1b2e1891dfbc01276e47ac2ba8`](https://explorer.testnet.chain.robinhood.com/tx/0xd872ed0b251dcef4b94e955a7341a2632da20b1b2e1891dfbc01276e47ac2ba8) |
+| `buy-in` | [`0xb563d81776770f7934240bd9d2e9be2473a2a61b3b608e3212ba563c69fd70b1`](https://explorer.testnet.chain.robinhood.com/tx/0xb563d81776770f7934240bd9d2e9be2473a2a61b3b608e3212ba563c69fd70b1) |
 
 ## What works / what doesn't work yet
 
@@ -307,14 +305,15 @@ The tests that back the claims above:
 
 Robinhood Chain testnet, chain ID 46630. Explorer: https://explorer.testnet.chain.robinhood.com
 
-| Contract | Address | Purpose | Verified |
-|---|---|---|---|
-| PositionToken (implementation) | [`0x6010…5e2a`](https://explorer.testnet.chain.robinhood.com/address/0x60101F14631bAAff60f09D5BA0aDF3F940d15e2a) | Logic cloned per trade | ⚠ |
-| PositionTokenFactory | [`0x15F8…b84c`](https://explorer.testnet.chain.robinhood.com/address/0x15F8DFF61656e17a5C5AE7e03571f9833bBEb84c) | Creates one token per trade (operator only) | ⚠ |
-| LendingVault | [`0x6Def…4bEf`](https://explorer.testnet.chain.robinhood.com/address/0x6Defff9515D183AB7bBd3BBcE822C54D852D4bEf) | Shared USDG liquidity (ERC-4626) | ⚠ |
-| LendingPool (implementation) | [`0x8b8d…Bd1C`](https://explorer.testnet.chain.robinhood.com/address/0x8b8d3EeE0BF4f42417C2b4d14491D343F162Bd1C) | Logic cloned per position | ⚠ |
-| LendingPoolFactory | [`0x6DDb…38ab`](https://explorer.testnet.chain.robinhood.com/address/0x6DDb43385fbB07a5c9ee2b84343940eE84f138ab) | Creates isolated pools (permissionless) | ⚠ |
-| USDG (Arcus testnet) | [`0x293b…3bad`](https://explorer.testnet.chain.robinhood.com/address/0x293b337712d4312776a3a2d292f44410e7873bad) | Stablecoin | n/a |
+| Contract | Address | Explorer | Purpose | Verified |
+|---|---|---|---|---|
+| PositionToken (implementation) | `0x60101F14631bAAff60f09D5BA0aDF3F940d15e2a` | [View](https://explorer.testnet.chain.robinhood.com/address/0x60101F14631bAAff60f09D5BA0aDF3F940d15e2a) | Logic cloned per trade | ✓ |
+| PositionTokenFactory | `0x15F8DFF61656e17a5C5AE7e03571f9833bBEb84c` | [View](https://explorer.testnet.chain.robinhood.com/address/0x15F8DFF61656e17a5C5AE7e03571f9833bBEb84c) | Creates one token per trade (operator only) | ✓ |
+| PositionToken (example) | `0xC92426b477Fa3ffeFe3Fcb4a05c8fB8ca41A9519` | [View](https://explorer.testnet.chain.robinhood.com/token/0xC92426b477Fa3ffeFe3Fcb4a05c8fB8ca41A9519) | A live position token minted by the factory | n/a |
+| LendingVault | `0x6Defff9515D183AB7bBd3BBcE822C54D852D4bEf` | [View](https://explorer.testnet.chain.robinhood.com/address/0x6Defff9515D183AB7bBd3BBcE822C54D852D4bEf) | Shared USDG liquidity (ERC-4626) | ✓ |
+| LendingPool (implementation) | `0x8b8d3EeE0BF4f42417C2b4d14491D343F162Bd1C` | [View](https://explorer.testnet.chain.robinhood.com/address/0x8b8d3EeE0BF4f42417C2b4d14491D343F162Bd1C) | Logic cloned per position | ✓ |
+| LendingPoolFactory | `0x6DDb43385fbB07a5c9ee2b84343940eE84f138ab` | [View](https://explorer.testnet.chain.robinhood.com/address/0x6DDb43385fbB07a5c9ee2b84343940eE84f138ab) | Creates isolated pools (permissionless) | ✓ |
+| USDG (Arcus testnet) | `0x293b337712d4312776a3a2d292f44410e7873bad` | [View](https://explorer.testnet.chain.robinhood.com/address/0x293b337712d4312776a3a2d292f44410e7873bad) | Stablecoin | n/a |
 
 Full deployment record: [Contracts/deployments/robinhoodTestnet.json](Contracts/deployments/robinhoodTestnet.json).
 

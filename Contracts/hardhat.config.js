@@ -22,4 +22,19 @@ module.exports = {
       accounts: process.env.ADMIN_PRIVATE_KEY ? [process.env.ADMIN_PRIVATE_KEY] : [],
     },
   },
-};
+  etherscan: {
+    apiKey: {
+      'robinhood-chain-testnet': 'empty'
+    },
+    customChains: [
+      {
+        network: "robinhood-chain-testnet",
+        chainId: 46630,
+        urls: {
+          apiURL: "https://explorer.testnet.chain.robinhood.com:443/api",
+          browserURL: "https://explorer.testnet.chain.robinhood.com:443"
+        }
+      }
+    ]
+  }
+  };

@@ -35,7 +35,7 @@ export default function SpotlightCard({ t, onBuy }: { t: Card; onBuy: () => void
           <Disc size={34} font={14} base={t.base} logo={t.logo} />
           <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
             <Link
-              href="/position"
+              href={t.href}
               className="laxu-spot-title"
               style={{ fontFamily: SERIF, fontSize: 21, lineHeight: 1.05, color: "#fdfbf7", transition: "color 0.15s ease" }}
             >
@@ -68,7 +68,7 @@ export default function SpotlightCard({ t, onBuy }: { t: Card; onBuy: () => void
           <div style={{ fontFamily: MONO, fontSize: 26, fontWeight: 600, color: "#fdfbf7" }}>{t.price}</div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
-          <div style={KEY}>24H</div>
+          <div style={KEY}>PNL</div>
           <div style={{ fontFamily: MONO, fontSize: 20, fontWeight: 600, color: t.c }}>{t.chg}</div>
         </div>
       </div>
@@ -76,7 +76,6 @@ export default function SpotlightCard({ t, onBuy }: { t: Card; onBuy: () => void
       <div style={{ padding: "4px 8px 8px" }}>
         <Sparkline
           positionTokenAddress={t.token.positionTokenAddress}
-          series={t.token.series}
           color={t.c}
           fill={t.fill}
           height={76}

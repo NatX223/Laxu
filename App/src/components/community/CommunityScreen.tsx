@@ -6,21 +6,22 @@ import HeroBand from "./HeroBand";
 import SpotlightCard from "./SpotlightCard";
 import TokenTable from "./TokenTable";
 import TradingViewCredit from "../charts/TradingViewCredit";
+import Link from "next/link";
 import TopNav from "./TopNav";
-import { useCommunityEngine, type CommunityProps } from "./engine";
+import { useCommunityEngine, type CommunityProps, type LoadState } from "./engine";
 import { SERIF } from "./shared";
 
 /**
  * The community market, transcribed from `Laxu Community.dc.html`.
  * Hero band over the top performers, then the sortable table of every other
- * minted position.
+ * listed position, all read from `GET /positions` and `GET /stats`.
  *
  * `rowsPerPage`, `spotlightCount` and `liveTicker` are the knobs the
  * prototype exposed.
  */
 export default function CommunityScreen(props: CommunityProps) {
   const engine = useCommunityEngine(props);
-  const { st, vals, buy } = engine;
+  const { load, vals, buy } = engine;
 
   return (
     <div
@@ -31,10 +32,6 @@ export default function CommunityScreen(props: CommunityProps) {
       <Grain zIndex={8} />
 
       <TopNav />
-      {/* Until this screen reads GET /positions, everything on it is the design's sample data. */}
-      <div role="note" className="laxu-preview-banner">
-        Preview, sample data. These positions aren&rsquo;t real; open your own from Trade.
-      </div>
       <HeroBand vals={vals} />
 
       <div
@@ -49,54 +46,77 @@ export default function CommunityScreen(props: CommunityProps) {
           gap: 34,
         }}
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-            <div style={{ fontFamily: SERIF, fontSize: 30, lineHeight: 1, color: "#fdfbf7" }}>Top performers</div>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: "#a79bd0" }}>
-              ranked by 24h return &middot; updated live
+        {vals.none ? (
+          <EmptyMarket load={load} />
+        ) : (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ fontFamily: SERIF, fontSize: 30, lineHeight: 1, color: "#fdfbf7" }}>Top performers</div>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: "#a79bd0" }}>
+                  ranked by PnL since entry &middot; refreshed every 30s
+                </div>
+              </div>
+              <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(min(300px, 100%), 1fr))" }}>
+                {vals.spotlight.map((t) => (
+                  <SpotlightCard key={t.token.address} t={t} onBuy={() => buy(t.token)} />
+                ))}
+              </div>
             </div>
-          </div>
-          <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(min(300px, 100%), 1fr))" }}>
-            {vals.spotlight.map((t) => (
-              <SpotlightCard key={t.sym} t={t} onBuy={() => buy(t.token)} />
-            ))}
-          </div>
-        </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <FilterBar engine={engine} />
-          <TokenTable engine={engine} />
-        </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <FilterBar engine={engine} />
+              <TokenTable engine={engine} />
+            </div>
+          </>
+        )}
 
         {/* the sparklines hide their per-chart logo; this is their attribution */}
         <TradingViewCredit />
       </div>
+    </div>
+  );
+}
 
-      {st.toast && (
-        <div
-          className="laxu-toast"
-          role="status"
+/** No listed positions to show: still loading, the backend unreachable, or genuinely none yet. */
+function EmptyMarket({ load }: { load: LoadState }) {
+  const [title, body] =
+    load === "loading"
+      ? ["Loading the market…", "Fetching every listed position token."]
+      : load === "error"
+        ? ["Couldn’t reach the market", "The Laxu backend didn’t answer. It will retry on its own every 30 seconds."]
+        : ["No listed position tokens yet", "Open a position from Trade and list it, and it shows up here for anyone to buy into."];
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 12,
+        padding: "64px 20px",
+        textAlign: "center",
+        borderRadius: 18,
+        border: "1px solid rgba(255,255,255,0.12)",
+        background: "rgba(255,255,255,0.04)",
+      }}
+    >
+      <div style={{ fontFamily: SERIF, fontSize: 28, lineHeight: 1.1, color: "#fdfbf7" }}>{title}</div>
+      <div style={{ maxWidth: 440, fontSize: 13.5, lineHeight: 1.6, fontWeight: 500, color: "#a79bd0" }}>{body}</div>
+      {load === "ready" && (
+        <Link
+          href="/trade"
           style={{
-            position: "fixed",
-            zIndex: 40,
-            left: "50%",
-            // clears the fixed testnet banner
-            bottom: "calc(var(--laxu-testnet-banner-h, 30px) + 16px)",
-            transform: "translateX(-50%)",
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            padding: "12px 20px",
+            marginTop: 6,
+            fontSize: 12.5,
+            fontWeight: 700,
+            color: "#fdfbf7",
+            background: "#9670ff",
+            padding: "9px 18px",
             borderRadius: 99,
-            background: "rgba(36,28,70,0.9)",
-            border: "1px solid rgba(255,255,255,0.18)",
-            backdropFilter: "blur(18px)",
-            boxShadow: "0 18px 40px rgba(10,6,28,0.5)",
           }}
         >
-          <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#5fe3a8" }} />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "#fdfbf7" }}>{st.toast}</span>
-        </div>
+          Open a position
+        </Link>
       )}
     </div>
   );

@@ -110,7 +110,7 @@ export default function HeroBand({ vals }: { vals: Derived }) {
         <div style={{ display: "flex", gap: 8, overflow: "hidden", maskImage: MASK, WebkitMaskImage: MASK }}>
           {vals.ticker.map((t) => (
             <div
-              key={t.sym}
+              key={t.address}
               style={{
                 flex: "none",
                 display: "flex",

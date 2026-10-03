@@ -80,6 +80,94 @@ export const getNavHistory = (token: string, limit?: number) =>
 
 export const getPublicPosition = (token: string) => apiFetch<PublicPosition>(`/positions/token/${token}`);
 
+/** One listed position in discovery (`GET /positions`). Values are human decimal strings. */
+export type DiscoveryCard = {
+  /** The position token's address, lowercase. */
+  address: string;
+  name: string;
+  nickname: string;
+  market: {
+    displaySymbol: string;
+    baseAsset: string;
+    logoUrl: string | null;
+    assetClass: "CRYPTO" | "EQUITIES" | "COMMODITIES" | "INDICES" | null;
+  };
+  direction: "long" | "short";
+  leverage: number;
+  effectiveLeverage: string;
+  entryPrice: string | null;
+  markPrice: string | null;
+  /** Base-asset size. */
+  size: string | null;
+  navPerShare: string;
+  /** Since entry, percent with 2 decimals, e.g. "48.00". */
+  pnlPct: string;
+  status: "open" | "closed";
+  isAtRisk: boolean;
+  isCollateralized: boolean;
+  holderCount: number;
+  /** All-time USDG bought in, 2dp. */
+  buyInVolume: string;
+  buyInFeePct: string;
+  hasDefaultTriggers: boolean;
+  creator: { address: string; tag: string };
+  createdAt: string;
+};
+
+/** Listed positions only, sorted by the backend (`newest` by default here), up to 100. */
+export const getListedPositions = (params: { status?: "open" | "at_risk" | "closed"; limit?: number } = {}) => {
+  const query = new URLSearchParams({ sort: "newest", limit: String(params.limit ?? 100) });
+  if (params.status) query.set("status", params.status);
+  return apiFetch<{ positions: DiscoveryCard[]; nextCursor: string | null }>(`/positions?${query}`);
+};
+
+/** Over listed positions; the backend caches it for 60s. USD values are 2dp strings. */
+export type GlobalStats = {
+  totalValueTokenized: string;
+  openPositions: number;
+  totalBuyInVolume: string;
+  uniqueCreators: number;
+};
+
+export const getGlobalStats = () => apiFetch<GlobalStats>("/stats");
+
+/** One token a wallet holds: wallet balance plus shares posted as loan collateral. */
+export type PortfolioHolding = {
+  position: DiscoveryCard;
+  /** Token units, human decimal. */
+  shares: string;
+  /** shares × NAV, USDG 2dp. */
+  value: string;
+  /** Bought in (fees included) minus redeemed, USDG 2dp. Tokens received by transfer carry no cost basis. */
+  netDeposited: string;
+  pnl: string;
+  /** Of `shares`, how many sit in a LendingPool. */
+  inCollateral: string;
+  /** Settled, but some shares are in a loan: repay it to claim. */
+  repayToClaim: boolean;
+};
+
+/** A buy-in or redeem request still settling on Arcus. */
+export type PortfolioPending = {
+  /** Position token address. */
+  position: string;
+  type: "buy_in" | "redeem";
+  /** USDG for a buy-in, token units for a redeem. */
+  amount: string;
+  requestedAt: string;
+  cancellableAt: string;
+};
+
+export type Portfolio = {
+  /** Positions this wallet minted, held or not. */
+  created: DiscoveryCard[];
+  /** Every token this wallet holds, minted or bought into. */
+  holdings: PortfolioHolding[];
+  pending: PortfolioPending[];
+};
+
+export const getPortfolio = (address: string) => apiFetch<Portfolio>(`/users/${address}/portfolio`);
+
 /** A holder's effective stop loss / take profit. Prices are human decimals; null = none. */
 export type HolderTriggers = {
   stopLoss: string | null;

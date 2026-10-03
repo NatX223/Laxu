@@ -1,14 +1,14 @@
 /**
  * The prototype's `renderVals()` — everything the community screen paints,
- * derived from the token draw plus sort/filter/page state.
+ * derived from the listed positions plus sort/filter/page state.
  */
 
+import type { GlobalStats } from "@/lib/api";
 import {
   KINDS,
   SORTS,
   fmtNum,
   fmtUsd,
-  paths,
   wave,
   type KindKey,
   type SortKey,
@@ -30,6 +30,8 @@ export type Chip = { label: string; bg: string; ink: string; border: string };
 export type Card = {
   token: Token;
   rank: number;
+  /** The position page. */
+  href: string;
   sym: string;
   title: string;
   /** Underlying market's base asset — picks the live icon. */
@@ -42,8 +44,6 @@ export type Card = {
   chg: string;
   c: string;
   fill: string;
-  line: string;
-  area: string;
   vol: string;
   holders: string;
   notional: string;
@@ -55,11 +55,11 @@ export type Card = {
 };
 
 export function card(t: Token, rank: number): Card {
-  const p = paths(t.series);
   const up = t.chg >= 0;
   return {
     token: t,
     rank,
+    href: "/position/" + t.address,
     sym: "p" + t.sym + (t.long ? "L" : "S") + t.lev,
     title: t.sym + " " + (t.long ? "long" : "short") + " " + t.lev + "×",
     base: t.sym,
@@ -67,12 +67,10 @@ export function card(t: Token, rank: number): Card {
     accent: t.accent,
     logo: t.logo,
     creator: "created by " + t.creator,
-    price: "$" + t.price.toFixed(t.price < 10 ? 3 : 2),
+    price: "$" + t.price.toFixed(t.price < 10 ? 4 : 2),
     chg: (up ? "+" : "") + t.chg.toFixed(2) + "%",
     c: up ? "#5fe3a8" : "#ff7d92",
     fill: up ? "rgba(95,227,168,0.16)" : "rgba(255,125,146,0.16)",
-    line: p.line,
-    area: p.area,
     vol: fmtUsd(t.vol),
     holders: fmtNum(t.holders),
     notional: fmtUsd(t.notional),
@@ -83,7 +81,7 @@ export function card(t: Token, rank: number): Card {
       ? "linear-gradient(90deg, rgba(150,112,255,0.3), rgba(255,183,101,0.16))"
       : "linear-gradient(90deg, rgba(150,112,255,0.26), rgba(255,125,146,0.16))",
     cells: [
-      { k: "VOL. 24H", v: fmtUsd(t.vol) },
+      { k: "BUY-IN VOL.", v: fmtUsd(t.vol) },
       { k: "HOLDERS", v: fmtNum(t.holders) },
       { k: "NOTIONAL", v: fmtUsd(t.notional) },
     ],
@@ -101,26 +99,27 @@ const CMP: Record<SortKey, (a: Token, b: Token) => number> = {
   perf: (a, b) => b.chg - a.chg,
   holders: (a, b) => b.holders - a.holders,
   notional: (a, b) => b.notional - a.notional,
-  new: (a, b) => a.age - b.age,
+  new: (a, b) => b.createdAt - a.createdAt,
 };
 
 export type ViewState = { sort: SortKey; kind: KindKey; query: string; page: number };
 
 export function derive(
   list: Token[],
+  stats: GlobalStats | null,
   s: ViewState,
   props: { rowsPerPage: number; spotlightCount: number },
 ) {
   const per = Math.max(4, props.rowsPerPage);
   const spotN = Math.min(4, Math.max(2, props.spotlightCount));
   const spotlightSrc = [...list].sort((a, b) => b.chg - a.chg).slice(0, spotN);
-  const spotIds = new Set(spotlightSrc.map((t) => t.sym));
+  const spotIds = new Set(spotlightSrc.map((t) => t.address));
 
   const q = s.query.trim().toLowerCase();
   const rest = list
-    .filter((t) => !spotIds.has(t.sym))
+    .filter((t) => !spotIds.has(t.address))
     .filter((t) => s.kind === "all" || t.kind === s.kind)
-    .filter((t) => !q || (t.sym + t.name + t.creator).toLowerCase().includes(q));
+    .filter((t) => !q || (t.sym + t.name + t.creator + t.address).toLowerCase().includes(q));
   rest.sort(CMP[s.sort] || CMP.vol);
 
   const total = rest.length;
@@ -137,20 +136,22 @@ export function derive(
     .filter((n) => pageCount <= 7 || n === 1 || n === pageCount || Math.abs(n - page) <= 1)
     .map((n) => ({ n, label: String(n), ...chip(n === page) }));
 
-  const totalVol = list.reduce((a, t) => a + t.vol, 0);
-  const totalHold = list.reduce((a, t) => a + t.holders, 0);
+  // the backend's numbers when /stats answered, else what the loaded rows add up to
+  const totalVol = stats ? Number(stats.totalBuyInVolume) : list.reduce((a, t) => a + t.vol, 0);
+  const totalValue = stats ? Number(stats.totalValueTokenized) : list.reduce((a, t) => a + t.notional, 0);
 
   return {
     ...WAVES,
     heroStats: [
-      { k: "POSITION TOKENS", v: String(list.length * 37 + 118), c: "#fdfbf7" },
-      { k: "VOLUME 24H", v: fmtUsd(totalVol), c: "#ffb765" },
-      { k: "UNIQUE HOLDERS", v: fmtNum(totalHold * 6), c: "#5fe3a8" },
+      { k: "POSITION TOKENS", v: fmtNum(list.length), c: "#fdfbf7" },
+      { k: "BUY-IN VOLUME", v: fmtUsd(totalVol), c: "#ffb765" },
+      { k: "VALUE TOKENIZED", v: fmtUsd(totalValue), c: "#5fe3a8" },
     ],
     ticker: [...list]
       .sort((a, b) => b.vol - a.vol)
       .slice(0, 12)
       .map((t) => ({
+        address: t.address,
         sym: "p" + t.sym + (t.long ? "L" : "S") + t.lev,
         base: t.sym,
         initial: t.sym[0],
@@ -167,6 +168,8 @@ export function derive(
     page,
     pageCount,
     empty: total === 0,
+    /** Nothing listed at all, as opposed to a filter that matched nothing. */
+    none: list.length === 0,
     rangeLabel:
       total === 0
         ? "No results"

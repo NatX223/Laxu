@@ -1,66 +1,19 @@
 /**
- * Seed catalogue, pseudo-random draw and formatters, transcribed from
- * `Laxu Community.dc.html`. The prototype built this list in
- * `componentDidMount`; the draw is deterministic, so it runs at module scope
- * here and the server and the client render the same first frame.
+ * The community market's rows, mapped from the backend's discovery cards
+ * (`GET /positions`), plus the formatters and geometry from
+ * `Laxu Community.dc.html`.
  */
+
+import type { DiscoveryCard } from "@/lib/api";
 
 export type Kind = "crypto" | "stock" | "index" | "commodity";
 
-type Seed = [sym: string, name: string, kind: Kind, accent: string, logo: string];
-
-const SEED_LIST: Seed[] = [
-  ["ETH", "Ethereum", "crypto", "#8f7bff", "/laxu/logo-eth.png"],
-  ["BTC", "Bitcoin", "crypto", "#f7931a", ""],
-  ["SOL", "Solana", "crypto", "#14f195", ""],
-  ["TSLA", "Tesla", "stock", "#e82127", "/laxu/logo-tsla.png"],
-  ["NVDA", "Nvidia", "stock", "#76b900", ""],
-  ["XRP", "XRP", "crypto", "#9fb4c7", ""],
-  ["QQQ", "Nasdaq 100", "index", "#5b8def", ""],
-  ["GOLD", "Gold", "commodity", "#e8c15a", ""],
-  ["SPX", "S&P 500", "index", "#c2b6e4", ""],
-  ["CRCL", "Circle", "stock", "#3ea8ff", ""],
-  ["USO", "Crude oil", "commodity", "#8a8375", ""],
-  ["AAPL", "Apple", "stock", "#d7d7d7", ""],
-  ["MSFT", "Microsoft", "stock", "#6fb3e0", ""],
-  ["AMZN", "Amazon", "stock", "#ff9900", ""],
-  ["META", "Meta", "stock", "#4a8cff", ""],
-  ["AVAX", "Avalanche", "crypto", "#e84142", ""],
-  ["LINK", "Chainlink", "crypto", "#2a5ada", ""],
-  ["DOGE", "Dogecoin", "crypto", "#c3a634", ""],
-  ["ARB", "Arbitrum", "crypto", "#28a0f0", ""],
-  ["OP", "Optimism", "crypto", "#ff0420", ""],
-  ["COIN", "Coinbase", "stock", "#0052ff", ""],
-  ["HOOD", "Robinhood", "stock", "#ccff00", ""],
-  ["PLTR", "Palantir", "stock", "#b0b7bd", ""],
-  ["AMD", "AMD", "stock", "#ed1c24", ""],
-  ["MSTR", "Strategy", "stock", "#f6871f", ""],
-  ["SUI", "Sui", "crypto", "#6fbcf0", ""],
-  ["TON", "Toncoin", "crypto", "#3f9ad6", ""],
-  ["ADA", "Cardano", "crypto", "#0d64d2", ""],
-  ["GME", "GameStop", "stock", "#e4002b", ""],
-  ["UNI", "Uniswap", "crypto", "#ff007a", ""],
-  ["LTC", "Litecoin", "crypto", "#b8b8b8", ""],
-  ["NFLX", "Netflix", "stock", "#e50914", ""],
-  ["SILV", "Silver", "commodity", "#c9cdd4", ""],
-  ["DJI", "Dow 30", "index", "#a79bd0", ""],
-];
-
-const HANDLES = [
-  "@vaultpilot", "@sinewave", "@0xharu", "@delta.eth", "@monkshood",
-  "@crabmarket", "@tenorclub", "@pinebar", "@loop.hood", "@gammagirl",
-  "@basis.trader", "@orangepill", "@nightdesk", "@quietsize", "@refractor",
-  "@parabola", "@slowbleed", "@vegakid", "@ironcondor", "@pxl.eth",
-];
-
-/** The prototype's linear congruential generator — one stream per market. */
-function rng(seed: number) {
-  let s = seed >>> 0;
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 4294967296;
-  };
-}
+const KIND_OF: Record<NonNullable<DiscoveryCard["market"]["assetClass"]>, Kind> = {
+  CRYPTO: "crypto",
+  EQUITIES: "stock",
+  INDICES: "index",
+  COMMODITIES: "commodity",
+};
 
 export const fmtUsd = (n: number) =>
   n >= 1000000
@@ -72,61 +25,58 @@ export const fmtUsd = (n: number) =>
 export const fmtNum = (n: number) => (n >= 1000 ? (n / 1000).toFixed(1) + "K" : String(Math.round(n)));
 
 export type Token = {
+  /** The position token's address -- the row's identity and its page. */
+  address: string;
+  /** Underlying market's base asset, e.g. "TSLA". */
   sym: string;
+  /** The creator's nickname for the position; may be empty. */
   name: string;
-  kind: Kind;
+  kind: Kind | null;
   accent: string;
   logo: string;
   long: boolean;
   lev: number;
+  /** NAV per token, USDG. */
   price: number;
-  series: number[];
+  /** PnL since entry, percent. */
   chg: number;
+  /** All-time buy-in volume, USDG. */
   vol: number;
   holders: number;
+  /** size × mark, USD; 0 until the first report. */
   notional: number;
-  /** Drawn but never shown on this screen; kept so the rng sequence matches. */
-  entry: number;
   creator: string;
-  age: number;
-  /** A minted token behind the row: its sparkline reads the real NAV history. */
-  positionTokenAddress?: string;
+  /** ms since epoch */
+  createdAt: number;
+  /** The sparkline reads this token's real NAV history. */
+  positionTokenAddress: string;
 };
 
-export function buildTokens(): Token[] {
-  return SEED_LIST.map((m, i) => {
-    const r = rng(i * 7919 + 13);
-    const long = r() > 0.34;
-    const lev = [2, 3, 5, 8, 10, 15, 20][Math.floor(r() * 7)];
-    const base = 0.6 + r() * 4.2;
-    const series: number[] = [];
-    let v = base;
-    for (let k = 0; k < 44; k++) {
-      v = Math.max(0.08, v * (1 + (r() - 0.47) * 0.055));
-      series.push(v);
-    }
-    const chg = (series[43] / series[30] - 1) * 100 * (0.8 + r() * 0.7);
-    return {
-      sym: m[0], name: m[1], kind: m[2], accent: m[3], logo: m[4], long, lev,
-      price: series[43], series, chg,
-      vol: 8000 + Math.pow(r(), 2.1) * 9400000,
-      holders: 12 + Math.floor(Math.pow(r(), 1.9) * 4200),
-      notional: 40000 + Math.pow(r(), 1.6) * 21000000,
-      entry: series[0] * (40 + r() * 900),
-      creator: HANDLES[i % HANDLES.length],
-      age: 1 + Math.floor(r() * 70),
-    };
-  });
-}
+const num = (s: string | null | undefined) => {
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+};
 
-/** Sparkline geometry in the card's 300×76 viewBox. */
-export function paths(series: number[]) {
-  const lo = Math.min(...series);
-  const hi = Math.max(...series);
-  const sp = hi - lo || 1;
-  const pts = series.map((v, i) => [(i / (series.length - 1)) * 300, 68 - ((v - lo) / sp) * 58]);
-  const line = "M" + pts.map((p) => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" L");
-  return { line, area: line + " L300,76 L0,76 Z" };
+export function fromCard(c: DiscoveryCard): Token {
+  const long = c.direction !== "short";
+  return {
+    address: c.address,
+    sym: c.market.baseAsset,
+    name: c.nickname,
+    kind: c.market.assetClass ? KIND_OF[c.market.assetClass] : null,
+    accent: long ? "#5fe3a8" : "#ff7d92",
+    logo: c.market.logoUrl ?? "",
+    long,
+    lev: c.leverage,
+    price: num(c.navPerShare),
+    chg: num(c.pnlPct),
+    vol: num(c.buyInVolume),
+    holders: c.holderCount,
+    notional: Math.abs(num(c.size)) * num(c.markPrice),
+    creator: c.creator.tag ? "@" + c.creator.tag : c.creator.address.slice(0, 6) + "…" + c.creator.address.slice(-4),
+    createdAt: Date.parse(c.createdAt) || 0,
+    positionTokenAddress: c.address,
+  };
 }
 
 /** One layer of the hero's stacked wave field, in a 1200×300 viewBox. */
@@ -149,7 +99,7 @@ export function wave(seed: number, amp: number, yBase: number, close: boolean) {
 
 export const SORTS = [
   ["vol", "Highest volume"],
-  ["perf", "24h performance"],
+  ["perf", "Best PnL"],
   ["holders", "Most holders"],
   ["notional", "Largest notional"],
   ["new", "Newest mints"],

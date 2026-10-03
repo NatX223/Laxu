@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { buildTokens, type KindKey, type SortKey, type Token } from "./data";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { getGlobalStats, getListedPositions, type GlobalStats } from "@/lib/api";
+import { fromCard, type KindKey, type SortKey, type Token } from "./data";
 import { derive, type ViewState } from "./derive";
 
 export type CommunityProps = {
@@ -9,59 +11,63 @@ export type CommunityProps = {
   rowsPerPage?: number;
   /** how many top performers get a card */
   spotlightCount?: number;
-  /** the 2.6s price drift */
+  /** re-read the listed positions every `REFRESH_MS` */
   liveTicker?: boolean;
 };
 
-type State = ViewState & { toast: string };
+/** How often the list refreshes; position stats move on the reporter's cadence, not per tick. */
+const REFRESH_MS = 30_000;
 
-const INITIAL: State = { sort: "vol", kind: "all", query: "", page: 1, toast: "" };
+export type LoadState = "loading" | "ready" | "error";
+
+const INITIAL: ViewState = { sort: "vol", kind: "all", query: "", page: 1 };
 
 export function useCommunityEngine({
   rowsPerPage = 8,
   spotlightCount = 3,
   liveTicker = true,
 }: CommunityProps) {
-  // the draw is deterministic, so both sides of hydration start from the same list
-  const [tokens, setTokens] = useState<Token[]>(buildTokens);
-  const [st, setSt] = useState<State>(INITIAL);
-  const toastT = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const router = useRouter();
+  const [tokens, setTokens] = useState<Token[]>([]);
+  const [stats, setStats] = useState<GlobalStats | null>(null);
+  const [load, setLoad] = useState<LoadState>("loading");
+  const [st, setSt] = useState<ViewState>(INITIAL);
 
-  // the prototype drifted prices in place on a `tick` counter; rebuilding the
-  // rows immutably lands the same numbers and keeps the memo honest
+  // Listed and open: a closed token can't be bought into, so it has no place
+  // in the market. A failed refresh keeps the last good list on screen.
   useEffect(() => {
-    const timer = setInterval(() => {
-      if (!liveTicker) return;
-      setTokens((ts) =>
-        ts.map((t, i) => {
-          const d = (Math.sin(Date.now() / 1700 + i) + (Math.random() - 0.5)) * 0.0045;
-          const price = Math.max(0.05, t.price * (1 + d));
-          return { ...t, price, chg: t.chg + d * 42, series: t.series.slice(1).concat([price]) };
-        }),
-      );
-    }, 2600);
-    return () => clearInterval(timer);
+    let cancelled = false;
+    const refresh = () => {
+      getListedPositions({ status: "open" })
+        .then(({ positions }) => {
+          if (cancelled) return;
+          setTokens(positions.map(fromCard));
+          setLoad("ready");
+        })
+        .catch((error) => {
+          console.error("GET /positions failed", error);
+          if (!cancelled) setLoad((l) => (l === "ready" ? l : "error"));
+        });
+      getGlobalStats()
+        .then((s) => !cancelled && setStats(s))
+        .catch(() => {
+          // the hero falls back to totals over the loaded rows
+        });
+    };
+    refresh();
+    const timer = liveTicker ? setInterval(refresh, REFRESH_MS) : undefined;
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
   }, [liveTicker]);
 
-  useEffect(
-    () => () => {
-      if (toastT.current) clearTimeout(toastT.current);
-    },
-    [],
-  );
-
-  const buy = useCallback((t: Token) => {
-    setSt((s) => ({
-      ...s,
-      toast: "Buy-in drafted — " + t.sym + " " + (t.long ? "long" : "short") + " " + t.lev + "×",
-    }));
-    if (toastT.current) clearTimeout(toastT.current);
-    toastT.current = setTimeout(() => setSt((s) => ({ ...s, toast: "" })), 2400);
-  }, []);
+  // buying in happens on the position page, against the real token
+  const buy = useCallback((t: Token) => router.push("/position/" + t.address), [router]);
 
   const vals = useMemo(
-    () => derive(tokens, st, { rowsPerPage, spotlightCount }),
-    [tokens, st, rowsPerPage, spotlightCount],
+    () => derive(tokens, stats, st, { rowsPerPage, spotlightCount }),
+    [tokens, stats, st, rowsPerPage, spotlightCount],
   );
 
   const setSort = useCallback((sort: SortKey) => setSt((s) => ({ ...s, sort, page: 1 })), []);
@@ -74,7 +80,7 @@ export function useCommunityEngine({
     [vals.page, vals.pageCount],
   );
 
-  return { st, vals, buy, setSort, setKind, setQuery, goto, prev, next };
+  return { st, load, vals, buy, setSort, setKind, setQuery, goto, prev, next };
 }
 
 export type CommunityEngine = ReturnType<typeof useCommunityEngine>;
