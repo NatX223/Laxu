@@ -1,4 +1,5 @@
-import { assetDecimals } from "../../chain/clients";
+import { perplReaderAbi } from "../../chain/abi";
+import { assetDecimals, publicClient, readerAddress } from "../../chain/clients";
 import { formatDecimal, toBaseUnits } from "../../lib/decimal";
 import { PRICE_DECIMALS, SIZE_DECIMALS } from "../../lib/units";
 import { readExchangeInfo } from "./exchange";
@@ -18,8 +19,8 @@ import { readExchangeInfo } from "./exchange";
  * `priceDecimals` / `lotDecimals`; marketSync checks that once per market.
  * `collateralDecimals` may differ from the token's own `decimals()`, so the
  * two are kept apart here and CNS <-> asset works for any pair of them.
- * The one place collateralDecimals reaches *size* is the deployed
- * PerplReader -- see {assertSizeScaleSupported}.
+ * Opening a position has one scale constraint of its own, on the ASSET's
+ * decimals -- see {assertPnlScaleSupported}.
  */
 
 export interface CollateralScale {
@@ -43,26 +44,45 @@ export function collateralScale(): Promise<CollateralScale> {
 }
 
 /**
- * Refuses to *open* a position (never to boot, deposit, withdraw or settle)
- * when the deployed contracts would disagree with Laxu's size6. The deployed
- * PerplReader fixed `sizeScale = 10^collateralDecimals` at construction, so:
+ * Known constraint (opening only -- never boot, deposit, withdraw or settle):
+ * the contract's PnL scale is the ASSET's decimals. PositionToken values a
+ * position as
  *
- *   PerplReader.toSize(lns, ld) = lns * 10^collateralDecimals / 10^ld
- *   lotsToSize6(lns, ld)        = lns * 10^6                  / 10^ld
+ *   totalAssets = capital + size * (mark - entry) / 1e18
  *
- * and PositionToken.initialize requires `venueSize == size` exactly -- every
- * createPosition reverts unless collateralDecimals == 6. Separately,
- * PositionToken.totalAssets = capital + size * (mark - entry) / 1e18 adds a PnL
- * scaled by 10^collateralDecimals to capital scaled by 10^assetDecimals, so the
- * NAV is only right when those two match as well.
+ * with `capital` in asset base units, so `size` must be in 10^assetDecimals
+ * units for the PnL to land in the asset too. Laxu's size6 fixes that at 6
+ * (AUSD), and the deployed PerplReader sizes positions at its immutable
+ * `sizeScale` (lns * sizeScale / 10^lotDecimals, set at deploy), which
+ * PositionToken.initialize compares to the size we pass with no tolerance.
+ * So opening needs  assetDecimals == 6  and  reader.sizeScale() == 10^assetDecimals.
+ * Both hold on testnet (AUSD, 6; sizeScale 1e6); another asset would need a
+ * new reader and a size unit derived from its decimals.
  */
-export function assertSizeScaleSupported(scale: CollateralScale): void {
-  if (scale.cnsDecimals !== SIZE_DECIMALS || scale.assetDecimals !== SIZE_DECIMALS) {
+export function assertPnlScaleSupported(tokenDecimals: number, readerSizeScale: bigint): void {
+  if (tokenDecimals !== SIZE_DECIMALS || readerSizeScale !== 10n ** BigInt(tokenDecimals)) {
     throw new Error(
-      `cannot open positions: PerplReader sizes at 10^${scale.cnsDecimals} (collateralDecimals) and the asset has ` +
-        `${scale.assetDecimals} decimals, but Laxu's size6 and PositionToken.totalAssets need both to be ${SIZE_DECIMALS}`,
+      `cannot open positions: the asset has ${tokenDecimals} decimals and PerplReader sizes at ${readerSizeScale}; ` +
+        `PositionToken's PnL (size x price / 1e18, added to capital in asset units) needs both at 10^${SIZE_DECIMALS}`,
     );
   }
+}
+
+let pnlScaleCache: Promise<void> | undefined;
+
+/// {assertPnlScaleSupported} against the live asset and the deployed reader (read once).
+export function assertOpenScale(): Promise<void> {
+  pnlScaleCache ??= (async () => {
+    const [tokenDecimals, sizeScale] = await Promise.all([
+      assetDecimals(),
+      publicClient().readContract({ address: readerAddress(), abi: perplReaderAbi, functionName: "sizeScale" }) as Promise<bigint>,
+    ]);
+    assertPnlScaleSupported(tokenDecimals, sizeScale);
+  })().catch((error) => {
+    pnlScaleCache = undefined;
+    throw error;
+  });
+  return pnlScaleCache;
 }
 
 function pow10(exp: number): bigint {
@@ -86,13 +106,9 @@ export function assetToCns(asset: bigint, scale: CollateralScale): bigint {
 
 /**
  * An API `Amount` string (balances, fees, collateral, min amounts) -> CNS.
- *
- * VERIFY(spec03): the docs type `Amount` only as "decimal string for large
- * numbers" and never say whether it is a base-unit integer or a human decimal
- * (`min_account_open_amount: 100000000` displayed as "10.0 AUSD" fits neither
- * 6 nor 8 decimals cleanly). Default: an integer string is CNS base units; a
- * string with a decimal point is read as a human amount at cnsDecimals.
+ * A string with a decimal point (never seen) is read as a human amount at cnsDecimals.
  */
+// Confirmed on testnet 2026-10-05: an API Amount is a CNS base-unit integer string -- min_account_open_amount "100000000" == getMinAccountOpenCNS() (docs/perpl-findings.md#v-units-75)
 export function parseApiAmount(value: string | number | null | undefined, cnsDecimals: number): bigint {
   if (value === null || value === undefined || value === "") return 0n;
   const text = String(value).trim();
@@ -105,8 +121,7 @@ export function apiAmountToAsset(value: string | number | null | undefined, scal
   return cnsToAsset(parseApiAmount(value, scale.cnsDecimals), scale);
 }
 
-/// Asset base units -> the API `a` Amount string (CNS integer). See the
-/// VERIFY on {parseApiAmount}: the same unit question applies to what we send.
+/// Asset base units -> the API `a` Amount string (CNS integer, see {parseApiAmount}).
 export function assetToApiAmount(asset: bigint, scale: CollateralScale): string {
   return assetToCns(asset, scale).toString();
 }
@@ -133,7 +148,7 @@ export function pnsToDecimal(pns: bigint | number, priceDecimals: number): strin
 // --- Size ------------------------------------------------------------------------
 
 /// Lots -> size6, floored: `lots x 10^6 / 10^sd`. Identical integer maths to
-/// PerplReader.toSize while collateralDecimals is 6 (see {assertSizeScaleSupported}).
+/// PerplReader.toSize while its sizeScale is 1e6 (see {assertPnlScaleSupported}).
 export function lotsToSize6(lots: bigint | number, sizeDecimals: number): bigint {
   return (BigInt(lots) * pow10(SIZE_DECIMALS)) / pow10(sizeDecimals);
 }
@@ -171,24 +186,31 @@ export function chainTypeToDirection(positionType: number): VenueDirection {
 /// Laxu's own ceiling (LendingPool risk tiers stop at 20x).
 export const LAXU_MAX_LEVERAGE = 20;
 
+// Confirmed on testnet 2026-10-05: initial_margin / maintenance_margin are max leverage in hundredths (ETH 1200 = 12x); lv above it is silently clamped (docs/perpl-findings.md#v-units-171)
+
 /**
- * `initial_margin` is in 1e4 units: 1000 = 10% = 10x. Laxu caps at 20x.
- * A missing or nonsensical value never widens the limit.
+ * `initial_margin` is the market's max leverage in hundredths: 1200 = 12x.
+ * Laxu caps at 20x. A missing or nonsensical value never widens the limit.
  */
 export function maxLeverageFromInitialMargin(initialMargin: number): number {
   if (!Number.isFinite(initialMargin) || initialMargin <= 0) return 1;
-  return Math.max(1, Math.min(LAXU_MAX_LEVERAGE, Math.floor(10_000 / initialMargin)));
+  return Math.max(1, Math.min(LAXU_MAX_LEVERAGE, Math.floor(initialMargin / 100)));
 }
 
+/// Digits kept in a margin fraction. Truncating (never rounding up) keeps
+/// floor(1 / fraction) exact for every integer leverage-in-hundredths, which
+/// is how markets.maxLeverage reads it back.
+const FRACTION_SCALE = 12;
+
 /**
- * A Perpl margin `Fraction` -> a decimal fraction string ("0.1" for 1000).
- *
- * VERIFY(spec03): `maintenance_margin` is assumed to use the same 1e4 scale as
- * `initial_margin`. The docs' own example ("2000 = 5%") does not fit that scale.
+ * A Perpl margin field (max leverage in hundredths) -> the margin fraction
+ * as a decimal string: 100 / value, truncated. 1200 (12x) -> "0.083333333333",
+ * 2000 (20x) -> "0.05", 1000 -> "0.1".
  */
 export function marginFraction(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
-  return formatDecimal({ units: BigInt(Math.round(value)), scale: 4 });
+  const units = (100n * 10n ** BigInt(FRACTION_SCALE)) / BigInt(Math.round(value));
+  return formatDecimal({ units, scale: FRACTION_SCALE });
 }
 
 /// Taker fee micros (1000 = 0.1%) -> parts per million, the unit sizing uses.

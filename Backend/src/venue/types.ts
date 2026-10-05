@@ -31,12 +31,25 @@ export interface VenuePosition {
   depositAsset: bigint;
   /// Signed.
   pnlAsset: bigint;
-  /// Signed.
+  /// Signed. The funding part of `pnlAsset` -- already INSIDE it, never added
+  /// on top (docs/perpl-findings.md#v-adapter-277).
   premiumAsset: bigint;
-  /// Margin + unrealised PnL of the position, signed (see funding.ts).
+  /// depositAsset + pnlAsset: margin + price PnL + accrued funding, signed.
+  /// Equals PerplReader.venueEquity.
   equityAsset: bigint;
   mark18: bigint;
   markValid: boolean;
+}
+
+/// An order as sent: its `rq` / `lb`, and the on-chain position just before
+/// it went out. Every flow persists all four BEFORE sending.
+export interface SentRequest {
+  requestId: bigint;
+  lastExecBlock: bigint;
+  /// size6 of the slot's position on the market (0 when flat).
+  size6Before: bigint;
+  /// entry18 of that position (0 when flat).
+  entry18Before: bigint;
 }
 
 export interface SendHooks {
@@ -64,7 +77,10 @@ export interface VenueAdapter {
       lastExecBlock: bigint;
     },
   ): Promise<OrderOutcome>;
-  /// Moves `amount` of free account balance into the position's margin.
+  /// Moves `amount` of free account balance into the position's margin,
+  /// confirmed by the on-chain depositCNS (a successful t:6 reports only a
+  /// failure on the socket). No flow uses it: the next size change re-margins
+  /// the position anyway (docs/perpl-findings.md#f-remargin).
   addPositionMargin(
     slot: SlotWithWallet,
     params: { market: ResolvedMarket; amount: bigint; requestId: bigint; lastExecBlock: bigint },
@@ -73,13 +89,14 @@ export interface VenueAdapter {
   /// The caller saves both on its row (and raises the slot's lastRequestId
   /// with {raiseLastRequestId} in the same transaction) BEFORE sending.
   nextRequest(slot: SlotWithWallet, market: ResolvedMarket): Promise<{ requestId: bigint; lastExecBlock: bigint }>;
-  /// What became of a request sent earlier: its outcome; `pending` while it may
-  /// still execute (head < lb, nothing heard); `not_placed` once it can no longer.
+  /// What became of a request sent earlier. The socket's own verdict if it
+  /// heard one; otherwise `pending` until the chain is past `lb`, then the lot
+  /// rule: the on-chain size changed -> filled by the delta; unchanged ->
+  /// `not_placed` (a new rq is safe). Never order-history: it lags ~25 s.
   findOrderOutcome(
     slot: SlotWithWallet,
-    requestId: bigint,
-    lastExecBlock: bigint,
-    options?: { market?: ResolvedMarket; kind?: "ioc" | "instant" },
+    request: SentRequest,
+    market: ResolvedMarket,
   ): Promise<OrderOutcome | "pending" | "not_placed">;
   getPosition(slot: SlotWithWallet, market: ResolvedMarket): Promise<VenuePosition>;
   /// 1e18, from the API ticker. Display and sizing only; the contracts read

@@ -1,11 +1,13 @@
 import type { Address, Hash } from "viem";
 
+import { publicClient } from "../../chain/clients";
 import { db } from "../../config/db";
 import { config } from "../../config/env";
-import { createLogger } from "../../lib/logger";
+import { sleep } from "../../lib/async";
+import { alert, createLogger, errorFields } from "../../lib/logger";
 import { credentialsFor, slotWallet, type SlotWithWallet } from "../../services/allocator";
-import type { ResolvedMarket } from "../../services/markets";
-import type { OrderOutcome, OrderSide, SendHooks, VenueAdapter, VenuePosition } from "../types";
+import { maxLeverage, type ResolvedMarket } from "../../services/markets";
+import type { OrderOutcome, OrderSide, SendHooks, SentRequest, VenueAdapter, VenuePosition } from "../types";
 import { describeOrderReason, OrderFlags, OrderStatus, OrderType } from "./config";
 import { ensure } from "./connections";
 import {
@@ -16,8 +18,8 @@ import {
   getPosition,
   withdrawCollateral,
 } from "./exchange";
-import { getOrderHistory, getTicker, walkHistory } from "./rest";
-import { settleOrderEvents, type OrderKind, type RawOrderResult } from "./tradingWs";
+import { getPositions, getTicker } from "./rest";
+import { type OrderKind, type RawOrderResult } from "./tradingWs";
 import type { ApiOrder, OrderSpec } from "./types";
 import {
   apiAmountToAsset,
@@ -44,8 +46,8 @@ const ORDER_TYPE: Record<OrderSide, number> = {
 /// it costs one transaction, never a failed deposit.
 const APPROVED = 2n ** 128n;
 
-/// How many order-history pages a lookup walks before giving up.
-const HISTORY_PAGES = 5;
+/// How long a t:6 waits for the chain to pass its `lb` before reporting unknown.
+const CHAIN_PAST_LB_TIMEOUT_MS = 60_000;
 
 function accountIdOf(slot: SlotWithWallet): bigint {
   if (!slot.perplAccountId) throw new Error(`Slot ${slot.id} has no Perpl account yet (run slots:provision)`);
@@ -95,9 +97,8 @@ export class PerplAdapter implements VenueAdapter {
   /**
    * Free balance: the account's balance less what open orders lock. Margin
    * posted to a position is not part of `balanceCNS`.
-   * VERIFY(spec03): that `balanceCNS` excludes position deposits and that
-   * `lockedBalanceCNS` is only order locks (zero with IOC-only trading).
    */
+  // Confirmed on testnet 2026-10-05: an open moves exactly depositCNS + fee out of balanceCNS; lockedBalanceCNS stays 0 with IOC-only trading (docs/perpl-findings.md#v-adapter-98)
   async accountBalance(slot: SlotWithWallet): Promise<bigint> {
     const [info, scale] = await Promise.all([
       getAccountByAddr(slot.operatorWallet.address as Address),
@@ -139,6 +140,12 @@ export class PerplAdapter implements VenueAdapter {
     },
   ): Promise<OrderOutcome> {
     const { market } = params;
+    // Perpl never rejects a too-high `lv` -- it silently clamps it to the
+    // market max, so the order would need more margin than we sized for.
+    const limit = maxLeverage(market);
+    if (!Number.isInteger(params.leverage) || params.leverage < 1 || params.leverage > limit) {
+      throw new Error(`leverage ${params.leverage}x is outside 1..${limit}x on ${market.symbol}; not sending`);
+    }
     const lots = size6ToLots(params.size6, market.sizeDecimals);
     if (lots <= 0n) throw new Error(`order size ${params.size6} (size6) is below one lot on ${market.symbol}`);
     // Close orders (t:3/4) are reduce-only by definition and clamp to the position.
@@ -158,6 +165,7 @@ export class PerplAdapter implements VenueAdapter {
     };
     const raw = await ensure(slot).sendOrder(spec, "ioc");
     const outcome = await this.toOutcome(raw, params.requestId, market, "ioc");
+    if (outcome.filledSize6 > 0n) await this.checkPositionLeverage(slot, market, spec.lv);
     log.info("market order outcome", {
       slotId: slot.id,
       market: market.symbol,
@@ -175,22 +183,42 @@ export class PerplAdapter implements VenueAdapter {
     params: { market: ResolvedMarket; amount: bigint; requestId: bigint; lastExecBlock: bigint },
   ): Promise<OrderOutcome> {
     const scale = await collateralScale();
+    const accountId = accountIdOf(slot);
+    const before = (await getPosition(BigInt(params.market.perpetualId), accountId)).position.depositCNS;
     const spec: OrderSpec = {
       rq: Number(params.requestId),
       mkt: params.market.venueMarketId,
-      acc: Number(accountIdOf(slot)),
+      acc: Number(accountId),
       t: OrderType.IncreasePositionCollateral,
       p: 0,
       s: 0,
-      // VERIFY(spec03): the unit of `a` (CNS integer vs human decimal) -- see
-      // units.parseApiAmount.
+      // Confirmed on testnet 2026-10-05: `a` is a CNS integer string -- "5000000" moved depositCNS by exactly $5 (docs/perpl-findings.md#v-adapter-185)
       a: assetToApiAmount(params.amount, scale),
       fl: OrderFlags.GoodTillCancel,
       lv: 0,
       lb: Number(params.lastExecBlock),
     };
-    const raw = await ensure(slot).sendOrder(spec, "instant");
-    return this.toOutcome(raw, params.requestId, params.market, "instant");
+    let raw: RawOrderResult | undefined;
+    try {
+      raw = await ensure(slot).sendOrder(spec, "instant");
+    } catch (error) {
+      // No verdict on the socket is normal for a t:6 -- the chain decides below.
+      log.debug("t:6 had no socket verdict; reading depositCNS", { slotId: slot.id, ...errorFields(error) });
+    }
+    if (raw?.kind === "rejected") return this.toOutcome(raw, params.requestId, params.market, "instant");
+
+    // Confirmed on testnet 2026-10-05: a successful t:6 sends no success mt:24, only a later st:7/sr:32 -- so the on-chain depositCNS decides (docs/perpl-findings.md#v-adapter-334)
+    await this.waitForChainPast(params.lastExecBlock, CHAIN_PAST_LB_TIMEOUT_MS);
+    const after = (await getPosition(BigInt(params.market.perpetualId), accountId)).position.depositCNS;
+    const added = after > before ? after - before : 0n;
+    return {
+      status: added > 0n ? "filled" : "unfilled",
+      requestId: params.requestId,
+      filledSize6: 0n,
+      avgPrice18: 0n,
+      feeAsset: 0n,
+      reason: `depositCNS ${before} -> ${after}`,
+    };
   }
 
   async nextRequest(
@@ -208,53 +236,84 @@ export class PerplAdapter implements VenueAdapter {
   }
 
   /**
-   * The socket's own cache first, then the account's order history. Found:
-   * its outcome. Not found: `pending` while `head < lb` (it may still execute
-   * -- the caller waits, never resends with a NEW rq), `not_placed` once
-   * `head >= lb` (it can no longer execute -- a new rq is safe).
+   * The socket's verdict when it heard one; otherwise the lot rule, decided
+   * on-chain once the chain is past `lb` (no order can execute after it):
    *
-   * VERIFY(spec03): how quickly order-history reflects an order's mt:24
-   * events. The docs make `head >= lb` with nothing heard a safe "not placed"
-   * only when every heartbeat since posting was observed; the history lookup
-   * is what stands in for that across reconnects and restarts.
+   *   size changed   -> filled, by |size now - size before|
+   *   size unchanged -> `not_placed`: a NEW rq is safe
+   *
+   * The price of a fill seen only this way comes from the chain too: the
+   * weighted entry for an add, the on-chain mark for a reduce (marked as an
+   * estimate in `reason`). Callers hold the slot lock for the whole order, so
+   * nothing else moves the size in between.
    */
+  // Confirmed on testnet 2026-10-05: order-history shows an order ~22-27 s after the socket does -- too late to decide "not placed" 6 s after lb, so it is not used (docs/perpl-findings.md#v-adapter-216)
   async findOrderOutcome(
     slot: SlotWithWallet,
-    requestId: bigint,
-    lastExecBlock: bigint,
-    options: { market?: ResolvedMarket; kind?: OrderKind } = {},
+    request: SentRequest,
+    market: ResolvedMarket,
   ): Promise<OrderOutcome | "pending" | "not_placed"> {
-    const kind = options.kind ?? "ioc";
-    const connection = ensure(slot);
-    const seen = connection.seenOrder(requestId, kind);
+    const seen = ensure(slot).seenOrder(request.requestId, "ioc");
     if (seen?.done && seen.order) {
-      return this.toOutcome({ kind: "order", order: seen.order }, requestId, options.market, kind);
+      return this.toOutcome({ kind: "order", order: seen.order }, request.requestId, market, "ioc");
     }
+    if ((await publicClient().getBlockNumber()) <= request.lastExecBlock) return "pending";
 
-    const target = Number(requestId);
-    const accountId = Number(accountIdOf(slot));
-    const events = (
-      await walkHistory(
-        (page) => getOrderHistory(credentialsFor(slot), page),
-        // Request ids only grow per account: once a page reaches below ours,
-        // older pages cannot hold it.
-        (items) => items.some((order) => order.acc === accountId && order.rq < target),
-        HISTORY_PAGES,
-      )
-    )
-      .filter((order) => order.acc === accountId && order.rq === target)
-      // History is newest -> oldest; the dedupe wants arrival order.
-      .reverse();
+    const now = await this.getPosition(slot, market);
+    const sizeNow = now.exists ? now.size6 : 0n;
+    const delta = sizeNow > request.size6Before ? sizeNow - request.size6Before : request.size6Before - sizeNow;
+    if (delta === 0n) return "not_placed";
 
-    const head = await connection.currentHead();
-    if (events.length > 0) {
-      const settled = settleOrderEvents(events, kind);
-      if (settled.order && (settled.done || head >= lastExecBlock)) {
-        return this.toOutcome({ kind: "order", order: settled.order }, requestId, options.market, kind);
+    const grew = sizeNow > request.size6Before;
+    const avgPrice18 = grew
+      ? (now.entry18 * sizeNow - request.entry18Before * request.size6Before) / delta
+      : now.mark18;
+    log.warn("order resolved from the on-chain lot delta", {
+      slotId: slot.id,
+      rq: request.requestId.toString(),
+      sizeBefore: request.size6Before.toString(),
+      sizeNow: sizeNow.toString(),
+    });
+    return {
+      status: "filled",
+      requestId: request.requestId,
+      filledSize6: delta,
+      avgPrice18,
+      feeAsset: 0n,
+      reason: grew ? "resolved on-chain (lot delta)" : "resolved on-chain (lot delta); exit price estimated from the mark",
+    };
+  }
+
+  /// Polls the RPC until its head is past `block`.
+  private async waitForChainPast(block: bigint, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while ((await publicClient().getBlockNumber()) <= block) {
+      if (Date.now() > deadline) throw new Error(`chain not past block ${block} after ${timeoutMs}ms`);
+      await sleep(500);
+    }
+  }
+
+  /**
+   * After a fill: the venue position's `lv` must be what we sent. Perpl
+   * re-margins the WHOLE position to each order's `lv` (docs/perpl-findings.md#f-remargin),
+   * so a mismatch means the position was re-levered. Alert, never throw -- the
+   * fill already happened and a throw would invite a second order.
+   */
+  private async checkPositionLeverage(slot: SlotWithWallet, market: ResolvedMarket, lv: number): Promise<void> {
+    try {
+      const { d } = await getPositions(credentialsFor(slot));
+      const open = (d ?? []).find((p) => p.mkt === market.venueMarketId && p.st === 1);
+      if (open && open.lv !== undefined && open.lv !== lv) {
+        alert("venue position leverage differs from the order's", {
+          slotId: slot.id,
+          market: market.symbol,
+          sent: lv,
+          position: open.lv,
+        });
       }
-      return "pending";
+    } catch (error) {
+      log.warn("could not check the position's leverage", { slotId: slot.id, ...errorFields(error) });
     }
-    return head < lastExecBlock ? "pending" : "not_placed";
   }
 
   async getPosition(slot: SlotWithWallet, market: ResolvedMarket): Promise<VenuePosition> {
@@ -274,10 +333,8 @@ export class PerplAdapter implements VenueAdapter {
       depositAsset,
       pnlAsset,
       premiumAsset,
-      // VERIFY(spec03): whether pnlCNS already includes premiumPnlCNS; if it
-      // does, drop premiumAsset here. (PerplReader.venueEquity uses
-      // depositCNS + pnlCNS only.)
-      equityAsset: exists ? depositAsset + pnlAsset + premiumAsset : 0n,
+      // Confirmed on testnet 2026-10-05: pnlCNS already includes premiumPnlCNS (103880 = 104580 - 700), so equity is depositCNS + pnlCNS, as PerplReader.venueEquity (docs/perpl-findings.md#v-adapter-277)
+      equityAsset: exists ? depositAsset + pnlAsset : 0n,
       mark18: pnsToPrice18(markPricePNS, market.priceDecimals),
       markValid: markPriceValid,
     };
@@ -330,9 +387,9 @@ export class PerplAdapter implements VenueAdapter {
     };
 
     if (order.st === OrderStatus.Failed) return { ...base, status: "failed" };
-    // IncreasePositionCollateral: any non-failure status means it was applied.
-    // VERIFY(spec03): which status Perpl reports for a t:6 order.
-    if (kind === "instant") return { ...base, status: "filled" };
+    // t:6 is never decided here (addPositionMargin reads depositCNS); only a
+    // gateway rejection reaches this point for it.
+    if (kind === "instant") return { ...base, status: "unfilled" };
     if (order.st === OrderStatus.Filled) return { ...base, status: "filled" };
     if (filledLots > 0n) {
       const full = order.os !== undefined && order.os > 0 && filledLots >= BigInt(order.os);

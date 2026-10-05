@@ -18,9 +18,8 @@ import { absDecimal, formatDecimal, toBaseUnits } from "./decimal";
  * `size x 1e6` is what makes `pnl = size * (mark - entry) / 1e18` land in the
  * asset's 6 decimals: 0.25 ETH on a $200 move is 250000 * 200e18 / 1e18 =
  * 50_000_000 = $50. That needs the asset at 6 decimals (chain/clients.ts
- * refuses any other token). Separately, the deployed PerplReader sizes at
- * 10^collateralDecimals, so opening a position also needs Perpl's
- * collateralDecimals at 6 -- venue/perpl/units.ts assertSizeScaleSupported.
+ * refuses any other token), and the deployed PerplReader's sizeScale at 1e6
+ * -- the known constraint in venue/perpl/units.ts assertPnlScaleSupported.
  * Collateral amounts themselves convert for any collateralDecimals.
  *
  * Never a JS float for money or prices: decimal strings in, bigints out.

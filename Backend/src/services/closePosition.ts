@@ -1,7 +1,7 @@
 import type { Address } from "viem";
 
 import { db } from "../config/db";
-import { closePosition as closeOnChain, currentMark, isClosed, tokenAccounting } from "../chain/writes";
+import { closePosition as closeOnChain, currentMark, isClosed, tokenAccounting, tokenLeverage } from "../chain/writes";
 import { config } from "../config/env";
 import { notFound } from "../lib/errors";
 import { startWorker } from "../lib/async";
@@ -170,11 +170,15 @@ async function flattenResidualLeg(positionId: string): Promise<void> {
     amount: leg.size6.toString(),
     note: `residual flatten ${fromSize6(leg.size6)} on ${market.displaySymbol}`,
   });
-  const outcome = await withSlotLock(slot.id, () =>
+  const outcome = await withSlotLock(slot.id, async () =>
     placeAndResolve(
       slot,
       market,
-      { side: closeSide(position.direction), size6: leg.size6, leverage: position.leverage },
+      {
+        side: closeSide(position.direction),
+        size6: leg.size6,
+        leverage: await tokenLeverage(position.positionTokenAddress as Address),
+      },
       (request) => saveLedgerRequest(entry.id, slot.id, request),
     ),
   );
@@ -243,11 +247,11 @@ async function closeOnVenue(
       throw new Error(`venue position still ${fromSize6(leg.size6)} after ${CLOSE_ATTEMPTS} close attempts; resume job retries`);
     }
     const size6 = leg.size6;
-    const outcome = await withSlotLock(slot.id, () =>
+    const outcome = await withSlotLock(slot.id, async () =>
       placeAndResolve(
         slot,
         market,
-        { side: closeSide(position.direction), size6, leverage: position.leverage },
+        { side: closeSide(position.direction), size6, leverage: await tokenLeverage(positionToken) },
         (request) => saveLedgerRequest(closeEntry.id, slot.id, request),
       ),
     );

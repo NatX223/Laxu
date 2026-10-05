@@ -30,9 +30,9 @@ import { badRequest, conflict, forbidden, notFound, serviceUnavailable } from ".
 import { alert, createLogger, errorFields } from "../lib/logger";
 import { PRICE_SCALE, fromPrice18, fromSize6, toPrice18, toSize6 } from "../lib/units";
 import { getPositions as getApiPositions } from "../venue/perpl/rest";
-import { apiAmountToAsset, assertSizeScaleSupported, collateralScale } from "../venue/perpl/units";
+import { apiAmountToAsset, assertOpenScale, collateralScale } from "../venue/perpl/units";
 import { raiseLastRequestId } from "../venue/requests";
-import { venue, type OrderOutcome } from "../venue/types";
+import { venue, type OrderOutcome, type SentRequest } from "../venue/types";
 import {
   credentialsFor,
   getSlot,
@@ -46,7 +46,7 @@ import { markPriceFor, maxLeverage, requireMarket, requireMarketByName, type Res
 import { requireRegisteredUser } from "./users";
 import { sweepSlot } from "./sweep";
 import { levelError, levelOf } from "./triggerMath";
-import { isUnknownOutcome, openSide } from "./venueOrders";
+import { isUnknownOutcome, MAX_ATTEMPTS, openSide, placeAndResolve, resolveSent, savedRequest } from "./venueOrders";
 
 const log = createLogger("open-position");
 
@@ -131,7 +131,7 @@ async function minOpenAmount(market: ResolvedMarket): Promise<bigint> {
 export async function requestOpenPosition(request: OpenPositionRequest): Promise<OpenPositionReservation> {
   const market = await requireMarketByName(request.market);
   // Before any money moves: the token could never be created otherwise.
-  assertSizeScaleSupported(await collateralScale());
+  await assertOpenScale();
 
   const decimals = await assetDecimals();
   let amount: bigint;
@@ -571,31 +571,36 @@ async function settleDepositReceipt(
 // Step 2c -- the entry order
 // ---------------------------------------------------------------------------
 
-/// Returns false while the order's fate is still unknown.
+/**
+ * Returns false while the order's fate is still unknown. An order that was
+ * never placed (decided on-chain by the lot rule, see venueOrders.ts) is sent
+ * again under a new rq, MAX_ATTEMPTS in all across restarts; after that, or
+ * on any definite non-fill, the creator is refunded.
+ */
 async function placeEntry(request: PositionOpenRequest, slot: SlotWithWallet): Promise<boolean> {
   const market = await requireMarket(request.marketId);
   const decimals = await assetDecimals();
 
-  // A request id on file means an order may already have gone out before a
-  // restart. Never send a second one while the first may be live.
-  if (request.venueRequestId && request.venueLastExecBlock) {
-    const found = await venue().findOrderOutcome(
-      slot,
-      BigInt(request.venueRequestId),
-      BigInt(request.venueLastExecBlock),
-      { market },
-    );
-    if (found === "pending") return false;
+  // An order on file may still be live after a restart: decide it first,
+  // never send a second one while the first could execute.
+  const sent = savedRequest(request);
+  if (sent) {
+    let found: OrderOutcome | "not_placed";
+    try {
+      found = await resolveSent(slot, market, sent);
+    } catch (error) {
+      if (!isUnknownOutcome(error)) throw error;
+      return false; // the chain is not past lb yet; the resume tick comes back
+    }
     if (found !== "not_placed") {
       if (found.status === "filled" || found.status === "partial") {
         await recordFillFromChain(request, slot, market, found);
         return true;
       }
-      if (found.status === "unfilled") {
-        throw new RefundableError(`Entry order did not fill${found.reason ? ` (${found.reason})` : ""}`);
-      }
-      // failed: fall through to a new order with a new rq.
-      log.warn("previous entry order failed; sending a new one", { openRequestId: request.id, reason: found.reason });
+      throw new RefundableError(`Entry order did not fill (${found.status}${found.reason ? `: ${found.reason}` : ""})`);
+    }
+    if (request.venueAttempts >= MAX_ATTEMPTS) {
+      throw new RefundableError(`Entry order was not placed after ${request.venueAttempts} attempts`);
     }
   }
 
@@ -604,30 +609,19 @@ async function placeEntry(request: PositionOpenRequest, slot: SlotWithWallet): P
   const { lots, quantity } = sizeEntry({ collateral, leverage: request.leverage, mark, market });
   if (lots <= 0n) throw new RefundableError("Entry is below the market's minimum size");
 
-  const next = await venue().nextRequest(slot, market);
-  await db.$transaction(async (tx) => {
-    await tx.positionOpenRequest.update({
-      where: { id: request.id },
-      data: {
-        venueRequestId: next.requestId.toString(),
-        venueLastExecBlock: next.lastExecBlock.toString(),
-      },
-    });
-    await raiseLastRequestId(tx, slot.id, next.requestId);
-  });
-
   let outcome: OrderOutcome;
   try {
-    outcome = await venue().placeMarketOrder(slot, {
+    // request.leverage is what createPosition passes as the token's leverage().
+    outcome = await placeAndResolve(
+      slot,
       market,
-      side: openSide(request.direction),
-      size6: toSize6(quantity),
-      leverage: request.leverage,
-      ...next,
-    });
+      { side: openSide(request.direction), size6: toSize6(quantity), leverage: request.leverage },
+      (next) => saveEntryRequest(request.id, slot.id, next),
+      { maxAttempts: MAX_ATTEMPTS - request.venueAttempts },
+    );
   } catch (error) {
     if (isUnknownOutcome(error)) {
-      // The order may be live: stay `deposited`; the resume tick looks it up.
+      // The order may be live: stay `deposited`; the resume tick decides it.
       await update(request.id, { error: `Entry outcome unknown; checking: ${String(error)}`.slice(0, 500) });
       return false;
     }
@@ -639,6 +633,24 @@ async function placeEntry(request: PositionOpenRequest, slot: SlotWithWallet): P
   }
   await recordFillFromChain(request, slot, market, outcome);
   return true;
+}
+
+/// The entry order's rq / lb / pre-send size, and one more attempt, saved
+/// before it is sent (and the slot's request counter raised), atomically.
+async function saveEntryRequest(requestId: string, slotId: string, next: SentRequest): Promise<void> {
+  await db.$transaction(async (tx) => {
+    await tx.positionOpenRequest.update({
+      where: { id: requestId },
+      data: {
+        venueRequestId: next.requestId.toString(),
+        venueLastExecBlock: next.lastExecBlock.toString(),
+        venueSizeBefore: next.size6Before.toString(),
+        venueEntryBefore: next.entry18Before.toString(),
+        venueAttempts: { increment: 1 },
+      },
+    });
+    await raiseLastRequestId(tx, slotId, next.requestId);
+  });
 }
 
 /**

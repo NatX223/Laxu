@@ -141,6 +141,16 @@ returned, and `recoverExcess` sends anything above that to an address the operat
 prices passed to `fulfillDepositRequest` move `entryPrice` for every holder. Same trust as the
 price reports: the operator is trusted to pass Arcus's numbers through honestly.
 
+**7. Positions can only open on a 6-decimal asset.** The contract's PnL scale is the asset's
+decimals: `PositionToken.totalAssets = capital + size × (mark − entry) / 1e18` adds the PnL to
+`capital`, which is in asset base units, so `size` must be in 10^assetDecimals units. The deployed
+`PerplReader` sizes positions at its immutable `sizeScale` (1e6 on testnet), `initialize` compares
+that size to the one the backend passes with no tolerance, and the backend's size unit is 6 decimals.
+The backend refuses to *open* a position unless `asset.decimals() == 6` and
+`reader.sizeScale() == 10^6` (`assertPnlScaleSupported` in `Backend/src/venue/perpl/units.ts`);
+deposits, withdrawals and settlement are unaffected (collateral converts for any decimals). True for
+AUSD today; another asset needs a new `PerplReader` and a size unit derived from its decimals.
+
 ---
 
 ## Oracle staleness guard
@@ -200,3 +210,8 @@ audits the live reader against. On testnet today the two ids happen to be equal 
 which may differ from the ERC-20's `decimals()`. Laxu never values positions off CNS amounts, but
 `PerplReader.sizeScale` is `10^collateralDecimals` while `PositionToken` computes PnL in asset base
 units, so `deploy.js` refuses to deploy if the two differ (both are 6 for AUSD today).
+
+**Venue equity.** `PerplReader.venueEquity = depositCNS + pnlCNS`. Confirmed on testnet
+(2026-10-05): `pnlCNS` already includes the funding premium (`pnlCNS = deltaPnlCNS + premiumPnlCNS`,
+e.g. 103880 = 104580 − 700), so adding `premiumPnlCNS` again would double-count funding. The
+backend's funding reconciliation uses the same sum (`docs/perpl-findings.md#v-adapter-277`).

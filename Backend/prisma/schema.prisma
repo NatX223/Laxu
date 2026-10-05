@@ -252,6 +252,13 @@ model PositionOpenRequest {
   /// restart can look the order up instead of placing a second one.
   venueRequestId     String? @map("venue_request_id")
   venueLastExecBlock String? @map("venue_last_exec_block")
+  /// The on-chain position size6 / entry18 just before that order was sent:
+  /// once the chain is past `lb`, a changed size means it filled (by the
+  /// delta), an unchanged one that it was never placed.
+  venueSizeBefore    String? @map("venue_size_before")
+  venueEntryBefore   String? @map("venue_entry_before")
+  /// Entry orders sent so far (a not-placed order is retried, 3 at most).
+  venueAttempts      Int     @default(0) @map("venue_attempts")
   venueOrderId       String? @map("venue_order_id")
   /// The actual position, human-readable decimals, read from the Exchange after
   /// the fill -- the same source createPosition's venue check reads.
@@ -353,6 +360,10 @@ model LedgerEntry {
   /// look the order up instead of sending a second one.
   venueRequestId     String?  @map("venue_request_id")
   venueLastExecBlock String?  @map("venue_last_exec_block")
+  /// On-chain position size6 / entry18 just before that order was sent (see
+  /// PositionOpenRequest.venueSizeBefore).
+  venueSizeBefore    String?  @map("venue_size_before")
+  venueEntryBefore   String?  @map("venue_entry_before")
   /// Buy-in / redeem venue leg, saved as it happens so a restart or the
   /// reconciler can finish the on-chain fulfil with the real fill. `filledSize`
   /// is size6, `fillPrice` 1e18; both "0" for a margin-only buy-in or a redeem

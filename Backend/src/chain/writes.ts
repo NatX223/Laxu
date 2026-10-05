@@ -493,6 +493,22 @@ export async function readPositionState(positionToken: Address): Promise<OnChain
   };
 }
 
+const leverageCache = new Map<string, number>();
+
+/// PositionToken.leverage() -- set once in initialize, so cached. Every venue
+/// order for a token is sent at this `lv`: Perpl re-margins the whole position
+/// to each order's leverage (docs/perpl-findings.md#f-remargin).
+export async function tokenLeverage(positionToken: Address): Promise<number> {
+  const key = positionToken.toLowerCase();
+  const cached = leverageCache.get(key);
+  if (cached !== undefined) return cached;
+  const leverage = Number(
+    await publicClient().readContract({ address: positionToken, abi: positionTokenAbi, functionName: "leverage" }),
+  );
+  leverageCache.set(key, leverage);
+  return leverage;
+}
+
 /// Asset sitting in the token for buyers whose requests are still pending --
 /// theirs to take back on cancel, so never usable for a redeem payout.
 export async function totalPendingDepositAssets(positionToken: Address): Promise<bigint> {

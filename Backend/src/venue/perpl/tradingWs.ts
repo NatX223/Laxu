@@ -61,9 +61,9 @@ const IOC_TERMINAL = new Set<number>([OrderStatus.Filled, OrderStatus.Canceled, 
  * For an IOC order the first non-failure may be an intermediate Open /
  * PartiallyFilled, so the fill state is read from the first IOC-terminal
  * event (Filled / Canceled / Expired), taking the largest cumulative `fs` seen.
- * VERIFY(spec03): that an IOC market order always reaches one of 4/5/6, and
- * whether it can surface Open (2) / PartiallyFilled (3) first.
+ * An order that never reports at all is decided on-chain (venueOrders.ts).
  */
+// Confirmed on testnet 2026-10-05: every IOC that executed (19/19) sent one mt:24 straight to st:4; 3 of 22 acked IOCs never reported, so "wait for terminal" stays and silence falls to the lot rule (docs/perpl-findings.md#v-tradingws-63)
 export function settleOrderEvents(
   events: ApiOrder[],
   kind: OrderKind,
@@ -115,6 +115,9 @@ export type ConnectionState = "idle" | "connecting" | "open" | "reconnecting" | 
  *     force a reconnect for fresh snapshots (only a warning when
  *     PERPL_HEARTBEAT_GAP_RECONNECT=false).
  *   - Any close rejects every in-flight order with ConnectionLostError.
+ *   - Frames are queued and handled on the next turn of the event loop, never
+ *     inside the socket's receive callback, and `ws` answers server pings
+ *     itself (autoPong): a busy handler can never delay a pong.
  *
  * Emits `position` (ApiPosition, plus each settlement event in `e[]`) and
  * `account` (ApiAccount).
@@ -134,6 +137,11 @@ export class PerplTradingConnection extends EventEmitter {
   private readyWaiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
 
   private frameSn = 0;
+  /// Received frames waiting to be handled (see {enqueue}).
+  private inbox: Array<{ ws: WebSocket; text: string }> = [];
+  private draining = false;
+  /// Server pings seen on the current socket -- for the soak's diagnostics.
+  serverPings = 0;
   private acks = new Map<number, AckWaiter>();
   /// Every mt:24 event seen for our account, per `rq`, in arrival order.
   private orderEvents = new Map<string, ApiOrder[]>();
@@ -280,6 +288,40 @@ export class PerplTradingConnection extends EventEmitter {
 
   // --- internals --------------------------------------------------------------------
 
+  private enqueue(ws: WebSocket, text: string): void {
+    this.inbox.push({ ws, text });
+    if (this.draining) return;
+    this.draining = true;
+    setImmediate(() => this.drain());
+  }
+
+  /// Handles queued frames in arrival order, yielding to the event loop
+  /// between batches so a burst of frames never starves the socket.
+  private drain(): void {
+    const BATCH = 50;
+    for (let i = 0; i < BATCH && this.inbox.length > 0; i += 1) {
+      const { ws, text } = this.inbox.shift()!;
+      // A frame from a socket already replaced belongs to a dead connection.
+      if (ws !== this.ws) continue;
+      let message: Record<string, unknown>;
+      try {
+        message = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        recordFrame(this.slotId, "in", { raw: text });
+        log.warn("unparseable trading frame", { slotId: this.slotId });
+        continue;
+      }
+      recordFrame(this.slotId, "in", message);
+      try {
+        this.handle(message);
+      } catch (error) {
+        log.error("trading frame handler threw", { slotId: this.slotId, mt: message.mt, ...errorFields(error) });
+      }
+    }
+    if (this.inbox.length > 0) setImmediate(() => this.drain());
+    else this.draining = false;
+  }
+
   /// Every outgoing frame goes through here (and the recorder, when on).
   private send(ws: WebSocket, frame: Record<string, unknown>): void {
     recordFrame(this.slotId, "out", frame);
@@ -366,8 +408,15 @@ export class PerplTradingConnection extends EventEmitter {
     this.lastSn = undefined;
     this.epoch += 1;
 
-    const ws = new WebSocket(perplTradingWsUrl());
+    // autoPong is ws's default; explicit because a late pong is what a
+    // `1008 ping timeout` close would mean (docs/perpl-findings.md#f-1008).
+    const ws = new WebSocket(perplTradingWsUrl(), { autoPong: true });
     this.ws = ws;
+    this.serverPings = 0;
+
+    ws.on("ping", () => {
+      this.serverPings += 1;
+    });
 
     ws.on("open", () => {
       try {
@@ -392,29 +441,21 @@ export class PerplTradingConnection extends EventEmitter {
       }, PING_INTERVAL_MS);
     });
 
-    ws.on("message", (data) => {
-      let message: Record<string, unknown>;
-      try {
-        message = JSON.parse(data.toString()) as Record<string, unknown>;
-      } catch {
-        recordFrame(this.slotId, "in", { raw: data.toString() });
-        log.warn("unparseable trading frame", { slotId: this.slotId });
-        return;
-      }
-      recordFrame(this.slotId, "in", message);
-      try {
-        this.handle(message);
-      } catch (error) {
-        log.error("trading frame handler threw", { slotId: this.slotId, mt: message.mt, ...errorFields(error) });
-      }
-    });
+    // Only queue here: the receive callback returns at once.
+    ws.on("message", (data) => this.enqueue(ws, data.toString()));
 
     ws.on("close", (code, reason) => {
       if (this.ws !== ws) return;
       if (this.pingTimer) clearInterval(this.pingTimer);
       this.lastError = `closed ${code}${reason.length ? ` ${reason.toString()}` : ""}`;
       // 3401 = auth failure: the reconnect re-signs with a fresh timestamp + nonce.
-      log.warn("trading socket closed", { slotId: this.slotId, code, reason: reason.toString() });
+      log.warn("trading socket closed", {
+        slotId: this.slotId,
+        code,
+        reason: reason.toString(),
+        serverPings: this.serverPings,
+        queued: this.inbox.length,
+      });
       this.failInFlight(new ConnectionLostError(`Perpl trading socket closed (${code})`));
       this.scheduleReconnect();
     });
@@ -477,9 +518,7 @@ export class PerplTradingConnection extends EventEmitter {
       }
       case Mt.Heartbeat: {
         const sn = Number(message.sn);
-        // VERIFY(spec03): the docs seed the heartbeat sequence from the
-        // WalletSnapshot's `sn`; if that does not hold on testnet, every
-        // connection will flap here.
+        // Confirmed on testnet 2026-10-05: the first mt:100 sn is the mt:19 sn + 1, then +1 per beat (sn == block); no gap in 609 beats (docs/perpl-findings.md#v-tradingws-471)
         if (this.lastSn !== undefined && sn !== this.lastSn + 1) {
           const why = `heartbeat sequence gap (${this.lastSn} -> ${sn})`;
           if (config.perplHeartbeatGapReconnect) {

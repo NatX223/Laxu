@@ -1,7 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 
-import { db } from "./config/db";
+import { connectDb, db } from "./config/db";
 import { assertFaucetConfig, assertOrchestrationConfig, config } from "./config/env";
 import { HttpError } from "./lib/errors";
 import { createLogger, errorFields } from "./lib/logger";
@@ -58,6 +58,9 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 const stopWorkers: Array<() => void> = [];
 
 async function start(): Promise<void> {
+  // Before anything reads the database: Neon may be waking from idle.
+  await connectDb();
+
   // Public routes (discovery, position pages, charts) still work without
   // these, so warn rather than refuse to boot.
   if (!config.privyAppId || !config.privyAppSecret) {

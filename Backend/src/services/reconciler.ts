@@ -9,10 +9,11 @@ import { startWorker } from "../lib/async";
 import { venue } from "../venue/types";
 import { reclaimExpiredReservations, type SlotWithWallet } from "./allocator";
 import { expectedMargin } from "./ledger";
-import { retryFulfil } from "./margin";
+import { retryFulfil, retryPendingRedeem } from "./margin";
 import { marketForPosition } from "./markets";
 import { resumeOpenRequests } from "./openPosition";
 import { computeFundingTarget } from "./reporter";
+import { savedRequest } from "./venueOrders";
 
 const log = createLogger("reconciler");
 
@@ -155,6 +156,12 @@ export async function reconcileOnce(): Promise<ReconcileReport> {
 
   for (const entry of stranded) {
     try {
+      if (entry.venueStatus === "pending" && entry.type === "margin_remove") {
+        // A redeem is retried every pass until its reduce fills.
+        report.strandedPending += 1;
+        await retryPendingRedeem(entry.id);
+        continue;
+      }
       if (entry.venueStatus === "pending") {
         report.strandedPending += 1;
         // What the venue says about its last order, when it has one on file.
@@ -162,9 +169,10 @@ export async function reconcileOnce(): Promise<ReconcileReport> {
         // the flow, so it is surfaced for a human with the venue's answer.
         let orderOutcome: string | undefined;
         const slot = entry.position.subaccountSlot;
-        if (entry.venueRequestId && entry.venueLastExecBlock && slot) {
-          const found = await venue()
-            .findOrderOutcome(slot, BigInt(entry.venueRequestId), BigInt(entry.venueLastExecBlock))
+        const sent = savedRequest(entry);
+        if (sent && slot) {
+          const found = await marketForPosition(entry.position.market)
+            .then((market) => venue().findOrderOutcome(slot, sent, market))
             .catch((error) => `lookup failed: ${String(error)}`);
           orderOutcome = typeof found === "string" ? found : `${found.status} ${found.filledSize6} @ ${found.avgPrice18}`;
         }

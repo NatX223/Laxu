@@ -61,7 +61,8 @@ export interface FundingTerms {
  * and we want that to equal what the slot really holds on Perpl:
  *
  *   venueTotal     = positionEquity + max(0, accountBalance - reserve)
- *   positionEquity = depositAsset + pnlAsset + premiumAsset   (see the adapter's VERIFY)
+ *   positionEquity = depositAsset + pnlAsset   (pnl already holds the funding premium:
+ *                    docs/perpl-findings.md#v-adapter-277)
  *   pricePnL       = size x (mark - entry) / 1e18, negated for shorts
  *                    (token.size(), token.entryPrice(), token.currentMark() --
  *                    the same integer maths as PositionToken._computeValue)

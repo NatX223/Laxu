@@ -1,4 +1,5 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { config } from "../../config/env";
@@ -12,7 +13,8 @@ import { config } from "../../config/env";
  *
  * Everything is redacted before it touches disk: API key tokens, signatures,
  * nonces, secrets and X-API-* headers never land in a file. Recording must never
- * break trading, so every write error is swallowed.
+ * break or slow trading: writes are asynchronous, chained so lines keep their
+ * order, and every write error is swallowed.
  */
 
 const REDACTED = "<redacted>";
@@ -40,18 +42,34 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/// One chain for all writes: appends land in call order.
+let writes: Promise<void> = Promise.resolve();
+let madeDir: string | undefined;
+
 function append(file: string, entry: Record<string, unknown>): void {
   const dir = config.perplRecordDir;
   if (!dir) return;
+  let line: string;
   try {
-    mkdirSync(dir, { recursive: true });
-    const line = JSON.stringify({ at: new Date().toISOString(), ...entry }, (_k, v) =>
-      typeof v === "bigint" ? v.toString() : v,
-    );
-    appendFileSync(join(dir, file), `${line}\n`);
+    line = JSON.stringify({ at: new Date().toISOString(), ...entry }, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
   } catch {
-    // Never let a recording problem reach the trading path.
+    return;
   }
+  writes = writes
+    .then(async () => {
+      if (madeDir !== dir) {
+        mkdirSync(dir, { recursive: true });
+        madeDir = dir;
+      }
+      await appendFile(join(dir, file), `${line}\n`);
+    })
+    // Never let a recording problem reach the trading path.
+    .catch(() => undefined);
+}
+
+/// Resolves once every recorded line so far is on disk (scripts, tests).
+export function recorderFlushed(): Promise<void> {
+  return writes;
 }
 
 export function recordingEnabled(): boolean {

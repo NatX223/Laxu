@@ -10,6 +10,7 @@ import {
   readPositionState,
   retireDefaultTriggers,
   shareBalanceOf,
+  tokenLeverage,
 } from "../chain/writes";
 import { db } from "../config/db";
 import { alert, createLogger, errorFields } from "../lib/logger";
@@ -225,11 +226,11 @@ async function runBatch(ctx: TriggerContext): Promise<void> {
 
   let fill18 = 0n;
   if (closedSize6 > 0n && leg.exists) {
-    const outcome = await withSlotLock(ctx.slot.id, () =>
+    const outcome = await withSlotLock(ctx.slot.id, async () =>
       placeAndResolve(
         ctx.slot,
         ctx.market,
-        { side: closeSide(ctx.position.direction), size6: closedSize6, leverage: ctx.position.leverage },
+        { side: closeSide(ctx.position.direction), size6: closedSize6, leverage: await tokenLeverage(ctx.positionToken) },
         (request) => saveLedgerRequest(entry.id, ctx.slot.id, request),
       ),
     );

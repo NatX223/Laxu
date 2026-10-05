@@ -12,6 +12,7 @@ import {
   pendingDeposit,
   pendingRedeem,
   readPositionState,
+  tokenLeverage,
   totalPendingDepositAssets,
   transferAsset,
 } from "../chain/writes";
@@ -32,7 +33,7 @@ import {
 import { marketForPosition, requireMarket, type ResolvedMarket } from "./markets";
 import { pushFreshFunding } from "./reporter";
 import { buyInAddedSize, redeemClosedSize } from "./sizing";
-import { closeSide, isUnknownOutcome, openSide, placeAndResolve } from "./venueOrders";
+import { closeSide, isUnknownOutcome, openSide, placeAndResolve, resolveSent, savedRequest } from "./venueOrders";
 
 const log = createLogger("margin");
 
@@ -62,6 +63,13 @@ const log = createLogger("margin");
  * for future redeems; the venue side is funded from the float (float.ts). A
  * redeem payout the token cannot cover is topped up from the float; freed
  * margin is withdrawn back to it afterwards (off the critical path).
+ *
+ * Every order goes out at the token's own leverage (token.leverage()): Perpl
+ * re-margins the whole position to each order's `lv`. Whatever margin a
+ * buy-in's order does not take stays as free account balance -- the funding
+ * reconciliation (reporter.ts venueTotal) already counts it. There is no t:6
+ * top-up: the next size change would re-margin it away anyway
+ * (docs/perpl-findings.md#f-remargin).
  */
 
 type Direction = "add" | "remove";
@@ -95,6 +103,8 @@ interface Context {
   positionToken: Address;
   slot: SlotWithWallet;
   market: ResolvedMarket;
+  /// token.leverage() -- the `lv` of every order for this position.
+  leverage: number;
 }
 
 async function contextFor(positionId: string, options: { anyStatus?: boolean } = {}): Promise<Context | null> {
@@ -105,11 +115,13 @@ async function contextFor(positionId: string, options: { anyStatus?: boolean } =
   }
   const slot = await getSlotForPosition(positionId);
   if (!slot) throw new Error(`Position ${positionId} has no allocated slot`);
+  const positionToken = position.positionTokenAddress as Address;
   return {
     position,
-    positionToken: position.positionTokenAddress as Address,
+    positionToken,
     slot,
     market: options.anyStatus ? await marketForPosition(position.market) : await requireMarket(position.market),
+    leverage: await tokenLeverage(positionToken),
   };
 }
 
@@ -144,8 +156,12 @@ async function handleMarginRequest(direction: Direction, event: RequestEvent): P
     note: `on-chain ${direction === "add" ? "requestDeposit" : "requestRedeem"} ${event.txHash}#${event.logIndex}`,
   });
 
-  if (direction === "add") await runBuyIn(ctx, entry, event.amount);
-  else await runRedeem(ctx, entry, event.amount);
+  if (direction === "add") {
+    // A buy-in whose order did not fill is cancelled, never fulfilled.
+    if (!(await runBuyIn(ctx, entry, event.amount))) return;
+  } else {
+    await runRedeem(ctx, entry, event.amount);
+  }
 
   await completeOnChain(direction, event, entry.id);
 }
@@ -154,7 +170,8 @@ async function handleMarginRequest(direction: Direction, event: RequestEvent): P
 // Buy-in
 // ---------------------------------------------------------------------------
 
-async function runBuyIn(ctx: Context, entry: LedgerEntry, assets6: bigint): Promise<void> {
+/// Returns false when the order did not fill and the buy-in was cancelled.
+async function runBuyIn(ctx: Context, entry: LedgerEntry, assets6: bigint): Promise<boolean> {
   // 1. Fresh funding, so navPerShare() is current when the fulfil prices shares.
   await pushFreshFunding(ctx.position, ctx.slot, ctx.market);
 
@@ -165,7 +182,7 @@ async function runBuyIn(ctx: Context, entry: LedgerEntry, assets6: bigint): Prom
     assets6,
     size6: state.size,
     totalAssets6: state.totalAssets,
-    leverage: ctx.position.leverage,
+    leverage: ctx.leverage,
     mark18: state.markPrice,
     grid: ctx.market,
   });
@@ -175,38 +192,37 @@ async function runBuyIn(ctx: Context, entry: LedgerEntry, assets6: bigint): Prom
     await ensureSlotFloat(ctx.slot, assets6);
     await venue().deposit(ctx.slot, assets6);
 
-    // 4. Grow the position, same side, same leverage.
-    let fill18 = 0n;
-    let orderNote = "no order (below the minimum size)";
-    if (addedSize6 > 0n) {
-      const outcome = await placeAndResolve(
-        ctx.slot,
-        ctx.market,
-        { side: openSide(ctx.position.direction), size6: addedSize6, leverage: ctx.position.leverage },
-        (request) => saveLedgerRequest(entry.id, ctx.slot.id, request),
-      );
-      if (outcome.status === "unfilled" || outcome.status === "failed") {
-        // The buyer still gets their shares at NAV: the deposit backs the position as margin.
-        log.warn("buy-in order did not fill; adding as margin only", {
-          positionId: ctx.position.id,
-          status: outcome.status,
-          reason: outcome.reason,
-        });
-        orderNote = `order ${outcome.status}${outcome.reason ? ` (${outcome.reason})` : ""}`;
-      } else {
-        fill18 = outcome.avgPrice18;
-        orderNote = `order ${outcome.status} ${fromSize6(outcome.filledSize6)} @ ${fromPrice18(outcome.avgPrice18)}`;
-        if (outcome.orderId) await db.ledgerEntry.update({ where: { id: entry.id }, data: { venueOrderId: outcome.orderId } });
-      }
+    // 4. Grow the position, same side, the token's leverage. Below the minimum
+    //    order size there is no order: the deposit stays as free balance.
+    if (addedSize6 === 0n) return { filled: true, fill18: 0n, orderNote: "no order (below the minimum size)" };
+    const outcome = await placeAndResolve(
+      ctx.slot,
+      ctx.market,
+      { side: openSide(ctx.position.direction), size6: addedSize6, leverage: ctx.leverage },
+      (request) => saveLedgerRequest(entry.id, ctx.slot.id, request),
+    );
+    if (outcome.status === "unfilled" || outcome.status === "failed") {
+      return { filled: false, fill18: 0n, orderNote: `order ${outcome.status}${outcome.reason ? ` (${outcome.reason})` : ""}` };
     }
-
-    // 5. Whatever the order did not take sits as free balance; move it into
-    //    the position so the whole buy-in backs it.
-    const marginNote = await topUpPositionMargin(ctx, entry);
-    return { fill18, orderNote, marginNote };
+    if (outcome.orderId) await db.ledgerEntry.update({ where: { id: entry.id }, data: { venueOrderId: outcome.orderId } });
+    return {
+      filled: true,
+      fill18: outcome.avgPrice18,
+      orderNote: `order ${outcome.status} ${fromSize6(outcome.filledSize6)} @ ${fromPrice18(outcome.avgPrice18)}`,
+    };
   });
 
-  // 6. What goes on-chain comes from the chain: the venue size now, less the
+  if (!result.filled) {
+    // Cancel: no fulfil, so the buyer's asset stays pending in the token and
+    // they take it back with cancelDepositRequest() after the timeout. The
+    // float money deposited for the order goes back to the float.
+    log.warn("buy-in order did not fill; buy-in cancelled", { positionId: ctx.position.id, note: result.orderNote });
+    await markCancelled(entry.id, `buy-in cancelled: ${result.orderNote}; the buyer can reclaim it with cancelDepositRequest()`);
+    recycleFreedMargin(ctx, assets6);
+    return false;
+  }
+
+  // 5. What goes on-chain comes from the chain: the venue size now, less the
   //    token's size before.
   const after = await venue().getPosition(ctx.slot, ctx.market);
   const filled6 = after.size6 > state.size ? after.size6 - state.size : 0n;
@@ -215,27 +231,9 @@ async function runBuyIn(ctx: Context, entry: LedgerEntry, assets6: bigint): Prom
   await markConfirmed(entry.id, {
     filledSize: filled6.toString(),
     fillPrice: fill18.toString(),
-    note: `grew ${fromSize6(filled6)} @ ${fill18 > 0n ? fromPrice18(fill18) : "-"}; ${result.orderNote}; ${result.marginNote}`,
+    note: `grew ${fromSize6(filled6)} @ ${fill18 > 0n ? fromPrice18(fill18) : "-"}; ${result.orderNote}`,
   });
-}
-
-/// Free balance above the reserve -> the position's margin (order type 6).
-async function topUpPositionMargin(ctx: Context, entry: LedgerEntry): Promise<string> {
-  const reserve = BigInt(ctx.slot.reserve);
-  const free = await venue().accountBalance(ctx.slot);
-  const movable = free > reserve ? free - reserve : 0n;
-  if (movable <= 0n) return "no margin top-up";
-  try {
-    const request = await venue().nextRequest(ctx.slot, ctx.market);
-    await saveLedgerRequest(entry.id, ctx.slot.id, request);
-    const outcome = await venue().addPositionMargin(ctx.slot, { market: ctx.market, amount: movable, ...request });
-    return `margin +${fromAsset6(movable)} -> ${outcome.status}${outcome.reason ? ` (${outcome.reason})` : ""}`;
-  } catch (error) {
-    // Not fatal: the money is still in the account, and the funding
-    // reconciliation counts free balance too.
-    log.warn("margin top-up did not complete", { positionId: ctx.position.id, unknown: isUnknownOutcome(error), ...errorFields(error) });
-    return `margin top-up of ${fromAsset6(movable)} not confirmed`;
-  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +264,7 @@ async function runRedeem(ctx: Context, entry: LedgerEntry, shares: bigint): Prom
       placeAndResolve(
         ctx.slot,
         ctx.market,
-        { side: closeSide(ctx.position.direction), size6: closedSize6, leverage: ctx.position.leverage },
+        { side: closeSide(ctx.position.direction), size6: closedSize6, leverage: ctx.leverage },
         (request) => saveLedgerRequest(entry.id, ctx.slot.id, request),
       ),
     );
@@ -512,7 +510,7 @@ async function reverseOnVenue(entry: LedgerEntry): Promise<void> {
         {
           side: isBuyIn ? closeSide(ctx.position.direction) : openSide(ctx.position.direction),
           size6: reverseSize,
-          leverage: ctx.position.leverage,
+          leverage: ctx.leverage,
         },
         (request) => saveLedgerRequest(entry.id, ctx.slot.id, request),
       ),
@@ -530,6 +528,61 @@ async function reverseOnVenue(entry: LedgerEntry): Promise<void> {
     });
   }
   log.warn("reversed a cancelled request on the venue", { entryId: entry.id, type: entry.type, size: fromSize6(size6) });
+}
+
+/**
+ * Reconciler hook ("retry next tick"): a redeem still `pending` -- its reduce
+ * was not placed after every attempt, or the process died mid-way. Its own
+ * saved order is decided first (lot rule), so a reduce that did fill is
+ * recorded, never repeated; only when nothing moved is the redeem run again.
+ * A user who cancelled meanwhile is handled by the on-chain leg.
+ */
+export async function retryPendingRedeem(entryId: string): Promise<void> {
+  const entry = await db.ledgerEntry.findUnique({ where: { id: entryId }, include: { position: true } });
+  if (!entry || entry.type !== "margin_remove" || entry.venueStatus !== "pending") return;
+  if (!entry.controller || !entry.txHash || !entry.requestAmount || !entry.position.positionTokenAddress) return;
+  const ctx = await contextFor(entry.positionId);
+  if (!ctx) return;
+
+  const receipt = await publicClient().getTransactionReceipt({ hash: entry.txHash as `0x${string}` });
+  const event: RequestEvent = {
+    positionId: entry.positionId,
+    positionTokenAddress: entry.position.positionTokenAddress,
+    amount: BigInt(entry.requestAmount),
+    controller: entry.controller,
+    requestId: entry.onchainRequestId ?? "0",
+    txHash: entry.txHash,
+    logIndex: entry.logIndex ?? 0,
+    blockNumber: receipt.blockNumber,
+  };
+
+  // The user may have cancelled meanwhile: the on-chain leg sees that.
+  if ((await pendingRedeem(ctx.positionToken, entry.controller as Address)) === 0n) {
+    await completeOnChain("remove", event, entry.id);
+    return;
+  }
+
+  const sent = savedRequest(entry);
+  let found: Awaited<ReturnType<typeof resolveSent>> = "not_placed";
+  if (sent) {
+    try {
+      found = await withSlotLock(ctx.slot.id, () => resolveSent(ctx.slot, ctx.market, sent));
+    } catch (error) {
+      if (isUnknownOutcome(error)) return; // the chain is not past lb yet; next tick
+      throw error;
+    }
+  }
+  if (found !== "not_placed" && (found.status === "filled" || found.status === "partial")) {
+    await markConfirmed(entry.id, {
+      filledSize: found.filledSize6.toString(),
+      fillPrice: found.avgPrice18.toString(),
+      note: `reduced ${fromSize6(found.filledSize6)} (resolved on retry: ${found.reason ?? found.status})`,
+    });
+  } else {
+    log.info("retrying a redeem whose reduce never filled", { entryId, positionId: entry.positionId });
+    await runRedeem(ctx, entry, BigInt(entry.requestAmount));
+  }
+  await completeOnChain("remove", event, entry.id);
 }
 
 /// Reconciler hook: retry the on-chain leg of an entry that confirmed on the
