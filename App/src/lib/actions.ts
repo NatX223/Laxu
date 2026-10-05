@@ -598,6 +598,8 @@ export type LendingState = {
   liquidationThresholdBps: bigint;
   /** Position tokens still in the wallet. */
   walletShares: bigint;
+  /** Their live value, USDG base units. */
+  walletValue: bigint;
   /** The wallet's USDG, for repays. */
   walletUsdg: bigint;
   /** The position token's decimals, which are USDG's: shares and dollars format alike. */
@@ -648,8 +650,13 @@ export async function readLendingState(pool: Address, positionToken: Address, ac
       // The chain's clock, not the browser's: the pool compares against block.timestamp.
       client.getBlock({ blockTag: "latest" }),
     ]);
-  const combinedValue =
-    walletShares === BigInt(0) ? collateralValue : await readToken<bigint>("convertToAssets", [walletShares + collateralShares]);
+  const [combinedValue, walletValue] =
+    walletShares === BigInt(0)
+      ? [collateralValue, BigInt(0)]
+      : await Promise.all([
+          readToken<bigint>("convertToAssets", [walletShares + collateralShares]),
+          readToken<bigint>("convertToAssets", [walletShares]),
+        ]);
   const cap = (combinedValue * ltvBps) / BPS;
   return {
     collateralShares,
@@ -662,6 +669,7 @@ export async function readLendingState(pool: Address, positionToken: Address, ac
     ltvBps,
     liquidationThresholdBps,
     walletShares,
+    walletValue,
     walletUsdg,
     decimals,
   };

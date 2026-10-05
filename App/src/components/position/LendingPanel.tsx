@@ -258,7 +258,11 @@ export default function LendingPanel({
 
   const rows: Array<{ k: string; v: React.ReactNode }> = [
     {
-      k: "Your collateral",
+      k: "In your wallet",
+      v: `${fmt(state.walletShares, decimals, 4)} tokens · $${fmt(state.walletValue, decimals)}`,
+    },
+    {
+      k: "Posted as collateral",
       v: `${fmt(state.collateralShares, decimals, 4)} tokens · $${fmt(state.collateralValue, decimals)}`,
     },
     { k: "Debt", v: `$${fmt(state.debt, decimals)}` },
@@ -379,6 +383,13 @@ export default function LendingPanel({
         </div>
 
         {blocked && <Note>{blocked}</Note>}
+
+        {mode === "withdraw" && state.collateralShares === BigInt(0) && (
+          <Note>
+            Withdraw takes back tokens you posted as collateral. You have none posted
+            {state.walletShares > BigInt(0) ? ` — your ${fmt(state.walletShares, decimals, 4)} tokens are already in your wallet` : ""}.
+          </Note>
+        )}
 
         {sharesToPost > BigInt(0) && !busy && !flow && !blocked && (
           <Note>Posts the {fmt(sharesToPost, decimals, 4)} tokens in your wallet as collateral first, then borrows.</Note>

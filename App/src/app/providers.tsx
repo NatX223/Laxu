@@ -15,7 +15,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <PrivyProvider
       appId={env.privyAppId}
       config={{
-        loginMethods: ["email", "wallet"],
+        loginMethods: ["email", "wallet", "google"],
         embeddedWallets: { ethereum: { createOnLogin: "users-without-wallets" } },
         defaultChain: robinhoodTestnet,
         supportedChains: [robinhoodTestnet],

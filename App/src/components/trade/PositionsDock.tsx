@@ -1,7 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { money } from "./data";
+import { useEffect, useState } from "react";
+import type { Address } from "viem";
+import {
+  closePosition,
+  exitStake,
+  readHolderState,
+  readLendingState,
+  txErrorMessage,
+  withdrawCollateral,
+} from "@/lib/actions";
+import { useSession } from "@/lib/session";
+import { getWalletClient } from "@/lib/walletClient";
+import { money, type Position } from "./data";
 import { liqOf, posPnl, type TradeEngine } from "./engine";
 import { Disc, MONO } from "./shared";
 
@@ -19,6 +31,109 @@ const CHIP: React.CSSProperties = {
   borderRadius: 99,
   whiteSpace: "nowrap",
 };
+
+/** How long the "Confirm" state waits for the second click before reverting. */
+const CONFIRM_MS = 4000;
+
+/**
+ * Exit from the dock. Tokens posted as loan collateral are withdrawn from the
+ * pool first (only possible with no debt), then, reading the chain afresh:
+ *   - the creator holding the whole supply: `requestClose()` -- the backend
+ *     closes the Arcus trade and settles the actual proceeds back.
+ *   - otherwise: `requestRedeem` of the wallet balance -- the backend reduces
+ *     Arcus by that fraction and pays the USDG straight to the wallet.
+ */
+function CloseButton({ position, engine }: { position: Position; engine: TradeEngine }) {
+  const { wallet } = useSession();
+  const { flash, reloadPositions } = engine.actions;
+  const [phase, setPhase] = useState<"idle" | "confirm" | "busy" | "withdrawing" | "closing" | "redeeming">("idle");
+
+  useEffect(() => {
+    if (phase !== "confirm") return;
+    const id = setTimeout(() => setPhase("idle"), CONFIRM_MS);
+    return () => clearTimeout(id);
+  }, [phase]);
+
+  const run = async () => {
+    if (!wallet) return;
+    setPhase("busy");
+    const token = position.addr as Address;
+    const account = wallet.address as Address;
+    const pool = position.pool as Address | null;
+    try {
+      let s = await readHolderState(token, account, pool);
+      if (s.closed || s.closeRequested) throw new Error("This position is already closing");
+      if (s.pendingRedeem > BigInt(0)) throw new Error("A redeem is already settling on Arcus");
+      const client = await getWalletClient(wallet);
+
+      // Bring posted collateral home first, so the whole stake exits in one go.
+      if (pool && s.inCollateral > BigInt(0)) {
+        const lending = await readLendingState(pool, token, account);
+        if (lending.debt > BigInt(0)) throw new Error("Your tokens back a loan. Repay it first, then close.");
+        setPhase("withdrawing");
+        await withdrawCollateral(client, pool, s.inCollateral);
+        setPhase("busy");
+        s = await readHolderState(token, account, pool);
+      }
+      if (s.balance === BigInt(0)) throw new Error("No tokens in your wallet to sell");
+
+      if (s.balance === s.totalSupply) {
+        if (s.pendingDeposit > BigInt(0)) throw new Error("A buy-in is still settling; try again in a minute");
+        await closePosition(client, token);
+        flash("Close requested — closing the trade on Arcus");
+        setPhase("closing");
+      } else {
+        await exitStake(client, token, s.balance);
+        flash("Redeem requested — USDG lands in your wallet once Arcus fills");
+        setPhase("redeeming");
+      }
+      reloadPositions();
+    } catch (error) {
+      flash(txErrorMessage(error));
+      setPhase("idle");
+    }
+  };
+
+  if (phase === "closing" || phase === "redeeming") {
+    return (
+      <div style={{ ...CHIP, background: "rgba(255,255,255,0.08)", color: "#a79bd0" }}>
+        {phase === "closing" ? "CLOSING" : "REDEEMING"}
+      </div>
+    );
+  }
+
+  const confirming = phase === "confirm";
+  return (
+    <button
+      type="button"
+      disabled={phase === "busy" || phase === "withdrawing" || !wallet}
+      onClick={(e) => {
+        // The row is a link to the position page; this click is the button's alone.
+        e.preventDefault();
+        e.stopPropagation();
+        if (phase === "idle") setPhase("confirm");
+        else if (confirming) void run();
+      }}
+      style={{
+        ...CHIP,
+        fontFamily: "inherit",
+        cursor: confirming || phase === "idle" ? "pointer" : "default",
+        border: `1px solid ${confirming ? "#ff6b57" : "rgba(255,143,125,0.5)"}`,
+        background: confirming ? "#ff6b57" : "rgba(255,107,87,0.12)",
+        color: confirming ? "#1c1638" : "#ff8f7d",
+        opacity: confirming || phase === "idle" ? 1 : 0.6,
+      }}
+    >
+      {phase === "withdrawing"
+        ? "WITHDRAWING COLLATERAL…"
+        : phase === "busy"
+          ? "CONFIRM IN WALLET…"
+          : confirming
+            ? "CONFIRM CLOSE"
+            : "CLOSE"}
+    </button>
+  );
+}
 
 /** The lit panel under the workspace: the user's minted positions, each linking to its page. */
 export default function PositionsDock({ engine }: { engine: TradeEngine }) {
@@ -149,6 +264,7 @@ export default function PositionsDock({ engine }: { engine: TradeEngine }) {
                   x.listed && <div style={{ ...CHIP, background: "rgba(255,183,101,0.16)", color: "#ffd9a0" }}>LISTED</div>
                 )}
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: "#ffd9a0", whiteSpace: "nowrap" }}>Open &rarr;</div>
+                {!closing && <CloseButton position={x} engine={engine} />}
               </div>
             </Link>
           );
