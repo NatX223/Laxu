@@ -1,0 +1,1046 @@
+# Perpl testnet findings (Spec 03 Phase 2)
+
+Raw probe log: every `npm run probe` run appends a section below. Frame evidence is
+`Backend/fixtures/perpl/recordings/<file>#L<line>` (redacted JSONL, one frame per line).
+
+
+## Summary — every VERIFY(spec03), answered (2026-10-05, Monad testnet)
+
+Probed with `npm run probe` (Backend/scripts/probe.ts) on slots 1 (account 824) and 2 (account 841),
+ETH market (perp 32), $5–$20 deposits at 2x, plus two ad-hoc experiments. Raw sections follow below,
+newest last. Frame citations point into `Backend/fixtures/perpl/recordings/*.jsonl` (redacted).
+Phase 3 comments cite the anchors in the first column.
+
+| Anchor | VERIFY | Answer | Phase 3 action | Evidence (section below) |
+|---|---|---|---|---|
+| <a id="v-units-75"></a>`v-units-75` | units.ts:75 — API `Amount` format | **CNS base-unit integer string.** `min_account_open_amount` "100000000" == `getMinAccountOpenCNS()` 100000000. `collateralDecimals` = 6 = AUSD `decimals()`, so the minimum account open is **100 AUSD** (the docs' "10.0" example is not testnet). Wallet `b`/`lb`, fees `f`, position `c` are all CNS integers. | Keep `parseApiAmount`'s integer branch; the decimal branch is unused. | context; slot; open |
+| <a id="v-units-171"></a>`v-units-171` | units.ts:171 — margin scale | **Contradicts the design.** `initial_margin` / `maintenance_margin` (= on-chain `getMarginFractions` "Hdths") are **max leverage in hundredths**: ETH 1200 = 12x (8.33% IM), maint 2000 = 20x (5%, the docs' "2000 = 5%"). Proof: `lv` 1000 (10x) fills at 10x — impossible under the 1e4-fraction reading (8.33x max) — and `lv` 1300/1500/2000/5000 are all **accepted and silently clamped to 1200**. Laxu's `floor(10000 / initial_margin)` is wrong both ways: ETH 8 (true 12), BTC 6 (15), **MON / ZEC / LIT / NEAR 20 (true 3)**, **PUMP 20 (true 5)**; SOL 10 is right by coincidence. An order above the true max is clamped, so it needs more margin than Laxu deposited. | `maxLeverage = min(20, floor(initial_margin / 100))`; fractions = `100 / value`; re-sync markets. | markets; Experiment: leverage limit |
+| <a id="v-adapter-98"></a>`v-adapter-98` | adapter.ts:98 — `balanceCNS` vs position deposits | **Confirmed.** API wallet `b`/`lb` == on-chain `balanceCNS`/`lockedBalanceCNS`. Opening moved exactly `depositCNS` + fee out of `balanceCNS` (drop 18822469 = 18809490 + 12979); `lockedBalanceCNS` stayed 0 throughout (IOC only). | None (delete the VERIFY). | slot; open |
+| <a id="v-tradingws-471"></a>`v-tradingws-471` | tradingWs.ts:471 — heartbeat seed | **Confirmed.** First `mt:100` `sn` = `mt:19` `sn` + 1, then +1 per beat; `sn` == `h` == block number. No gap in 609 recorded heartbeats across 9 connections. | Keep the gap check; default `PERPL_HEARTBEAT_GAP_RECONNECT=true`. | heartbeat |
+| <a id="v-tradingws-63"></a>`v-tradingws-63` | tradingWs.ts:63 — IOC status sequence | All 19 IOCs that executed produced **one** `mt:24` straight to `st:4` (Filled, `sr:43`), ~1.0–1.5 s after send, no Open/PartiallyFilled first. **But 3 of 22 acked (`code:0`) IOCs never executed**: rq 1 and rq 3 vanished silently (no `mt:24`, never in order-history, `lb` passed — not caused by `lb`; looks like testnet forwarder loss), and rq 13's socket was closed by the server 3 s after its ack. | Keep "wait for terminal"; the lookup path must cover silent loss (see `v-adapter-216`). | open; Experiment: silently dropped IOC orders |
+| <a id="v-adapter-216"></a>`v-adapter-216` | adapter.ts:216 — order-history latency | **Contradicts the design.** History showed the rq **27.3 s** and **22.7 s** after send (WS outcome at ~1.3 s); `count=100` once timed out at 15 s. `findOrderOutcome` says `not_placed` as soon as head ≥ `lb` (`lb` = head + 20 blocks ≈ 6 s) and history is empty — so an order that **filled** while its WS frames were lost (e.g. the 1008 close below) would be declared `not_placed` and **re-sent under a new rq: a double order**. (In the one real case, rq 13, `not_placed` happened to be right: lots 14 → 21 = one 7-lot fill.) | `not_placed` only once history is known to cover blocks ≥ `lb` (or ≥ 60 s after `lb`) **and** the on-chain position shows no fill; use `count=20` pages. | open; increase |
+| <a id="v-adapter-277"></a>`v-adapter-277` | adapter.ts:277 — does `pnlCNS` include premium? | **Yes.** After a funding event: `pnlCNS` 103880 = `deltaPnlCNS` 104580 + `premiumPnlCNS` −700. Venue equity = **`depositCNS + pnlCNS`** (= `PerplReader.venueEquity`, already right). The backend's `deposit + pnl + premium` counts funding twice (here 700 CNS on a $37.72 position = 0.002% — under the 1% stop condition, but it grows with funding). API `c` + unrealized omits accrued funding. Before funding, all three sums matched exactly in 3 samples over 10 min. | `equityAsset = deposit + pnl`; drop `premiumAsset` from the sum. | equity (16:40 and 17:07) |
+| <a id="v-adapter-185"></a>`v-adapter-185` | adapter.ts:185 — unit of `a` on t:6 | **CNS integer string**: `a: "5000000"` moved `depositCNS` by exactly 5000000 ($5). The human-decimal form was not needed. | Keep `assetToApiAmount`. | add-margin |
+| <a id="v-adapter-334"></a>`v-adapter-334` | adapter.ts:334 — t:6 status | **Contradicts the design.** A **successful** t:6 sends **no** success `mt:24`: the collateral lands (block 68451787: `mt:27` event `sr:6` c +5000000, `mt:21` `et:3` a −5000000, both `rq: 0`), and the only `mt:24` for the rq, 6 blocks later, is **`st:7 / sr:32`** (OrderDescIdTooLow). The adapter's "instant" rule would report it `failed` → a retry doubles the margin. | Confirm t:6 by the on-chain `depositCNS` delta (wait for it), never by `mt:24`; treat `sr:32` on a t:6 as "maybe applied" until that check. | add-margin + its note |
+| <a id="v-phase-b"></a>`v-phase-b` | Spec 01 Phase B — premium reset on increase | **Confirmed**: `premiumPnlCNS` −700 → 0 when 7 lots were added to 14 (entry re-averaged 268707 → 268977). | None. | increase |
+| <a id="v-close"></a>`v-close` | close / withdraw | IOC close: one `st:4` frame; `depositCNS` → 0. Withdrawals of 9,899.99 and 9,955.05 AUSD each succeeded first try, leaving exactly the 100 AUSD reserve; the exchange-wide allowance was 1.6M–4.5M AUSD (+750 AUSD/block) — not binding. `getWithdrawAllowanceData(block)` returns real data only when `block == lastAllowanceBlock`; a few blocks later it returns all zeros (informational — the backend does not use it). | None. | close --slot 2; close --slot 1 |
+
+### Further findings the design must absorb
+
+1. <a id="f-remargin"></a>**Every size change re-margins the whole position to the new order's `lv`** (slot 2: a 12x add after a 10x open left `c` = 2 lots' notional / 12; slot 1: the `increase` set `depositCNS` = 21 lots' notional / 2, releasing the earlier +$5 t:6 margin back to the balance). Buy-ins/redeems must send the position's own `lv`, and margin added with t:6 does not survive the next size change.
+2. <a id="f-fee"></a>**Taker fee** `taker_fee: 345` is micros (0.0345%), as `feeMicrosToPpm` assumes; on-chain `getTakerFee` also returns 345 despite the "Per100K" name.
+3. <a id="f-1008"></a>**Unexplained socket close**: the server closed one trading socket with `1008 "ping timeout"` 6 s after sign-in (our app ping is every 30 s; other sockets lived 30–60 s fine). The recovery path handled it. Watch it in the Phase 6 soak.
+4. <a id="f-neon"></a>**Neon direct host cold starts**: the first connection after idle failed ("Can't reach database server") three times today; the backend needs a retry on boot / first query.
+5. <a id="f-slot-balance"></a>**Slot balances**: both Perpl accounts held ~10,000 AUSD before the probes (not from provisioning). Settlement treats `balance − reserve` as recovered user money, so this would have been paid to holders. Per the user's decision both were withdrawn and swept to the float; both now sit at exactly the 100 AUSD reserve. Provisioning/reconciler should alert on `balance > reserve` for a `free` slot.
+
+### Equity stop condition (§2.4)
+Not triggered: the backend formula is off by `premiumPnlCNS` only (0.002% of position value here), and the cause is explained (double-counted funding). The design contradictions above (`v-units-171`, `v-adapter-216`, `v-adapter-334`, `f-remargin`) are the reason to stop and review before Phase 3.
+
+---
+
+# Raw probe log
+
+## context — 2026-10-05T16:17:16.045Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| — | Collateral token and decimals | 0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC (AUSD); getExchangeInfo().collateralDecimals = 6; token decimals() = 6; matches ASSET_ADDRESS | eth_call getExchangeInfo / decimals() on 0x1964C32f0bE608E7D29302AFF5E61268E72080cc; Backend/fixtures/perpl/context.testnet.json |
+| units.ts:75 | API `Amount` format (CNS integer vs human decimal) | CNS base-unit integer string: min_account_open_amount "100000000" == getMinAccountOpenCNS() 100000000 (= 100 AUSD at 6 dp) | Backend/fixtures/perpl/context.testnet.json instances[0].min_account_open_amount; eth_call getMinAccountOpenCNS() |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "collateralToken": "0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC",
+  "configuredAsset": "0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC",
+  "collateralDecimals": 6,
+  "tokenDecimals": 6,
+  "apiToken": {
+    "ver": 270,
+    "id": 1,
+    "address": "0xa9012a055bd4e0edff8ce09f960291c09d5322dc",
+    "symbol": "AUSD",
+    "name": "AUSD",
+    "decimals": 6,
+    "display_precision": 2,
+    "usd_index": "<index_name>"
+  },
+  "instance": {
+    "ver": 270,
+    "id": 12,
+    "address": "0x1964c32f0be608e7d29302aff5e61268e72080cc",
+    "collateral_token_id": 1,
+    "min_account_open_amount": "100000000",
+    "min_deposit_amount": "10000000",
+    "min_withdraw_amount": "10000",
+    "max_account_trigger_orders": 16
+  },
+  "min_account_open_amount_raw": "100000000",
+  "getMinAccountOpenCNS": "100000000",
+  "minAccountOpenHuman": "100"
+}
+```
+
+</details>
+
+## slot --slot 1 — 2026-10-05T16:17:33.155Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| adapter.ts:98 (1/2) | API wallet `b`/`lb` vs on-chain balanceCNS / lockedBalanceCNS | API b="10000000000" lb="0" fw=true lfr=0; chain balanceCNS=10000000000 lockedBalanceCNS=0; identical (CNS integers) | GET /v1/trading/wallet (rest-*.jsonl); eth_call getAccountByAddr(0x27faec53e9fdae9e4fac0af5cc4731e77ae8e503) |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "slot": 1,
+  "accountId": "824",
+  "api": {
+    "sn": 68446864,
+    "b": "10000000000",
+    "lb": "0",
+    "fw": true,
+    "lfr": 0,
+    "id": 824
+  },
+  "chain": {
+    "accountId": "824",
+    "balanceCNS": "10000000000",
+    "lockedBalanceCNS": "0",
+    "frozen": 0
+  },
+  "reserveAsset": "100000000",
+  "scale": {
+    "cnsDecimals": 6,
+    "assetDecimals": 6
+  }
+}
+```
+
+</details>
+
+## markets — 2026-10-05T16:17:59.375Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| units.ts:171 | ETH: scale of initial_margin / maintenance_margin | API initial_margin=1200, maintenance_margin=2000; chain getMarginFractions: init=1200, maint=2000 (Hdths), dynamicInit=1200; getPerpetualInfo marginTol=100 (decimals 9). Perpl UI max leverage: (fill in from UI) | /v1/pub/context markets[32].config; eth_call getMarginFractions(32,0), getPerpetualInfo(32) |
+| units.ts:171 | BTC: scale of initial_margin / maintenance_margin | API initial_margin=1500, maintenance_margin=2500; chain getMarginFractions: init=1500, maint=2500 (Hdths), dynamicInit=1500; getPerpetualInfo marginTol=100 (decimals 9). Perpl UI max leverage: (fill in from UI) | /v1/pub/context markets[16].config; eth_call getMarginFractions(16,0), getPerpetualInfo(16) |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "ETH": {
+    "api": {
+      "initial_margin": 1200,
+      "maintenance_margin": 2000,
+      "taker_fee": 345,
+      "maker_fee": 45,
+      "min_posting_amount": "0"
+    },
+    "chain": {
+      "getMarginFractions": {
+        "perpInitMarginFracHdths": "1200",
+        "perpMaintMarginFracHdths": "2000",
+        "dynamicInitMarginFracHdths": "1200",
+        "oiMaxLNS": "1000000000"
+      },
+      "getPerpetualInfo": {
+        "marginTol": "100",
+        "marginTolDecimals": "9",
+        "priceDecimals": "2",
+        "lotDecimals": "3"
+      },
+      "getTakerFee": "345"
+    },
+    "laxuMaxLeverage": 8
+  },
+  "BTC": {
+    "api": {
+      "initial_margin": 1500,
+      "maintenance_margin": 2500,
+      "taker_fee": 345,
+      "maker_fee": 45,
+      "min_posting_amount": "0"
+    },
+    "chain": {
+      "getMarginFractions": {
+        "perpInitMarginFracHdths": "1500",
+        "perpMaintMarginFracHdths": "2500",
+        "dynamicInitMarginFracHdths": "1500",
+        "oiMaxLNS": "100000000000"
+      },
+      "getPerpetualInfo": {
+        "marginTol": "100",
+        "marginTolDecimals": "9",
+        "priceDecimals": "1",
+        "lotDecimals": "5"
+      },
+      "getTakerFee": "345"
+    },
+    "laxuMaxLeverage": 6
+  }
+}
+```
+
+</details>
+
+## heartbeat --slot 1 — 2026-10-05T16:18:32.058Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| tradingWs.ts:471 | Is the first mt:100 `sn` == mt:19 `sn` + 1, and do heartbeats step by 1? | mt:19 sn=68447054; first mt:100 sn=68447055, 68447056, 68447057, 68447058, 68447059; first == snapshot+1: true; consecutive: true; heads h=68447055, 68447056, 68447057, 68447058, 68447059 | Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L2-L9 |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "snapshotSn": 68447054,
+  "beatSns": [
+    68447055,
+    68447056,
+    68447057,
+    68447058,
+    68447059
+  ],
+  "beatHeads": [
+    68447055,
+    68447056,
+    68447057,
+    68447058,
+    68447059
+  ],
+  "beatTimes": [
+    "2026-10-05T16:18:30.777Z",
+    "2026-10-05T16:18:31.057Z",
+    "2026-10-05T16:18:31.331Z",
+    "2026-10-05T16:18:31.774Z",
+    "2026-10-05T16:18:31.923Z"
+  ],
+  "consecutive": true,
+  "seededFromSnapshot": true
+}
+```
+
+</details>
+
+## open --slot 1 --usd 20 --lev 2 — 2026-10-05T16:28:27.563Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| tradingWs.ts:63 | IOC status sequence for one rq (does it always end Filled/Canceled/Expired? Open/PartiallyFilled first?) | rq 11: st4/sr43 fs=14 (L335); outcome=filled, filled 14000 size6 of 14000 @ 2687070000000000000000 | Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L327-L335 |
+| adapter.ts:216 / findOrderOutcome | Attempts (an expired IOC is looked up, then retried with a new rq) | rq 11 (lb 68448939): ws:filled, lookups 0, frames Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L327-L337 | order-history lookups in rest-*.jsonl |
+| adapter.ts:216 | Latency until order-history shows the rq (250 ms polling) | 27319 ms after send (WS outcome at 1330 ms; 36 polls); history statuses: st4 | GET /v1/trading/order-history (rest-*.jsonl) |
+| adapter.ts:98 (2/2) | Do position deposits leave balanceCNS? | balanceCNS 10020007056 → 10040007056 (after deposit) → 10021184587 (after fill): dropped 18822469; position depositCNS=18809490, pnlCNS=-8540, premiumPnlCNS=0; lockedBalanceCNS=0 | deposit [0x85162c10…](https://testnet.monadvision.com/tx/0x85162c10b80b9aa6ca0e9e5f2ed0a21299b00ddd29d44119421755b775a8bd77); eth_call getAccountByAddr / getPosition before & after |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "file": "C:\\Users\\ADMIN\\Documents\\Hackathons\\Laxu\\Backend\\fixtures\\perpl\\recordings\\cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl",
+  "amount": "20000000",
+  "fundTx": "0xf64d536a133c89318a50b8c205d4a86b5a3cbecf23f095a1fdf47b009ad42c63",
+  "depositTx": "0x85162c10b80b9aa6ca0e9e5f2ed0a21299b00ddd29d44119421755b775a8bd77",
+  "accountBefore": {
+    "accountId": "824",
+    "balanceCNS": "10020007056",
+    "lockedBalanceCNS": "0",
+    "frozen": 0
+  },
+  "accountAfterDeposit": {
+    "accountId": "824",
+    "balanceCNS": "10040007056",
+    "lockedBalanceCNS": "0",
+    "frozen": 0
+  },
+  "positionBefore": {
+    "accountId": "824",
+    "positionType": 0,
+    "depositCNS": "0",
+    "pricePNS": "0",
+    "lotLNS": "0",
+    "entryBlock": "0",
+    "pnlCNS": "0",
+    "deltaPnlCNS": "0",
+    "premiumPnlCNS": "0",
+    "markPricePNS": "268780",
+    "markPriceValid": true
+  },
+  "positionAfter": {
+    "accountId": "824",
+    "positionType": 0,
+    "depositCNS": "18809490",
+    "pricePNS": "268707",
+    "lotLNS": "14",
+    "entryBlock": "68448927",
+    "pnlCNS": "-8540",
+    "deltaPnlCNS": "-8540",
+    "premiumPnlCNS": "0",
+    "markPricePNS": "268646",
+    "markPriceValid": true
+  },
+  "accountAfter": {
+    "accountId": "824",
+    "balanceCNS": "10021184587",
+    "lockedBalanceCNS": "0",
+    "frozen": 0
+  },
+  "request": {
+    "requestId": "11",
+    "lastExecBlock": "68448939"
+  },
+  "attempts": [
+    {
+      "rq": "11",
+      "lb": "68448939",
+      "sentAt": 1791217675091,
+      "result": "ws:filled",
+      "lookups": 0
+    }
+  ],
+  "lots": "14",
+  "size6": "14000",
+  "mark18": "2687800000000000000000",
+  "outcome": {
+    "requestId": "11",
+    "orderId": "4485868879872",
+    "filledSize6": "14000",
+    "avgPrice18": "2687070000000000000000",
+    "feeAsset": "12979",
+    "reason": "TakerOrderFilled",
+    "status": "filled"
+  },
+  "wsOutcomeMs": 1330,
+  "history": {
+    "found": true,
+    "latencyMs": 27319,
+    "polls": 36,
+    "entries": [
+      {
+        "at": {
+          "b": 68448927,
+          "t": 1791217675000,
+          "tx": 4,
+          "txid": "28d348c4784bd8bd57901d5d96a8cc5b067b24c7083327430b05274f9a3c6434",
+          "l": 4
+        },
+        "c": {},
+        "rq": 11,
+        "mkt": 32,
+        "acc": 824,
+        "oid": 4485868879872,
+        "scid": 0,
+        "st": 4,
+        "sr": 43,
+        "t": 1,
+        "os": 14,
+        "fp": 268707,
+        "fs": 14,
+        "f": "12979",
+        "bfa": "0",
+        "fl": 4,
+        "mm": 10,
+        "lv": 200,
+        "mnp": 1000
+      }
+    ]
+  },
+  "frames": [
+    {
+      "line": 327,
+      "dir": "out",
+      "mt": 22
+    },
+    {
+      "line": 329,
+      "dir": "in",
+      "mt": 3
+    },
+    {
+      "line": 335,
+      "dir": "in",
+      "mt": 24
+    }
+  ],
+  "events": [
+    {
+      "line": 335,
+      "mt": 24,
+      "st": 4,
+      "sr": 43,
+      "fs": 14,
+      "fp": 268707,
+      "os": 14,
+      "f": "12979"
+    }
+  ]
+}
+```
+
+</details>
+
+## Experiment: silently dropped IOC orders vs `lb` (slot 1) — 2026-10-05T16:20–16:27Z
+
+Ad-hoc diagnostic (one-off script, same `PerplTradingConnection.sendOrder` path), run after the first `open` probe died with `OrderOutcomeUnknownError`.
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| tradingWs.ts:63 / adapter.ts:216 | Can an order acked `code:0` vanish? | **Yes.** rq 1 (open, lb = head+~18) and rq 3 (close, lb = head+~18) were each acked `mt:3 code:0`, then **no `mt:24` ever arrived**, order-history never listed them, and heartbeats kept flowing past `lb` (so per the docs: not placed). | Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L20-L22 (rq 1), Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L151-L153 (rq 3) |
+| — | Is `lb = head + order_ttl_blocks` the cause? | **No.** Six 1-lot IOCs with lb = head+20, +19, +15, +10, +5 and lb=0 **all** filled (`st:4 sr:43`), each ~5 blocks after head, ~1.0–1.5 s after send. rq 2 (lb 0) also filled in 1.27 s. The two drops look like intermittent testnet forwarder losses — the case the backend's lookup → `not_placed` → new-rq path exists for. | Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L134-L141 (rq 2), Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L197-L281 (rq 4–9), Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L300-L310 (close, rq 10) |
+| — | Taker fee unit | `taker_fee: 345` is **micros** (0.0345%), as `feeMicrosToPpm` assumes: rq 2 fee `f`=12962 CNS on 14 lots × $2683.61 = $37.57 → 0.0345%. (On-chain `getTakerFee` also returns 345; its "Per100K" naming would mean 0.345% — the fills say otherwise.) | Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L141 |
+| adapter.ts:216 | REST `order-history?count=100` | Timed out once (15 s, axios) during a lookup; `count=20` polls answered in ~0.3–0.7 s. | rest-2026-10-05.jsonl (16:24:50Z entry, `status: null`) |
+
+## Experiment: leverage limit — what `initial_margin` means (slot 2, ETH) — 2026-10-05T16:33Z
+
+1-lot ETH IOCs with increasing `lv`, then closed (lb=0). `initial_margin`/`maintenance_margin` and on-chain `getMarginFractions` both say 1200 / 2000 for ETH.
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| units.ts:171 | Is `initial_margin` a 1e4 fraction (1200 = 12% → 8.33x) or max leverage in hundredths (1200 = 12x)? | **Max leverage in hundredths.** `lv` 1000 (10x) filled at 10x (position `c` 270158 ≈ $2.688/10) — impossible under the 8.33x reading. `lv` 1300, 1500, 2000, 5000 were **all accepted and silently clamped to `lv` 1200**: each lot posted ≈ $2.69/12 (≈225 k CNS) and the position reports `lv: 1200`. No rejection is ever sent. | Backend/fixtures/perpl/recordings/cmuvdcw1q000513az9i6cc1x5-2026-10-05.jsonl#L24-L56 (rq 1–3), Backend/fixtures/perpl/recordings/cmuvdcw1q000513az9i6cc1x5-2026-10-05.jsonl#L107-L140 (rq 5–7) |
+| units.ts:171 | `maintenance_margin` scale | Same scale by every consistent reading: 2000 = 20x = **5%** (the docs' own example "2000 = 5%"), and for every market maint-leverage > init-leverage (ETH 12x/20x, BTC 15x/25x, MON 3x/5x, ZEC 3x/10x). Not observed via a liquidation. | /v1/pub/context (fixtures/perpl/context.testnet.json) |
+| — | Does adding size keep the position's leverage? | **No — each fill re-margins the whole position to the new order's `lv`.** After rq 1 (10x, c=270158) the 12x rq 2 left c=450771 = 2 lots' notional/12; the first lot's extra margin went back to the balance. | Backend/fixtures/perpl/recordings/cmuvdcw1q000513az9i6cc1x5-2026-10-05.jsonl#L24-L41 |
+
+## close --slot 2 — 2026-10-05T16:39:38.935Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| close | IOC close: statuses, final balance | no open position; outcome -; balanceCNS after close 9999985671 | - |
+| withdraw | Withdraw everything above the reserve; getWithdrawAllowanceData before/after | withdrew 9899985671 asset units ok; balanceCNS → 100000000 (reserve 100000000); allowanceCNS 1608673336507 → 0, cnsPerBlock 750664176, expiry 68459813 → 0 | withdraw [0x956b7695…](https://testnet.monadvision.com/tx/0x956b769579aec25d9d5a6cd7a1200b211ed1832e4243579743e9e1460a107c1d); sweep [0x1ebd003e…](https://testnet.monadvision.com/tx/0x1ebd003efe474d92631b4afd27c8f9276d33e8c56b6364b3212943e48a3a35f6) |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "close": {
+    "skipped": "no open position"
+  },
+  "balanceCNSAfterClose": "9999985671",
+  "reserveAsset": "100000000",
+  "withdrawAsset": "9899985671",
+  "withdrawTx": "0x956b769579aec25d9d5a6cd7a1200b211ed1832e4243579743e9e1460a107c1d",
+  "allowanceBefore": {
+    "block": "68451242",
+    "allowanceCNS": "1608673336507",
+    "expiryBlock": "68459813",
+    "lastAllowanceBlock": "68453385",
+    "cnsPerBlock": "750664176"
+  },
+  "allowanceAfter": {
+    "block": "68451242",
+    "allowanceCNS": "0",
+    "expiryBlock": "0",
+    "lastAllowanceBlock": "0",
+    "cnsPerBlock": "0"
+  },
+  "balanceCNSAfterWithdraw": "100000000",
+  "sweepTx": "0x1ebd003efe474d92631b4afd27c8f9276d33e8c56b6364b3212943e48a3a35f6",
+  "sweptAsset": "9899985671",
+  "decimals": 6
+}
+```
+
+</details>
+
+## equity --slot 1 — 2026-10-05T16:40:45.470Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| adapter.ts:277 | Does pnlCNS include premiumPnlCNS? Which sum matches API `c` + unrealized (and the Perpl UI)? | 16:30:38: deposit+pnl=18803750, +premium=18803750, deposit+pricePnl@mark=18803750, pnlCNS=-5740 vs pricePnl@mark=-5740, premium=0; API c+uPnL=18803750; value=37613240 ‖ 16:35:42: deposit+pnl=18851630, +premium=18851630, deposit+pricePnl@mark=18851630, pnlCNS=42140 vs pricePnl@mark=42140, premium=0; API c+uPnL=18851630; value=37661120 ‖ 16:40:45: deposit+pnl=18870390, +premium=18870390, deposit+pricePnl@mark=18870390, pnlCNS=60900 vs pricePnl@mark=60900, premium=0; API c+uPnL=18870390; value=37679880 ‖ Perpl UI: (fill in) | eth_call getPosition; GET /v1/trading/positions (rest-*.jsonl) |
+
+<details><summary>raw result</summary>
+
+```json
+[
+  {
+    "at": "2026-10-05T16:30:38.518Z",
+    "chain": {
+      "depositCNS": "18809490",
+      "pnlCNS": "-5740",
+      "deltaPnlCNS": "-5740",
+      "premiumPnlCNS": "0",
+      "lotLNS": "14",
+      "pricePNS": "268707",
+      "markPNS": "268666",
+      "markValid": true
+    },
+    "derived": {
+      "pricePnlAtMark6": "-5740",
+      "depositPlusPnl": "18803750",
+      "depositPlusPnlPlusPremium": "18803750",
+      "depositPlusPricePnl": "18803750",
+      "positionValue6": "37613240"
+    },
+    "api": {
+      "c": "18809490",
+      "ep": 268707,
+      "s": 14,
+      "lv": 200,
+      "fee": "12979",
+      "unrealizedAtMark6": "-5740",
+      "cPlusUnrealized6": "18803750",
+      "raw": {
+        "at": {},
+        "mkt": 32,
+        "acc": 824,
+        "pid": 4485868879873,
+        "rq": 0,
+        "oid": 0,
+        "st": 1,
+        "sr": 0,
+        "sd": 1,
+        "c": "18809490",
+        "ep": 268707,
+        "s": 14,
+        "fee": "12979",
+        "cfee": "0",
+        "efs": 32098,
+        "lv": 200,
+        "cpnl": "0",
+        "dpnl": "0",
+        "fnd": "0",
+        "pay": "0",
+        "xfs": 0,
+        "ots": {
+          "b": 68448927,
+          "t": 1791217675000,
+          "tx": 4
+        }
+      }
+    },
+    "liquidationHypotheses": {
+      "maintA": 0.2,
+      "liqA": 1679.41875,
+      "maintB": 0.024,
+      "liqB": 1376.5727459016393
+    }
+  },
+  {
+    "at": "2026-10-05T16:35:42.433Z",
+    "chain": {
+      "depositCNS": "18809490",
+      "pnlCNS": "42140",
+      "deltaPnlCNS": "42140",
+      "premiumPnlCNS": "0",
+      "lotLNS": "14",
+      "pricePNS": "268707",
+      "markPNS": "269008",
+      "markValid": true
+    },
+    "derived": {
+      "pricePnlAtMark6": "42140",
+      "depositPlusPnl": "18851630",
+      "depositPlusPnlPlusPremium": "18851630",
+      "depositPlusPricePnl": "18851630",
+      "positionValue6": "37661120"
+    },
+    "api": {
+      "c": "18809490",
+      "ep": 268707,
+      "s": 14,
+      "lv": 200,
+      "fee": "12979",
+      "unrealizedAtMark6": "42140",
+      "cPlusUnrealized6": "18851630",
+      "raw": {
+        "at": {},
+        "mkt": 32,
+        "acc": 824,
+        "pid": 4485868879873,
+        "rq": 0,
+        "oid": 0,
+        "st": 1,
+        "sr": 0,
+        "sd": 1,
+        "c": "18809490",
+        "ep": 268707,
+        "s": 14,
+        "fee": "12979",
+        "cfee": "0",
+        "efs": 32098,
+        "lv": 200,
+        "cpnl": "0",
+        "dpnl": "0",
+        "fnd": "0",
+        "pay": "0",
+        "xfs": 0,
+        "ots": {
+          "b": 68448927,
+          "t": 1791217675000,
+          "tx": 4
+        }
+      }
+    },
+    "liquidationHypotheses": {
+      "maintA": 0.2,
+      "liqA": 1679.41875,
+      "maintB": 0.024,
+      "liqB": 1376.5727459016393
+    }
+  },
+  {
+    "at": "2026-10-05T16:40:45.465Z",
+    "chain": {
+      "depositCNS": "18809490",
+      "pnlCNS": "60900",
+      "deltaPnlCNS": "60900",
+      "premiumPnlCNS": "0",
+      "lotLNS": "14",
+      "pricePNS": "268707",
+      "markPNS": "269142",
+      "markValid": true
+    },
+    "derived": {
+      "pricePnlAtMark6": "60900",
+      "depositPlusPnl": "18870390",
+      "depositPlusPnlPlusPremium": "18870390",
+      "depositPlusPricePnl": "18870390",
+      "positionValue6": "37679880"
+    },
+    "api": {
+      "c": "18809490",
+      "ep": 268707,
+      "s": 14,
+      "lv": 200,
+      "fee": "12979",
+      "unrealizedAtMark6": "60900",
+      "cPlusUnrealized6": "18870390",
+      "raw": {
+        "at": {},
+        "mkt": 32,
+        "acc": 824,
+        "pid": 4485868879873,
+        "rq": 0,
+        "oid": 0,
+        "st": 1,
+        "sr": 0,
+        "sd": 1,
+        "c": "18809490",
+        "ep": 268707,
+        "s": 14,
+        "fee": "12979",
+        "cfee": "0",
+        "efs": 32098,
+        "lv": 200,
+        "cpnl": "0",
+        "dpnl": "0",
+        "fnd": "0",
+        "pay": "0",
+        "xfs": 0,
+        "ots": {
+          "b": 68448927,
+          "t": 1791217675000,
+          "tx": 4
+        }
+      }
+    },
+    "liquidationHypotheses": {
+      "maintA": 0.2,
+      "liqA": 1679.41875,
+      "maintB": 0.024,
+      "liqB": 1376.5727459016393
+    }
+  }
+]
+```
+
+</details>
+
+## add-margin --slot 1 --usd 5 — 2026-10-05T16:42:24.885Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| adapter.ts:185 | Unit of `a` on a t:6 order | cns-integer ("5000000") moved depositCNS by 5000000 | cns-integer: Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L448-L465; deposit [0x425e9437…](https://testnet.monadvision.com/tx/0x425e9437ee9eea5fac3c76f8af2890e36b712bc16b11e01f13464575371373f8) |
+| adapter.ts:334 | Which statuses Perpl reports for a t:6 order | cns-integer: ack {"code":0}; mt:24 st7/sr32 | Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L448-L465 |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "fundTx": "0xf623ddfd19ca5d4b586210bb5db4b45262f5d1abd4c0f5e5c59452dc6e319505",
+  "depositTx": "0x425e9437ee9eea5fac3c76f8af2890e36b712bc16b11e01f13464575371373f8",
+  "attempts": [
+    {
+      "form": "cns-integer",
+      "a": "5000000",
+      "rq": "12",
+      "raw": {
+        "kind": "order",
+        "order": {
+          "at": {
+            "b": 68451793,
+            "t": 1791218541000,
+            "tx": 3,
+            "txid": "115fb57acce45b3e94d50dfa81576b7d9dcfcd7df3feed097b95c4d5af444307",
+            "l": 1
+          },
+          "c": {
+            "b": 68451793,
+            "t": 1791218541000,
+            "tx": 3
+          },
+          "rq": 12,
+          "mkt": 32,
+          "acc": 824,
+          "oid": 4486056706075,
+          "scid": 0,
+          "st": 7,
+          "sr": 32,
+          "t": 6,
+          "r": true,
+          "os": 0,
+          "fp": 0,
+          "fs": 0,
+          "f": "0",
+          "bfa": "0",
+          "fl": 0,
+          "mm": 10,
+          "lv": 0,
+          "mnp": 1000
+        }
+      },
+      "depositCNSBefore": "18809490",
+      "depositCNSAfter": "23809490",
+      "moved": "5000000",
+      "balanceCNSBefore": "10026184587",
+      "balanceCNSAfter": "10021184587",
+      "statuses": [
+        {
+          "st": 7,
+          "sr": 32,
+          "line": 465
+        }
+      ],
+      "ack": [
+        {
+          "line": 450,
+          "status": {
+            "code": 0
+          }
+        }
+      ],
+      "evidence": "Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L448-L465"
+    }
+  ]
+}
+```
+
+</details>
+
+### Note on the add-margin run above (frame-by-frame)
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| adapter.ts:334 | What does a **successful** t:6 report? | **No success status at all, then a failure.** Block 68451787: the collateral was applied once — `mt:27` position event `sr:6`, `c` +5000000 (event `rq: 0`) and `mt:21` account event `et:3`, `a` −5000000 — with no `mt:24` for rq 12 and `lfr` still 11. Block 68451793: the **only** `mt:24` for rq 12 arrives as `st:7 / sr:32` (OrderDescIdTooLow), and `lfr` becomes 12. On-chain `depositCNS` moved by exactly 5000000, once. **The adapter's "instant: first non-failure, else first failure" rule would call this applied add "failed"** — a retry would double it. Confirm a t:6 by the on-chain `depositCNS` delta (or the `mt:27` `sr:6` event), not by `mt:24`. | Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L449-L458 |
+
+## equity --slot 1 — 2026-10-05T17:07:30.025Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| adapter.ts:277 | Does pnlCNS include premiumPnlCNS? Which sum matches API `c` + unrealized (and the Perpl UI)? | 17:07:30: deposit+pnl=23913370, +premium=23912670, deposit+pricePnl@mark=23914070, pnlCNS=103880 vs pricePnl@mark=104580, premium=-700; API c+uPnL=23914070; value=37723560 ‖ Perpl UI: (fill in) | eth_call getPosition; GET /v1/trading/positions (rest-*.jsonl) |
+
+<details><summary>raw result</summary>
+
+```json
+[
+  {
+    "at": "2026-10-05T17:07:30.022Z",
+    "chain": {
+      "depositCNS": "23809490",
+      "pnlCNS": "103880",
+      "deltaPnlCNS": "104580",
+      "premiumPnlCNS": "-700",
+      "lotLNS": "14",
+      "pricePNS": "268707",
+      "markPNS": "269454",
+      "markValid": true
+    },
+    "derived": {
+      "pricePnlAtMark6": "104580",
+      "depositPlusPnl": "23913370",
+      "depositPlusPnlPlusPremium": "23912670",
+      "depositPlusPricePnl": "23914070",
+      "positionValue6": "37723560"
+    },
+    "api": {
+      "c": "23809490",
+      "ep": 268707,
+      "s": 14,
+      "lv": 200,
+      "fee": "12979",
+      "unrealizedAtMark6": "104580",
+      "cPlusUnrealized6": "23914070",
+      "raw": {
+        "at": {},
+        "mkt": 32,
+        "acc": 824,
+        "pid": 4485868879873,
+        "rq": 0,
+        "oid": 0,
+        "st": 1,
+        "sr": 0,
+        "sd": 1,
+        "c": "23809490",
+        "ep": 268707,
+        "s": 14,
+        "fee": "12979",
+        "cfee": "0",
+        "efs": 32098,
+        "lv": 200,
+        "cpnl": "0",
+        "dpnl": "0",
+        "fnd": "0",
+        "pay": "0",
+        "xfs": 0,
+        "ots": {
+          "b": 68448927,
+          "t": 1791217675000,
+          "tx": 4
+        }
+      }
+    },
+    "liquidationHypotheses": {
+      "maintA": 0.2,
+      "liqA": 1232.9901785714285,
+      "maintB": 0.024,
+      "liqB": 1010.64768735363,
+      "maintC": 0.05,
+      "liqC": 1038.3075187969926
+    }
+  }
+]
+```
+
+</details>
+
+## increase --slot 1 --usd 10 — 2026-10-05T17:08:41.992Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| Spec 01 Phase B | Does adding size reset premiumPnlCNS to 0? | premiumPnlCNS -700 → 0; pnlCNS 103880 → 93240; depositCNS 23809490 → 28242585; lots 14 → 21; entry 268707 → 268977; order filled | Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L508-L516; deposit [0x46cae1eb…](https://testnet.monadvision.com/tx/0x46cae1ebb14969f5175dcb37654bcd5400fde55941e5e5a2b73c1932351da966) |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "file": "C:\\Users\\ADMIN\\Documents\\Hackathons\\Laxu\\Backend\\fixtures\\perpl\\recordings\\cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl",
+  "amount": "10000000",
+  "fundTx": "0x277a5980ff59b82667c0a85108d3e6be1aa6838b631c1331be7e1df93014608f",
+  "depositTx": "0x46cae1ebb14969f5175dcb37654bcd5400fde55941e5e5a2b73c1932351da966",
+  "accountBefore": {
+    "accountId": "824",
+    "balanceCNS": "10021184587",
+    "lockedBalanceCNS": "0",
+    "frozen": 0
+  },
+  "accountAfterDeposit": {
+    "accountId": "824",
+    "balanceCNS": "10031184587",
+    "lockedBalanceCNS": "0",
+    "frozen": 0
+  },
+  "positionBefore": {
+    "accountId": "824",
+    "positionType": 0,
+    "depositCNS": "23809490",
+    "pricePNS": "268707",
+    "lotLNS": "14",
+    "entryBlock": "68448927",
+    "pnlCNS": "103880",
+    "deltaPnlCNS": "104580",
+    "premiumPnlCNS": "-700",
+    "markPricePNS": "269454",
+    "markPriceValid": true
+  },
+  "positionAfter": {
+    "accountId": "824",
+    "positionType": 0,
+    "depositCNS": "28242585",
+    "pricePNS": "268977",
+    "lotLNS": "21",
+    "entryBlock": "68456940",
+    "pnlCNS": "93240",
+    "deltaPnlCNS": "93240",
+    "premiumPnlCNS": "0",
+    "markPricePNS": "269421",
+    "markPriceValid": true
+  },
+  "accountAfter": {
+    "accountId": "824",
+    "balanceCNS": "10026744283",
+    "lockedBalanceCNS": "0",
+    "frozen": 0
+  },
+  "request": {
+    "requestId": "14",
+    "lastExecBlock": "68456952"
+  },
+  "attempts": [
+    {
+      "rq": "13",
+      "lb": "68456926",
+      "sentAt": 1791220088646,
+      "result": "lookup:not_placed",
+      "lookups": 2,
+      "error": "ConnectionLostError: Perpl trading socket closed (1008)"
+    },
+    {
+      "rq": "14",
+      "lb": "68456952",
+      "sentAt": 1791220096276,
+      "result": "ws:filled",
+      "lookups": 0
+    }
+  ],
+  "lots": "7",
+  "size6": "7000",
+  "mark18": "2694210000000000000000",
+  "outcome": {
+    "requestId": "14",
+    "orderId": "4486394019840",
+    "filledSize6": "7000",
+    "avgPrice18": "2695170000000000000000",
+    "feeAsset": "6509",
+    "reason": "TakerOrderFilled",
+    "status": "filled"
+  },
+  "wsOutcomeMs": 1278,
+  "history": {
+    "found": true,
+    "latencyMs": 22683,
+    "polls": 31,
+    "entries": [
+      {
+        "at": {
+          "b": 68456940,
+          "t": 1791220096000,
+          "tx": 1,
+          "txid": "5bc656901489ac6ee809243f5ea224b5f32e9c815465042f0f775c160a07e436",
+          "l": 4
+        },
+        "c": {},
+        "rq": 14,
+        "mkt": 32,
+        "acc": 824,
+        "oid": 4486394019840,
+        "scid": 0,
+        "st": 4,
+        "sr": 43,
+        "t": 1,
+        "os": 7,
+        "fp": 269517,
+        "fs": 7,
+        "f": "6509",
+        "bfa": "0",
+        "fl": 4,
+        "mm": 10,
+        "lv": 200,
+        "mnp": 1000
+      }
+    ]
+  },
+  "frames": [
+    {
+      "line": 508,
+      "mt": 22
+    },
+    {
+      "line": 511,
+      "mt": 3
+    },
+    {
+      "line": 516,
+      "mt": 24
+    }
+  ],
+  "events": [
+    {
+      "line": 516,
+      "mt": 24,
+      "st": 4,
+      "sr": 43,
+      "fs": 7,
+      "fp": 269517,
+      "os": 7,
+      "f": "6509"
+    }
+  ]
+}
+```
+
+</details>
+
+## close --slot 1 — 2026-10-05T17:09:58.834Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| close | IOC close: statuses, final balance | st4/sr43 fs=21 (L617); outcome filled; balanceCNS after close 10055047572 | Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L609-L617 |
+| withdraw | Withdraw everything above the reserve; getWithdrawAllowanceData before/after | withdrew 9955047572 asset units ok; balanceCNS → 100000000 (reserve 100000000); allowanceCNS 4504594376132 → 0, cnsPerBlock 750664176, expiry 68459818 → 0 | withdraw [0x25bcec6b…](https://testnet.monadvision.com/tx/0x25bcec6b9489e8d24acee1affc9a24d59260a5a01437082aecf69b85ad01bf62); sweep [0x77a54af6…](https://testnet.monadvision.com/tx/0x77a54af68b408a11008849ee224f7d864eb46fb88c5415d001b446ca700d4d74) |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "close": {
+    "rq": "15",
+    "attempts": [
+      {
+        "rq": "15",
+        "lb": "68457262",
+        "sentAt": 1791220189884,
+        "result": "ws:filled",
+        "lookups": 0
+      }
+    ],
+    "outcome": {
+      "requestId": "15",
+      "orderId": "4486414336000",
+      "filledSize6": "21000",
+      "avgPrice18": "2693590000000000000000",
+      "feeAsset": "19516",
+      "reason": "TakerOrderFilled",
+      "status": "filled"
+    },
+    "positionAfter": {
+      "accountId": "824",
+      "positionType": 0,
+      "depositCNS": "0",
+      "pricePNS": "0",
+      "lotLNS": "0",
+      "entryBlock": "0",
+      "pnlCNS": "0",
+      "deltaPnlCNS": "0",
+      "premiumPnlCNS": "0",
+      "markPricePNS": "269330",
+      "markPriceValid": true
+    },
+    "statuses": [
+      "st4/sr43 fs=21 (L617)"
+    ],
+    "evidence": "Backend/fixtures/perpl/recordings/cmuvdcs6r000213az63sqmnb8-2026-10-05.jsonl#L609-L617"
+  },
+  "balanceCNSAfterClose": "10055047572",
+  "reserveAsset": "100000000",
+  "withdrawAsset": "9955047572",
+  "withdrawTx": "0x25bcec6b9489e8d24acee1affc9a24d59260a5a01437082aecf69b85ad01bf62",
+  "allowanceBefore": {
+    "block": "68457261",
+    "allowanceCNS": "4504594376132",
+    "expiryBlock": "68459818",
+    "lastAllowanceBlock": "68457261",
+    "cnsPerBlock": "750664176"
+  },
+  "allowanceAfter": {
+    "block": "68457267",
+    "allowanceCNS": "0",
+    "expiryBlock": "0",
+    "lastAllowanceBlock": "0",
+    "cnsPerBlock": "0"
+  },
+  "balanceCNSAfterWithdraw": "100000000",
+  "sweepTx": "0x77a54af68b408a11008849ee224f7d864eb46fb88c5415d001b446ca700d4d74",
+  "sweptAsset": "9955047572",
+  "decimals": 6
+}
+```
+
+</details>

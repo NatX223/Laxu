@@ -16,7 +16,8 @@
     "tags:fix": "ts-node-dev --transpile-only --respawn=false scripts/fix-numeric-tags.ts",
     "slots:provision": "ts-node-dev --transpile-only --respawn=false scripts/provisionSlots.ts",
     "markets:map": "ts-node-dev --transpile-only --respawn=false scripts/marketsMap.ts",
-    "abi:gen": "ts-node-dev --transpile-only --respawn=false scripts/genAbi.ts"
+    "abi:gen": "ts-node-dev --transpile-only --respawn=false scripts/genAbi.ts",
+    "probe": "ts-node --transpile-only scripts/probe.ts"
   },
   "prisma": {
     "seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts"
