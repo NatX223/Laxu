@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toPrice18, toSize6, toUsdg6 } from "../lib/units";
+import { toPrice18, toSize6, toAsset6 } from "../lib/units";
 import { derivePositionStats, holderAddresses, type StatsInput } from "./positionStats";
 
 const E18 = 10n ** 18n;
@@ -23,27 +23,27 @@ function fixture(overrides: Partial<StatsInput> = {}): StatsInput {
     chain: {
       size: toSize6("1.375"),
       markPrice: toPrice18("2200"),
-      totalAssets: toUsdg6("824"),
-      totalSupply: toUsdg6("550"),
-      fundingAccrued: toUsdg6("-3"),
-      fundingSettled: toUsdg6("-1"),
+      totalAssets: toAsset6("824"),
+      totalSupply: toAsset6("550"),
+      fundingAccrued: toAsset6("-3"),
+      fundingSettled: toAsset6("-1"),
     },
     open: true,
     maintenanceMarginFraction: "0.0267",
     holdings: [
-      { address: CREATOR, balance: toUsdg6("500").toString() },
+      { address: CREATOR, balance: toAsset6("500").toString() },
       { address: BUYER, balance: "0" },
-      { address: POOL, balance: toUsdg6("50").toString() },
+      { address: POOL, balance: toAsset6("50").toString() },
     ],
     poolAddresses: [POOL],
-    borrowers: [{ address: BORROWER, collateralShares: toUsdg6("50").toString(), debt: toUsdg6("20").toString() }],
+    borrowers: [{ address: BORROWER, collateralShares: toAsset6("50").toString(), debt: toAsset6("20").toString() }],
     flows: [
-      { type: "open", address: CREATOR, assets: toUsdg6("500").toString(), feeAssets: "0", timestamp: hoursAgo(48) },
-      { type: "top_up", address: CREATOR, assets: toUsdg6("25").toString(), feeAssets: "0", timestamp: hoursAgo(30) },
-      { type: "buy_in", address: BUYER, assets: toUsdg6("100").toString(), feeAssets: toUsdg6("2").toString(), timestamp: hoursAgo(30) },
-      { type: "buy_in", address: BUYER, assets: toUsdg6("49").toString(), feeAssets: toUsdg6("1").toString(), timestamp: hoursAgo(2) },
-      { type: "buy_in", address: BORROWER, assets: toUsdg6("49").toString(), feeAssets: toUsdg6("1").toString(), timestamp: hoursAgo(1) },
-      { type: "redeem", address: BUYER, assets: toUsdg6("74").toString(), feeAssets: "0", timestamp: hoursAgo(1) },
+      { type: "open", address: CREATOR, assets: toAsset6("500").toString(), feeAssets: "0", timestamp: hoursAgo(48) },
+      { type: "top_up", address: CREATOR, assets: toAsset6("25").toString(), feeAssets: "0", timestamp: hoursAgo(30) },
+      { type: "buy_in", address: BUYER, assets: toAsset6("100").toString(), feeAssets: toAsset6("2").toString(), timestamp: hoursAgo(30) },
+      { type: "buy_in", address: BUYER, assets: toAsset6("49").toString(), feeAssets: toAsset6("1").toString(), timestamp: hoursAgo(2) },
+      { type: "buy_in", address: BORROWER, assets: toAsset6("49").toString(), feeAssets: toAsset6("1").toString(), timestamp: hoursAgo(1) },
+      { type: "redeem", address: BUYER, assets: toAsset6("74").toString(), feeAssets: "0", timestamp: hoursAgo(1) },
     ],
     now,
     ...overrides,
@@ -57,10 +57,10 @@ test("stats on the open -> buy-in -> redeem -> mark move fixture", () => {
   assert.equal(stats.pnlBps, 4981);
   // 1.375 x 2200 = 3025 notional / 824 = 3.67x
   assert.equal(stats.effectiveLeverage, "3.67");
-  assert.equal(stats.fundingNet, toUsdg6("-2"));
+  assert.equal(stats.fundingNet, toAsset6("-2"));
   // buy_in only, gross: 102 + 50 + 50
-  assert.equal(stats.buyInVolume, toUsdg6("202"));
-  assert.equal(stats.buyInVolume24h, toUsdg6("100"));
+  assert.equal(stats.buyInVolume, toAsset6("202"));
+  assert.equal(stats.buyInVolume24h, toAsset6("100"));
   assert.equal(stats.buyerCount24h, 2);
   // creator + borrower; the pool is not a holder, the zero-balance buyer is gone
   assert.equal(stats.holderCount, 2);
@@ -72,10 +72,10 @@ test("a holder with everything posted as collateral still counts; the pool never
   const holders = holderAddresses(
     [
       { address: BORROWER, balance: "0" },
-      { address: POOL, balance: toUsdg6("50").toString() },
+      { address: POOL, balance: toAsset6("50").toString() },
     ],
     [POOL],
-    [{ address: BORROWER, collateralShares: toUsdg6("50").toString(), debt: "0" }],
+    [{ address: BORROWER, collateralShares: toAsset6("50").toString(), debt: "0" }],
   );
   assert.deepEqual([...holders], [BORROWER]);
 });
@@ -83,11 +83,11 @@ test("a holder with everything posted as collateral still counts; the pool never
 test("at risk exactly below 1.5 x maintenance margin", () => {
   // notional 3025; 1.5 x 2.67% = 4.005% -> threshold equity 121.15125
   const at = (equity: string) =>
-    derivePositionStats(fixture({ chain: { ...fixture().chain, totalAssets: toUsdg6(equity) } })).isAtRisk;
+    derivePositionStats(fixture({ chain: { ...fixture().chain, totalAssets: toAsset6(equity) } })).isAtRisk;
   assert.equal(at("121.16"), false);
   assert.equal(at("121.15"), true);
   // A closed position is never "at risk".
-  assert.equal(derivePositionStats(fixture({ open: false, chain: { ...fixture().chain, totalAssets: toUsdg6("100") } })).isAtRisk, false);
+  assert.equal(derivePositionStats(fixture({ open: false, chain: { ...fixture().chain, totalAssets: toAsset6("100") } })).isAtRisk, false);
 });
 
 test("an empty supply reads as genesis NAV", () => {

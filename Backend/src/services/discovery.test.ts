@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toUsdg6 } from "../lib/units";
+import { toAsset6 } from "../lib/units";
 import { compareSortable, matchesQuery, netDeposited, paginate, type Sortable } from "./discovery";
 
 test("cursor pagination returns every item exactly once, in order, with ties", () => {
@@ -53,9 +53,9 @@ test("search matches creator tag, symbol and nickname, case-insensitively", () =
 
 test("cost basis counts gross in-flows and redeem out-flows", () => {
   const net = netDeposited([
-    { type: "buy_in", assets: toUsdg6("98").toString(), feeAssets: toUsdg6("2").toString() },
-    { type: "top_up", assets: toUsdg6("10").toString(), feeAssets: "0" },
-    { type: "redeem", assets: toUsdg6("30").toString(), feeAssets: "0" },
+    { type: "buy_in", assets: toAsset6("98").toString(), feeAssets: toAsset6("2").toString() },
+    { type: "top_up", assets: toAsset6("10").toString(), feeAssets: "0" },
+    { type: "redeem", assets: toAsset6("30").toString(), feeAssets: "0" },
   ]);
-  assert.equal(net, toUsdg6("80"));
+  assert.equal(net, toAsset6("80"));
 });

@@ -3,11 +3,11 @@ import test from "node:test";
 
 import {
   fromPrice18,
-  fromUsdg6,
+  fromAsset6,
   toFixedDecimals,
   toPrice18,
   toSize6,
-  toUsdg6,
+  toAsset6,
 } from "./units";
 
 const E18 = 10n ** 18n;
@@ -30,9 +30,9 @@ test("size x 1e6 with prices x 1e18 makes pnl land in USDG 6dp (spec worked exam
 });
 
 test("USDG amounts are signed 6dp", () => {
-  assert.equal(toUsdg6("500"), 500_000_000n);
-  assert.equal(toUsdg6("-2"), -2_000_000n);
-  assert.equal(fromUsdg6(-2_000_000n), "-2");
+  assert.equal(toAsset6("500"), 500_000_000n);
+  assert.equal(toAsset6("-2"), -2_000_000n);
+  assert.equal(fromAsset6(-2_000_000n), "-2");
 });
 
 test("toFixedDecimals truncates to a fixed width", () => {

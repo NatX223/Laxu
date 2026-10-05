@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toPrice18, toSize6, toUsdg6 } from "../lib/units";
+import { toPrice18, toSize6, toAsset6 } from "../lib/units";
 import { belowMinimums, buyInAddedSize, floorSize6ToStep, marginUsed6, redeemClosedSize } from "./sizing";
 
 const grid = { stepSize: "0.001", minOrderSize: "0.001", minOrderNotional: "10" };
@@ -9,9 +9,9 @@ const grid = { stepSize: "0.001", minOrderSize: "0.001", minOrderNotional: "10" 
 test("buy-in adds the buyer's proportional share of the size", () => {
   // $740 position, 1.25 ETH; a $148 buy-in is 20% of it -> 0.25 ETH.
   const added = buyInAddedSize({
-    assets6: toUsdg6("148"),
+    assets6: toAsset6("148"),
     size6: toSize6("1.25"),
-    totalAssets6: toUsdg6("740"),
+    totalAssets6: toAsset6("740"),
     leverage: 5,
     mark18: toPrice18("2192"),
     grid,
@@ -22,9 +22,9 @@ test("buy-in adds the buyer's proportional share of the size", () => {
 test("buy-in is capped at assets x L_set / mark when the position has lost value", () => {
   // Down to $300 on 1.25 ETH @ $2000 -> effective leverage 8.3x > 5x.
   const added = buyInAddedSize({
-    assets6: toUsdg6("100"),
+    assets6: toAsset6("100"),
     size6: toSize6("1.25"),
-    totalAssets6: toUsdg6("300"),
+    totalAssets6: toAsset6("300"),
     leverage: 5,
     mark18: toPrice18("2000"),
     grid,
@@ -35,9 +35,9 @@ test("buy-in is capped at assets x L_set / mark when the position has lost value
 
 test("buy-in rounds down to the step and falls back to margin-only below minimums", () => {
   const added = buyInAddedSize({
-    assets6: toUsdg6("3"),
+    assets6: toAsset6("3"),
     size6: toSize6("1.25"),
-    totalAssets6: toUsdg6("740"),
+    totalAssets6: toAsset6("740"),
     leverage: 5,
     mark18: toPrice18("2192"),
     grid,
@@ -46,9 +46,9 @@ test("buy-in rounds down to the step and falls back to margin-only below minimum
   assert.equal(added, toSize6("0.005"));
 
   const tiny = buyInAddedSize({
-    assets6: toUsdg6("1"),
+    assets6: toAsset6("1"),
     size6: toSize6("1.25"),
-    totalAssets6: toUsdg6("740"),
+    totalAssets6: toAsset6("740"),
     leverage: 5,
     mark18: toPrice18("2192"),
     grid,
@@ -58,8 +58,8 @@ test("buy-in rounds down to the step and falls back to margin-only below minimum
 
 test("redeem reduces by shares/supply of the size, capped at the leg", () => {
   const closed = redeemClosedSize({
-    shares: toUsdg6("250"),
-    supply: toUsdg6("500"),
+    shares: toAsset6("250"),
+    supply: toAsset6("500"),
     size6: toSize6("1.25"),
     legSize6: toSize6("1.25"),
     mark18: toPrice18("2192"),
@@ -68,8 +68,8 @@ test("redeem reduces by shares/supply of the size, capped at the leg", () => {
   assert.equal(closed, toSize6("0.625"));
 
   const capped = redeemClosedSize({
-    shares: toUsdg6("250"),
-    supply: toUsdg6("500"),
+    shares: toAsset6("250"),
+    supply: toAsset6("500"),
     size6: toSize6("1.25"),
     legSize6: toSize6("0.5"),
     mark18: toPrice18("2192"),
@@ -81,7 +81,7 @@ test("redeem reduces by shares/supply of the size, capped at the leg", () => {
 test("tiny redeems come out of the buffer; a full exit always closes the leg", () => {
   const tiny = redeemClosedSize({
     shares: 1_000_000n,
-    supply: toUsdg6("500"),
+    supply: toAsset6("500"),
     size6: toSize6("1.25"),
     legSize6: toSize6("1.25"),
     mark18: toPrice18("2192"),
@@ -90,8 +90,8 @@ test("tiny redeems come out of the buffer; a full exit always closes the leg", (
   assert.equal(tiny, 0n);
 
   const all = redeemClosedSize({
-    shares: toUsdg6("1"),
-    supply: toUsdg6("1"),
+    shares: toAsset6("1"),
+    supply: toAsset6("1"),
     size6: toSize6("0.002"),
     legSize6: toSize6("0.002"),
     mark18: toPrice18("2000"),
@@ -104,5 +104,5 @@ test("grid helpers", () => {
   assert.equal(floorSize6ToStep(1_234_567n, "0.01"), 1_230_000n);
   assert.equal(floorSize6ToStep(1_234_567n, "0.0000001"), 1_234_567n);
   assert.equal(belowMinimums(toSize6("0.004"), toPrice18("2000"), grid), true); // $8 notional
-  assert.equal(marginUsed6(toSize6("0.25"), toPrice18("2192"), 5), toUsdg6("109.6"));
+  assert.equal(marginUsed6(toSize6("0.25"), toPrice18("2192"), 5), toAsset6("109.6"));
 });

@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { assertSizeScaleSupported, assetToCns, cnsToAsset, type CollateralScale } from "./units";
+import {
+  apiSideToDirection,
+  assertPnlScaleSupported,
+  assetToCns,
+  chainTypeToDirection,
+  cnsToAsset,
+  lotsToSize6,
+  pnsToPrice18,
+  price18ToPns,
+  size6ToLots,
+  type CollateralScale,
+} from "./units";
 
 const scale = (cnsDecimals: number, assetDecimals: number): CollateralScale => ({ cnsDecimals, assetDecimals });
 
@@ -40,8 +51,37 @@ test("units: CNS -> asset scales up exactly when the asset has more decimals", (
   assert.equal(assetToCns(1n, scale(7, 6)), 10n);
 });
 
-test("units: opening a position needs collateralDecimals and asset decimals at 6 (deployed PerplReader.toSize)", () => {
-  assert.doesNotThrow(() => assertSizeScaleSupported(scale(6, 6)));
-  assert.throws(() => assertSizeScaleSupported(scale(7, 6)), /collateralDecimals/);
-  assert.throws(() => assertSizeScaleSupported(scale(6, 18)), /asset has 18 decimals/);
+test("units: opening a position needs the asset at 6 decimals and the reader's sizeScale at 1e6", () => {
+  assert.doesNotThrow(() => assertPnlScaleSupported(6, 1_000_000n));
+  assert.throws(() => assertPnlScaleSupported(18, 10n ** 18n), /asset has 18 decimals/);
+  assert.throws(() => assertPnlScaleSupported(6, 10_000_000n), /PerplReader sizes at 10000000/);
+});
+
+test("units: price and lot scaling round-trips for decimals 1, 2, 5 and 8", () => {
+  for (const d of [1, 2, 5, 8]) {
+    // Price: every Perpl integer price survives PNS -> 1e18 -> PNS exactly.
+    for (const pns of [1n, 268707n, 853412n, 10n ** 12n]) {
+      const price18 = pnsToPrice18(pns, d);
+      assert.equal(price18, pns * 10n ** BigInt(18 - d), `price d=${d}`);
+      assert.equal(price18ToPns(price18, d), pns, `price round-trip d=${d}`);
+    }
+    // Lots: lots -> size6 -> lots is exact while d <= 6 (size6 is coarser beyond).
+    for (const lots of [1n, 14n, 21n, 123456n]) {
+      const size6 = lotsToSize6(lots, d);
+      if (d <= 6) assert.equal(size6ToLots(size6, d), lots, `lots round-trip d=${d}`);
+      else assert.ok(size6ToLots(size6, d) <= lots, `lots never grow d=${d}`);
+    }
+  }
+  // The recorded ETH fill: 14 lots at 3 dp = 0.014 ETH, 268707 at 2 dp = $2687.07.
+  assert.equal(lotsToSize6(14n, 3), 14_000n);
+  assert.equal(pnsToPrice18(268707n, 2), 268707n * 10n ** 16n);
+});
+
+test("units: API position side 1/2 and chain positionType 0/1 map to the same direction", () => {
+  assert.equal(apiSideToDirection(1), chainTypeToDirection(0));
+  assert.equal(apiSideToDirection(2), chainTypeToDirection(1));
+  assert.equal(apiSideToDirection(1), "long");
+  assert.equal(chainTypeToDirection(1), "short");
+  assert.throws(() => apiSideToDirection(0));
+  assert.throws(() => chainTypeToDirection(2));
 });

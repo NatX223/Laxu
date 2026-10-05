@@ -163,6 +163,12 @@ async function paidToWallet(txHash: Hash, wallet: Address): Promise<bigint | nul
     .reduce((sum, transfer) => sum + transfer.value, 0n);
 }
 
+/// What a settlement recovers: the account's free balance above the slot's
+/// reserve, never negative (a wiped-out position recovers 0).
+export function recoverableAboveReserve(free: bigint, reserve: bigint): bigint {
+  return free > reserve ? free - reserve : 0n;
+}
+
 /**
  * Steps 3-4. Returns the asset (6dp) recovered onto the slot wallet.
  *
@@ -195,7 +201,7 @@ async function recoverFromVenue(row: Settlement, slot: SlotWithWallet): Promise<
   return withSlotLock(slot.id, async () => {
     const reserve = BigInt(slot.reserve);
     const free = await venue().accountBalance(slot);
-    const recovered = free > reserve ? free - reserve : 0n;
+    const recovered = recoverableAboveReserve(free, reserve);
 
     if (recovered === 0n) {
       if (row.withdrawStartedAt) {

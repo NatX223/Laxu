@@ -68,6 +68,42 @@ export interface FundingTerms {
  *                    the same integer maths as PositionToken._computeValue)
  *   target         = venueTotal - capital - pricePnL + fundingSettled
  */
+/// The target from its terms (pure; see the comment above for each term).
+export function fundingTarget(params: {
+  positionEquity: bigint;
+  free: bigint;
+  reserve: bigint;
+  capital: bigint;
+  size: bigint;
+  entryPrice: bigint;
+  mark: bigint;
+  direction: string;
+  fundingSettled: bigint;
+}): { target: bigint; venueTotal: bigint; freeAboveReserve: bigint; pricePnL: bigint } {
+  const freeAboveReserve = params.free > params.reserve ? params.free - params.reserve : 0n;
+  const venueTotal = params.positionEquity + freeAboveReserve;
+  let pricePnL = (params.size * (params.mark - params.entryPrice)) / PRICE_SCALE;
+  if (params.direction === "short") pricePnL = -pricePnL;
+  const target = venueTotal - params.capital - pricePnL + params.fundingSettled;
+  return { target, venueTotal, freeAboveReserve, pricePnL };
+}
+
+/// Push when funding moved by max(pushMin, capital x pushBps / 1e4), or the
+/// last push is at least `heartbeatSeconds` old. Otherwise not.
+export function shouldPushFunding(params: {
+  target: bigint;
+  accrued: bigint;
+  capital: bigint;
+  pushMin: bigint;
+  pushBps: number;
+  ageSeconds: bigint;
+  heartbeatSeconds: number;
+}): boolean {
+  const relative = (params.capital * BigInt(params.pushBps)) / 10_000n;
+  const threshold = relative > params.pushMin ? relative : params.pushMin;
+  return abs(params.target - params.accrued) >= threshold || params.ageSeconds >= BigInt(params.heartbeatSeconds);
+}
+
 export async function computeFundingTarget(
   positionToken: Address,
   slot: SlotWithWallet,
@@ -80,15 +116,18 @@ export async function computeFundingTarget(
     known.accounting ?? tokenAccounting(positionToken),
     currentMark(positionToken),
   ]);
-  const reserve = BigInt(slot.reserve);
-  const freeAboveReserve = free > reserve ? free - reserve : 0n;
   const positionEquity = venuePosition.equityAsset;
-  const venueTotal = positionEquity + freeAboveReserve;
-
-  let pricePnL = (accounting.size * (mark.price - accounting.entryPrice)) / PRICE_SCALE;
-  if (accounting.direction === "short") pricePnL = -pricePnL;
-
-  const target = venueTotal - accounting.capital - pricePnL + accounting.fundingSettled;
+  const { target, venueTotal, freeAboveReserve, pricePnL } = fundingTarget({
+    positionEquity,
+    free,
+    reserve: BigInt(slot.reserve),
+    capital: accounting.capital,
+    size: accounting.size,
+    entryPrice: accounting.entryPrice,
+    mark: mark.price,
+    direction: accounting.direction,
+    fundingSettled: accounting.fundingSettled,
+  });
   return {
     target,
     accounting,
@@ -216,13 +255,18 @@ export async function runReportingTick(): Promise<void> {
 
       const { target, terms, accounting } = await computeFundingTarget(positionToken, slot, market, { venuePosition });
       logTermsOnce(position.id, terms);
-      const threshold = (() => {
-        const relative = (accounting.capital * BigInt(config.fundingPushBps)) / 10_000n;
-        return relative > pushMin ? relative : pushMin;
-      })();
       const age = nowSeconds() - accounting.lastFundingTimestamp;
       let funding = accounting.fundingAccrued;
-      if (abs(target - accounting.fundingAccrued) >= threshold || age >= BigInt(config.fundingHeartbeatSeconds)) {
+      const push = shouldPushFunding({
+        target,
+        accrued: accounting.fundingAccrued,
+        capital: accounting.capital,
+        pushMin,
+        pushBps: config.fundingPushBps,
+        ageSeconds: age,
+        heartbeatSeconds: config.fundingHeartbeatSeconds,
+      });
+      if (push) {
         await pushFunding(position.id, positionToken, target, accounting.lastFundingTimestamp);
         funding = target;
         log.info("funding applied", { positionId: position.id, funding: target.toString(), ageSeconds: age.toString() });

@@ -9,6 +9,7 @@ import { credentialsFor, slotWallet, type SlotWithWallet } from "../../services/
 import { maxLeverage, type ResolvedMarket } from "../../services/markets";
 import type { OrderOutcome, OrderSide, SendHooks, SentRequest, VenueAdapter, VenuePosition } from "../types";
 import { describeOrderReason, OrderFlags, OrderStatus, OrderType } from "./config";
+import { decideByLots, lastExecBlockFor, nextRequestId } from "../requests";
 import { ensure } from "./connections";
 import {
   allowOrderForwarding,
@@ -52,10 +53,6 @@ const CHAIN_PAST_LB_TIMEOUT_MS = 60_000;
 function accountIdOf(slot: SlotWithWallet): bigint {
   if (!slot.perplAccountId) throw new Error(`Slot ${slot.id} has no Perpl account yet (run slots:provision)`);
   return BigInt(slot.perplAccountId);
-}
-
-function maxBig(...values: bigint[]): bigint {
-  return values.reduce((max, value) => (value > max ? value : max));
 }
 
 /**
@@ -228,11 +225,13 @@ export class PerplAdapter implements VenueAdapter {
     const connection = ensure(slot);
     await connection.ready();
     const row = await db.subaccountSlot.findUniqueOrThrow({ where: { id: slot.id }, select: { lastRequestId: true } });
-    const lfr = BigInt(connection.accountState()?.lfr ?? 0);
-    const requestId = maxBig(lfr, BigInt(row.lastRequestId), this.handedOut.get(slot.id) ?? 0n) + 1n;
+    const requestId = nextRequestId({
+      lfr: BigInt(connection.accountState()?.lfr ?? 0),
+      lastRequestId: BigInt(row.lastRequestId),
+      handedOut: this.handedOut.get(slot.id) ?? 0n,
+    });
     this.handedOut.set(slot.id, requestId);
-    const head = await connection.currentHead();
-    return { requestId, lastExecBlock: head + BigInt(Math.max(1, market.orderTtlBlocks)) };
+    return { requestId, lastExecBlock: lastExecBlockFor(await connection.currentHead(), market.orderTtlBlocks) };
   }
 
   /**
@@ -257,30 +256,35 @@ export class PerplAdapter implements VenueAdapter {
     if (seen?.done && seen.order) {
       return this.toOutcome({ kind: "order", order: seen.order }, request.requestId, market, "ioc");
     }
-    if ((await publicClient().getBlockNumber()) <= request.lastExecBlock) return "pending";
+    const chainBlock = await publicClient().getBlockNumber();
+    if (chainBlock <= request.lastExecBlock) return "pending";
 
     const now = await this.getPosition(slot, market);
-    const sizeNow = now.exists ? now.size6 : 0n;
-    const delta = sizeNow > request.size6Before ? sizeNow - request.size6Before : request.size6Before - sizeNow;
-    if (delta === 0n) return "not_placed";
-
-    const grew = sizeNow > request.size6Before;
-    const avgPrice18 = grew
-      ? (now.entry18 * sizeNow - request.entry18Before * request.size6Before) / delta
-      : now.mark18;
+    const decision = decideByLots({
+      chainBlock,
+      lastExecBlock: request.lastExecBlock,
+      size6Before: request.size6Before,
+      entry18Before: request.entry18Before,
+      size6Now: now.exists ? now.size6 : 0n,
+      entry18Now: now.exists ? now.entry18 : 0n,
+      mark18Now: now.mark18,
+    });
+    if (typeof decision === "string") return decision;
     log.warn("order resolved from the on-chain lot delta", {
       slotId: slot.id,
       rq: request.requestId.toString(),
       sizeBefore: request.size6Before.toString(),
-      sizeNow: sizeNow.toString(),
+      filled: decision.filledSize6.toString(),
     });
     return {
       status: "filled",
       requestId: request.requestId,
-      filledSize6: delta,
-      avgPrice18,
+      filledSize6: decision.filledSize6,
+      avgPrice18: decision.avgPrice18,
       feeAsset: 0n,
-      reason: grew ? "resolved on-chain (lot delta)" : "resolved on-chain (lot delta); exit price estimated from the mark",
+      reason: decision.grew
+        ? "resolved on-chain (lot delta)"
+        : "resolved on-chain (lot delta); exit price estimated from the mark",
     };
   }
 
