@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import WebSocket from "ws";
 
 import { config } from "../../config/env";
@@ -11,6 +12,11 @@ import { signInFrame } from "./signing";
 import type { ApiAccount, ApiOrder, ApiPosition, ApiStatus, ApiWallet, OrderSpec, PerplCredentials } from "./types";
 
 const log = createLogger("perpl:ws");
+
+/// Event-loop delay, reported when a socket closes: a "1008 ping timeout"
+/// means our pong went out late, and a blocked loop is the usual reason.
+const loopDelay = monitorEventLoopDelay({ resolution: 20 });
+loopDelay.enable();
 
 /// The socket closed with this request still in flight: its fate is unknown.
 /// Callers look it up with findOrderOutcome rather than sending it again blind.
@@ -455,7 +461,10 @@ export class PerplTradingConnection extends EventEmitter {
         reason: reason.toString(),
         serverPings: this.serverPings,
         queued: this.inbox.length,
+        eventLoopMaxMs: Math.round(loopDelay.max / 1e6),
+        eventLoopP99Ms: Math.round(loopDelay.percentile(99) / 1e6),
       });
+      loopDelay.reset();
       this.failInFlight(new ConnectionLostError(`Perpl trading socket closed (${code})`));
       this.scheduleReconnect();
     });

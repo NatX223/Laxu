@@ -4,7 +4,10 @@ import { createLogger } from "../lib/logger";
 
 const log = createLogger("db");
 
-export const db = new PrismaClient();
+/// Interactive transactions make several round-trips each; to Neon (a remote
+/// region) Prisma's 5 s default expired a mint's bookkeeping transaction on
+/// testnet. 30 s keeps them atomic without being cut short.
+export const db = new PrismaClient({ transactionOptions: { maxWait: 10_000, timeout: 30_000 } });
 
 /// Slot allocation and any other read-modify-write on shared rows goes through
 /// db.$transaction(...) -- see src/services/allocator.ts, which additionally

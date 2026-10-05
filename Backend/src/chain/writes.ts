@@ -65,7 +65,8 @@ export async function sendTransaction(
 
   return withWalletLock(account.address, async () => {
     const { request } = await publicClient().simulateContract({ ...call, account } as never);
-    const txHash = await wallet.writeContract(request as never);
+    const gas = await gasWithBuffer({ ...call, account });
+    const txHash = await wallet.writeContract({ ...(request as object), gas } as never);
     if (options.onSent) {
       await retry(() => options.onSent!(txHash), { attempts: 5, baseMs: 500, label: `${label} onSent` }).catch(
         (error) => log.error(`${label}: could not persist the sent tx hash`, { txHash, error: String(error) }),
@@ -80,6 +81,17 @@ export async function sendTransaction(
 }
 
 const send = sendTransaction;
+
+/// eth_estimateGas plus GAS_BUFFER_BPS (default 30%). On Monad testnet an
+/// exact estimate ran a LendingPool.withdrawCollateral out of gas after its
+/// share transfer (2026-10-05, tx 0xf774dae3…); Monad also charges the full
+/// limit, so the buffer is a small, bounded cost.
+export async function gasWithBuffer(call: ContractCall & { account: unknown }): Promise<bigint> {
+  const estimate = await publicClient().estimateContractGas(call as never);
+  return (estimate * BigInt(10_000 + GAS_BUFFER_BPS)) / 10_000n;
+}
+
+const GAS_BUFFER_BPS = Math.max(0, Number(process.env.GAS_BUFFER_BPS ?? 3_000));
 
 /// The receipt of a transaction sent earlier (resume path): success, reverted,
 /// or not found yet.

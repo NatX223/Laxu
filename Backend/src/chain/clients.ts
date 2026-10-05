@@ -5,6 +5,7 @@ import {
   http,
   type Address,
   type PublicClient,
+  type Transport,
   type WalletClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -24,17 +25,114 @@ export function chain() {
 
 let publicClientInstance: PublicClient | undefined;
 
+// ---------------------------------------------------------------------------
+// One throttled transport for every client in the process. Monad's public RPC
+// answers "requests limited to 25/sec" (15/sec for some methods) as a JSON-RPC
+// error, which viem does not retry: requests are spaced to RPC_MAX_RPS and a
+// rate-limit answer is retried with backoff.
+// ---------------------------------------------------------------------------
+
+const RPC_MAX_RPS = Math.max(1, Number(process.env.RPC_MAX_RPS ?? 12));
+const RATE_LIMIT_RETRIES = 6;
+let nextSlotAt = 0;
+
+/// Resolves when this request may go out: at most RPC_MAX_RPS per second.
+function rpcSlot(): Promise<void> {
+  const now = Date.now();
+  const at = Math.max(now, nextSlotAt);
+  nextSlotAt = at + 1000 / RPC_MAX_RPS;
+  return at > now ? new Promise((resolve) => setTimeout(resolve, at - now)) : Promise.resolve();
+}
+
+function isRateLimited(error: unknown): boolean {
+  const text = error instanceof Error ? `${error.message} ${(error as { details?: string }).details ?? ""}` : String(error);
+  return /limited to \d+\/sec|rate limit|too many requests|429/i.test(text);
+}
+
+function rpcTransport(): Transport {
+  const inner = http(config.rpcUrl, { retryCount: 2 });
+  return ((params: Parameters<Transport>[0]) => {
+    const transport = inner(params);
+    return {
+      ...transport,
+      request: (async (args: unknown) => {
+        for (let attempt = 0; ; attempt += 1) {
+          await rpcSlot();
+          try {
+            return await transport.request(args as never);
+          } catch (error) {
+            if (attempt >= RATE_LIMIT_RETRIES || !isRateLimited(error)) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt));
+          }
+        }
+      }) as typeof transport.request,
+    };
+  }) as Transport;
+}
+
 /// Plain HTTPS JSON-RPC for every read. The indexer's watchContractEvent then
 /// polls under the hood, which is what Monad's public RPC supports reliably.
 export function publicClient(): PublicClient {
   if (!publicClientInstance) {
     if (!config.rpcUrl) throw new Error("RPC_URL is not configured");
-    publicClientInstance = createPublicClient({
+    const base = createPublicClient({
       chain: chain(),
-      transport: http(config.rpcUrl),
-    }) as PublicClient;
+      transport: rpcTransport(),
+    });
+    // Monad's public RPC refuses eth_getLogs over more than 100 blocks. Every
+    // getLogs -- the indexer's backfill, viem's own event polling (it calls
+    // through the client's action), the services -- goes through this, which
+    // splits a wider range into windows.
+    const plainGetLogs = base.getLogs.bind(base) as (args: GetLogsArgs) => Promise<unknown[]>;
+    publicClientInstance = base.extend(() => ({
+      getLogs: ((args: GetLogsArgs) => chunkedGetLogs(base, plainGetLogs, args)) as never,
+    })) as unknown as PublicClient;
   }
   return publicClientInstance;
+}
+
+type GetLogsArgs = { fromBlock?: bigint | string; toBlock?: bigint | string } & Record<string, unknown>;
+
+const LOGS_MAX_RANGE = BigInt(Math.max(1, Number(process.env.RPC_LOGS_MAX_RANGE ?? 100)));
+/// Windows in flight across ALL getLogs calls: a backfill fans out ~18 event
+/// queries at once, and the public RPC rate-limits.
+const LOGS_CONCURRENCY = 8;
+let logsInFlight = 0;
+const logsQueue: Array<() => void> = [];
+
+async function withLogsSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (logsInFlight >= LOGS_CONCURRENCY) await new Promise<void>((resolve) => logsQueue.push(resolve));
+  logsInFlight += 1;
+  try {
+    return await task();
+  } finally {
+    logsInFlight -= 1;
+    logsQueue.shift()?.();
+  }
+}
+
+/// getLogs over [fromBlock, toBlock] in windows of at most LOGS_MAX_RANGE
+/// blocks, a few at a time, results in block order. Tags are resolved first;
+/// a request without a numeric fromBlock (e.g. a filter-only call) is passed through.
+async function chunkedGetLogs(
+  client: { getBlockNumber: () => Promise<bigint> },
+  getLogs: (args: GetLogsArgs) => Promise<unknown[]>,
+  args: GetLogsArgs,
+): Promise<unknown[]> {
+  if (typeof args.fromBlock !== "bigint") return withLogsSlot(() => getLogs(args));
+  const from = args.fromBlock;
+  const to = typeof args.toBlock === "bigint" ? args.toBlock : await client.getBlockNumber();
+  if (to < from || to - from + 1n <= LOGS_MAX_RANGE) return withLogsSlot(() => getLogs({ ...args, toBlock: to }));
+
+  const windows: Array<[bigint, bigint]> = [];
+  for (let start = from; start <= to; start += LOGS_MAX_RANGE) {
+    const end = start + LOGS_MAX_RANGE - 1n;
+    windows.push([start, end < to ? end : to]);
+  }
+  const results = await Promise.all(
+    windows.map(([start, end]) => withLogsSlot(() => getLogs({ ...args, fromBlock: start, toBlock: end }))),
+  );
+  return results.flat();
 }
 
 function normalisePrivateKey(key: string, label: string): `0x${string}` {
@@ -72,7 +170,7 @@ function walletFor(key: string, label: string): WalletClient {
   return createWalletClient({
     account: privateKeyToAccount(normalisePrivateKey(key, label)),
     chain: chain(),
-    transport: http(config.rpcUrl),
+    transport: rpcTransport(),
   });
 }
 

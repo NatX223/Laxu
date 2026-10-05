@@ -318,16 +318,23 @@ export async function fundPayout(slot: SlotWithWallet, positionToken: Address, p
 }
 
 /**
- * Recycle, off the critical path: withdraw the account's free balance above
- * the reserve (the margin a reduce freed) to the slot wallet, then move the
- * wallet's asset to the float so it refills.
+ * Recycle, off the critical path: withdraw `amount` -- what the float paid out
+ * or put in for this flow (a redeem / trigger payout, a cancelled buy-in's
+ * deposit) -- from the account's free balance above the reserve to the slot
+ * wallet, then move the wallet's asset to the float so it refills.
+ *
+ * Never more than `amount`: the rest of the free balance (an open's sizing
+ * buffer, a buy-in's unused margin) backs the token, and the funding
+ * reconciliation counts it. Sweeping all of it moved $2.28 of holders' value
+ * to the float on testnet 2026-10-05 (docs/e2e-run.md, step 9 incident).
  */
-export function recycleFreedMargin(ctx: { slot: SlotWithWallet; position: { id: string } }, _amount: bigint): void {
+export function recycleFreedMargin(ctx: { slot: SlotWithWallet; position: { id: string } }, amount: bigint): void {
   void withSlotLock(ctx.slot.id, async () => {
     const reserve = BigInt(ctx.slot.reserve);
     const free = await venue().accountBalance(ctx.slot);
     const excess = free > reserve ? free - reserve : 0n;
-    if (excess > 0n) await venue().withdraw(ctx.slot, excess);
+    const toWithdraw = excess < amount ? excess : amount;
+    if (toWithdraw > 0n) await venue().withdraw(ctx.slot, toWithdraw);
     const held = await assetBalanceOf(ctx.slot.operatorWallet.address as Address);
     if (held > 0n) await transferAsset(slotWallet(ctx.slot), floatAddress(), held);
     log.info("freed margin recycled to the float", { positionId: ctx.position.id, amount: fromAsset6(held) });

@@ -17,7 +17,8 @@
     "slots:provision": "ts-node-dev --transpile-only --respawn=false scripts/provisionSlots.ts",
     "markets:map": "ts-node-dev --transpile-only --respawn=false scripts/marketsMap.ts",
     "abi:gen": "ts-node-dev --transpile-only --respawn=false scripts/genAbi.ts",
-    "probe": "ts-node --transpile-only scripts/probe.ts"
+    "probe": "ts-node --transpile-only scripts/probe.ts",
+    "e2e": "ts-node --transpile-only scripts/e2e.ts"
   },
   "prisma": {
     "seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts"

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { PositionOpenRequest } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import type { Address, Hash } from "viem";
@@ -323,6 +324,37 @@ async function requireOwnRequest(id: string, caller: string): Promise<PositionOp
 /// second driver for one already in flight.
 const inFlight = new Set<string>();
 
+// ---------------------------------------------------------------------------
+// Driver lease. `inFlight` only guards one process; the lease guards all of
+// them (a second backend, or a script driving a request in-process while the
+// backend's resume tick runs): a request has at most one live driver.
+// ---------------------------------------------------------------------------
+
+/// This process, for the lease.
+const DRIVER_ID = `${process.pid}-${randomBytes(4).toString("hex")}`;
+/// Renewed before every step; a dead driver's lease lapses after this.
+const LEASE_MS = 5 * 60_000;
+
+/// Take (or renew) the lease: free, lapsed, or already ours.
+async function claimLease(id: string): Promise<boolean> {
+  const now = new Date();
+  const { count } = await db.positionOpenRequest.updateMany({
+    where: {
+      id,
+      OR: [{ driverLeaseUntil: null }, { driverLeaseUntil: { lt: now } }, { driverId: DRIVER_ID }],
+    },
+    data: { driverId: DRIVER_ID, driverLeaseUntil: new Date(now.getTime() + LEASE_MS) },
+  });
+  return count === 1;
+}
+
+async function releaseLease(id: string): Promise<void> {
+  await db.positionOpenRequest.updateMany({
+    where: { id, driverId: DRIVER_ID },
+    data: { driverId: null, driverLeaseUntil: null },
+  });
+}
+
 function kick(id: string): void {
   if (inFlight.has(id)) return;
   inFlight.add(id);
@@ -372,7 +404,24 @@ async function update(id: string, data: Prisma.PositionOpenRequestUpdateInput): 
  * is waiting on something; the resume tick comes back for it.
  */
 export async function driveOpenRequest(id: string): Promise<void> {
+  if (!(await claimLease(id))) {
+    log.debug("open request is being driven elsewhere", { openRequestId: id });
+    return;
+  }
+  try {
+    await driveUnderLease(id);
+  } finally {
+    await releaseLease(id).catch((error) => log.warn("could not release the driver lease", { openRequestId: id, ...errorFields(error) }));
+  }
+}
+
+async function driveUnderLease(id: string): Promise<void> {
   for (;;) {
+    // Renew before each step; losing it means another driver took over.
+    if (!(await claimLease(id))) {
+      log.warn("lost the driver lease; stopping", { openRequestId: id });
+      return;
+    }
     const request = await load(id);
     const status = request.status as OpenRequestStatus;
     const slot = await getSlot(request.slotId);

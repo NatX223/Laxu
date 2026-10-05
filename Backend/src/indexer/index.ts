@@ -1221,9 +1221,16 @@ export function startIndexer(): () => void {
     const checkpoint = await getOrCreateCheckpoint();
     const latestBlock = await client.getBlockNumber();
 
-    const fromBlock = checkpoint.lastProcessedBlock > 0n
+    let fromBlock = checkpoint.lastProcessedBlock > 0n
       ? checkpoint.lastProcessedBlock + 1n
       : checkpoint.lastProcessedBlock;
+    // Ops: INDEXER_BACKFILL_FROM_BLOCK re-indexes from an earlier block on this
+    // boot (handlers are idempotent, so the overlap is harmless).
+    const override = process.env.INDEXER_BACKFILL_FROM_BLOCK;
+    if (override && BigInt(override) < fromBlock) {
+      log.warn("re-indexing from INDEXER_BACKFILL_FROM_BLOCK", { from: override, checkpoint: fromBlock.toString() });
+      fromBlock = BigInt(override);
+    }
 
     const known = await discoverAddresses(fromBlock, latestBlock);
     await backfillPositionTokenEvents(Array.from(known), fromBlock, latestBlock);
@@ -1232,7 +1239,9 @@ export function startIndexer(): () => void {
     if (stopped) return;
 
     // Go live: watch the factory for new positions, and every known token.
-    unwatchFns.push(
+    // Once only -- a retried bootstrap must not double the factory watchers
+    // (two handlers for one event would race).
+    if (!factoryWatched) unwatchFns.push(
       client.watchContractEvent({
         address: factoryAddress(),
         abi: positionTokenFactoryAbi,
@@ -1254,6 +1263,7 @@ export function startIndexer(): () => void {
         },
       }),
     );
+    factoryWatched = true;
 
     known.forEach(watchPositionToken);
 
@@ -1264,7 +1274,8 @@ export function startIndexer(): () => void {
       const knownPools = await discoverPools(fromBlock, latestBlock);
       await backfillPoolEvents(Array.from(knownPools), fromBlock, latestBlock);
 
-      if (!stopped) {
+      if (!stopped && !poolFactoryWatched) {
+        poolFactoryWatched = true;
         unwatchFns.push(
           client.watchContractEvent({
             address: lendingPoolFactoryAddress(),
@@ -1282,9 +1293,8 @@ export function startIndexer(): () => void {
             },
           }),
         );
-
-        knownPools.forEach(watchPool);
       }
+      if (!stopped) knownPools.forEach(watchPool);
       watchedPools = knownPools.size;
     }
 
@@ -1295,9 +1305,51 @@ export function startIndexer(): () => void {
     });
   }
 
-  void bootstrap().catch((error) => {
-    log.error("indexer bootstrap failed", errorFields(error));
-  });
+  /**
+   * A token can be known to the DB without being watched: its PositionCreated
+   * fell before the checkpoint a restart resumed from, and its Position row was
+   * written after that restart's discovery (seen on testnet 2026-10-05: a mint
+   * finished by the restarted backend's resume, 8 s after its bootstrap). Such
+   * a token is backfilled from shortly before it was opened, then watched.
+   */
+  async function catchUpUnwatchedTokens(latest: bigint): Promise<void> {
+    if (stopped || !bootstrapped) return;
+    const rows = await db.position.findMany({
+      where: { positionTokenAddress: { not: null }, status: { not: "settled" } },
+      select: { positionTokenAddress: true, openedAt: true, createdAt: true },
+    });
+    for (const row of rows) {
+      const token = (row.positionTokenAddress as string).toLowerCase() as Address;
+      if (watched.has(token)) continue;
+      // Blocks since it opened, at a deliberately fast 4 blocks/s, plus margin.
+      const openedMs = (row.openedAt ?? row.createdAt).getTime();
+      const back = BigInt(Math.ceil(((Date.now() - openedMs) / 1000) * 4)) + 2_000n;
+      const from = latest > back ? latest - back : 0n;
+      log.warn("catching up a known but unwatched position token", { token, fromBlock: from.toString() });
+      await backfillPositionTokenEvents([token], from, latest);
+      watchPositionToken(token);
+    }
+  }
+
+  let bootstrapped = false;
+  let factoryWatched = false;
+  let poolFactoryWatched = false;
+  // A failed bootstrap (RPC limits, a dropped connection) is retried with
+  // backoff until it completes -- a backend with no indexer would never see a
+  // buy-in, redeem or close.
+  void (async () => {
+    for (let attempt = 0; !stopped; attempt += 1) {
+      try {
+        await bootstrap();
+        bootstrapped = true;
+        return;
+      } catch (error) {
+        const delayMs = Math.min(60_000, 5_000 * 2 ** attempt);
+        log.error("indexer bootstrap failed; retrying", { attempt: attempt + 1, delayMs, ...errorFields(error) });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  })();
 
   // Not required for correctness once live watching has taken over -- the
   // idempotency guards above handle overlap safely -- but it keeps a
@@ -1308,6 +1360,9 @@ export function startIndexer(): () => void {
     config.indexerCheckpointIntervalMs,
     async () => {
       const latest = await publicClient().getBlockNumber();
+      // Before the checkpoint moves past them: catch up any token the DB knows
+      // but nothing is watching yet.
+      await catchUpUnwatchedTokens(latest);
       await updateCheckpoint(latest);
     },
     (error) => log.error("checkpoint update failed", errorFields(error)),

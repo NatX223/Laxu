@@ -259,6 +259,10 @@ model PositionOpenRequest {
   venueEntryBefore   String? @map("venue_entry_before")
   /// Entry orders sent so far (a not-placed order is retried, 3 at most).
   venueAttempts      Int     @default(0) @map("venue_attempts")
+  /// Which process is driving this request, and until when: one driver at a
+  /// time across processes (a second backend, or a script driving in-process).
+  driverId           String? @map("driver_id")
+  driverLeaseUntil   DateTime? @map("driver_lease_until")
   venueOrderId       String? @map("venue_order_id")
   /// The actual position, human-readable decimals, read from the Exchange after
   /// the fill -- the same source createPosition's venue check reads.
