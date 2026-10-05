@@ -1044,3 +1044,62 @@ Ad-hoc diagnostic (one-off script, same `PerplTradingConnection.sendOrder` path)
 ```
 
 </details>
+
+## faucet (external requestFunds) — 2026-10-05T17:51:22.229Z
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| faucet | Amount received per requestFunds(receiver) | token() = 0xa9012a055bd4e0edff8ce09f960291c09d5322dc; first claim for fresh 0x915eCA694e1ed3a2b686cC2946c19DeCd6b3af9a: tx [0x5023c124…](https://testnet.monadvision.com/tx/0x5023c1240ab0c3ff3c7c401dbc52e8bae3d6fa5a4df348962e2bb3ae45f54611), received 10000000000 (10000 AUSD) | [0x5023c124…](https://testnet.monadvision.com/tx/0x5023c1240ab0c3ff3c7c401dbc52e8bae3d6fa5a4df348962e2bb3ae45f54611) |
+| faucet | May a non-receiver call it (caller = Laxu faucet wallet, receiver = user)? | **Yes** — caller 0xB033980fEfda4BB354B7FE6902239B8865261180 ≠ receiver 0x915eCA694e1ed3a2b686cC2946c19DeCd6b3af9a, funds went to the receiver | [0x5023c124…](https://testnet.monadvision.com/tx/0x5023c1240ab0c3ff3c7c401dbc52e8bae3d6fa5a4df348962e2bb3ae45f54611) |
+| faucet | Second immediate call (same caller, same receiver) — cooldown? | **reverted in simulation**: { "code": 3, "message": "execution reverted", "data": "0x20e5bc67" } | eth_call revert payload (raw) |
+| faucet | Same caller, another fresh receiver right after (is the cooldown per caller or per receiver?) | **reverted in simulation**: { "code": 3, "message": "execution reverted", "data": "0x20e5bc67" } | eth_call revert payload (raw) |
+
+<details><summary>raw result</summary>
+
+```json
+{
+  "faucet": "0xd236c18D274E54FAccC3dd9DDA4b27965a73ee6C",
+  "token": "0xa9012a055bd4e0edff8ce09f960291c09d5322dc",
+  "caller": "0xB033980fEfda4BB354B7FE6902239B8865261180",
+  "first": {
+    "receiver": "0x915eCA694e1ed3a2b686cC2946c19DeCd6b3af9a",
+    "sent": true,
+    "txHash": "0x5023c1240ab0c3ff3c7c401dbc52e8bae3d6fa5a4df348962e2bb3ae45f54611",
+    "before": "0",
+    "after": "10000000000"
+  },
+  "second": {
+    "receiver": "0x915eCA694e1ed3a2b686cC2946c19DeCd6b3af9a",
+    "sent": false,
+    "simulateRevert": {
+      "code": 3,
+      "message": "execution reverted",
+      "data": "0x20e5bc67"
+    },
+    "before": "10000000000",
+    "after": "10000000000"
+  },
+  "third": {
+    "receiver": "0x06AB6E81Cc8c315d9B062b2B18BB740C563e9e14",
+    "sent": false,
+    "simulateRevert": {
+      "code": 3,
+      "message": "execution reverted",
+      "data": "0x20e5bc67"
+    },
+    "before": "0",
+    "after": "0"
+  }
+}
+```
+
+</details>
+
+### Note on the external faucet run above (2026-10-05T17:51Z)
+
+| VERIFY | Question | Answer | Evidence |
+|---|---|---|---|
+| faucet | Exact signature | `requestFunds(address receiver)`, selector `0x544c7cf9`. **Not verified** on Sourcify (proxy or implementation), so it was taken from UI claim txs, whose input is `0x544c7cf9` ++ receiver, and cross-checked against the implementation bytecode (`0xba804df5…2a49` behind the EIP-1967 proxy `0xd236c18D…ee6C`, admin `0x85f263d9…48f2`). | UI claims [0x8c6c7d5d…](https://testnet.monadvision.com/tx/0x8c6c7d5d12011ec41282bb623105a9e5540cf764a98efb6f3ae0faf1957e2d09), [0x8ee8df3b…](https://testnet.monadvision.com/tx/0x8ee8df3bd42d60a5c9f274a8ae9af0874b4ab3894e38d0f096351582274e510c) |
+| faucet | Cooldown scope and length | **One global 60 s cooldown for the whole contract**, not per caller or receiver: right after our claim, a call from a *different* wallet (the float, which never claimed) for a fresh receiver reverted with the same `0x20e5bc67` (no args, no public signature), and our faucet wallet was allowed again ~60 s after the claim. Unnamed no-arg views agree: `0x48645704` → 60, `0xd9772a25` → 1791222680 (= 17:51:20Z, our claim's time), `0x905467f6` → 10000000000 (= 10,000 AUSD, the claim amount), `0x14bc2fd7` → 100000000000 (100,000 AUSD, meaning unknown). The faucet held ~997.5M AUSD. | eth_call simulations (scratch script), 17:51:44–17:52:20Z |
+| faucet | Consequence for Laxu | Two users claiming within 60 s of each other — or of anyone using the Perpl UI faucet — collide; the second reverts. External mode therefore simulates first and falls back to `transfer` on any revert. | — |
+| faucet | Backend `external` mode end to end | `claimTestFunds` for two fresh users 3 s apart: the first went **external** (10,000 AUSD received; the claim row records the amount read from the receipt's Transfer log); the second hit the 60 s cooldown in **simulation** (`0x20e5bc67`, no gas spent) and **fell back to transfer** (1,000 AUSD from the faucet wallet, funded with 2,000 AUSD from the float for this: [0x5f2af101…](https://testnet.monadvision.com/tx/0x5f2af101056194c8f51021c6019b6193c4654f5b30f04449e91a4afaf4227772)). Test rows deleted afterwards. | [0x413716af…](https://testnet.monadvision.com/tx/0x413716af4a1ffd14a984e05511a93c811bf78d7dc2b63dba0a85b06bf81207c6) (external), [0x420878cf…](https://testnet.monadvision.com/tx/0x420878cf606cb4dd5e9c1783c3216e67bbca062f87b1a47b6d49ce187ad30153) (fallback) |

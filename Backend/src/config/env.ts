@@ -170,13 +170,23 @@ export const config = {
   /// liquidator's or slot wallets' roles. See assertFaucetConfig.
   faucetEnabled: bool("FAUCET_ENABLED", false),
   faucetPrivateKey: optional("FAUCET_PRIVATE_KEY"),
-  /// `transfer`: from the pre-funded faucet wallet (the default unless the
-  /// asset is mintable). `direct`: asset.mint(user, amount).
+  /// `external`: the faucet wallet calls requestFunds(user) on Perpl's AUSD
+  /// faucet (FAUCET_EXTERNAL_ADDRESS), falling back to `transfer` if that
+  /// reverts -- the default unless the asset is mintable.
+  /// `transfer`: from the pre-funded faucet wallet. `direct`: asset.mint(user, amount).
   /// `mint_then_transfer`: asset.mint(amount) to the faucet, then transfer.
   faucetAssetMode: firstOf(
     ["FAUCET_ASSET_MODE", "FAUCET_USDG_MODE"],
-    bool("ASSET_MINTABLE", false) ? "direct" : "transfer",
-  ) as "transfer" | "direct" | "mint_then_transfer",
+    bool("ASSET_MINTABLE", false) ? "direct" : "external",
+  ) as "external" | "transfer" | "direct" | "mint_then_transfer",
+  /// Perpl's testnet AUSD faucet (proxy). requestFunds(receiver) pays the
+  /// receiver a fixed amount, any caller allowed, one claim per 60 s across
+  /// ALL callers (docs/perpl-findings.md, "external faucet").
+  faucetExternalAddress: optional("FAUCET_EXTERNAL_ADDRESS", "0xd236c18D274E54FAccC3dd9DDA4b27965a73ee6C"),
+  /// What one external claim pays (base units) -- shown to users in external
+  /// mode. Observed 10,000 AUSD on 2026-10-05; each claim row records the
+  /// amount actually transferred, read from the receipt.
+  faucetExternalAmount: optional("FAUCET_EXTERNAL_AMOUNT", "10000000000"),
   /// Base units (6 decimals); 1_000_000_000 = 1,000. bigint-parsed in
   /// assertFaucetConfig.
   faucetAssetAmount: firstOf(["FAUCET_ASSET_AMOUNT", "FAUCET_USDG_AMOUNT"], "1000000000"),
@@ -191,7 +201,7 @@ export const config = {
 } as const;
 
 const WEI_OR_UNITS = /^\d+$/;
-const FAUCET_MODES = ["transfer", "direct", "mint_then_transfer"] as const;
+const FAUCET_MODES = ["external", "transfer", "direct", "mint_then_transfer"] as const;
 
 /// Refuses to boot with FAUCET_ENABLED=true and anything the claim path would
 /// only trip over at a tester's first click. Called from src/index.ts.
@@ -204,13 +214,17 @@ export function assertFaucetConfig(): void {
   if (!FAUCET_MODES.includes(config.faucetAssetMode)) {
     problems.push(`FAUCET_ASSET_MODE must be one of ${FAUCET_MODES.join(", ")}, got ${config.faucetAssetMode}`);
   }
-  if (config.faucetAssetMode !== "transfer" && !config.assetMintable) {
+  if (config.faucetAssetMode === "external" && !/^0x[0-9a-fA-F]{40}$/.test(config.faucetExternalAddress)) {
+    problems.push(`FAUCET_EXTERNAL_ADDRESS must be an address, got ${config.faucetExternalAddress || "(empty)"}`);
+  }
+  if ((config.faucetAssetMode === "direct" || config.faucetAssetMode === "mint_then_transfer") && !config.assetMintable) {
     problems.push(`FAUCET_ASSET_MODE=${config.faucetAssetMode} needs a mintable asset (ASSET_MINTABLE=true)`);
   }
   for (const [name, value] of [
     ["FAUCET_ASSET_AMOUNT", config.faucetAssetAmount],
     ["FAUCET_NATIVE_TARGET_WEI", config.faucetNativeTargetWei],
     ["FAUCET_NATIVE_MIN_RESERVE_WEI", config.faucetNativeMinReserveWei],
+    ["FAUCET_EXTERNAL_AMOUNT", config.faucetExternalAmount],
   ] as const) {
     if (!WEI_OR_UNITS.test(value)) problems.push(`${name} must be a whole number of base units, got ${value}`);
   }

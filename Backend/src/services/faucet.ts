@@ -1,5 +1,5 @@
 import type { FaucetClaim, Prisma, User } from "@prisma/client";
-import { formatEther, type Address, type Hash, type WalletClient } from "viem";
+import { formatEther, parseEventLogs, type Address, type Hash, type TransactionReceipt, type WalletClient } from "viem";
 
 import { assetSelfMintAbi, erc20Abi } from "../chain/abi";
 import { assetAddress, assetDecimals, faucetWallet, publicClient, withWalletLock } from "../chain/clients";
@@ -27,9 +27,12 @@ const log = createLogger("faucet");
  * The faucet wallet pays for everything: it sends the user FAUCET_ASSET_AMOUNT
  * of the asset and tops their MON up to FAUCET_NATIVE_TARGET_WEI.
  *
- * The asset goes out in one of three shapes (FAUCET_ASSET_MODE):
- *   transfer           -- from the faucet wallet's own pre-funded balance (the
- *                         default: Perpl's AUSD has no open mint);
+ * The asset goes out in one of four shapes (FAUCET_ASSET_MODE):
+ *   external           -- the faucet wallet calls requestFunds(user) on Perpl's
+ *                         AUSD faucet (the default: AUSD has no open mint). That
+ *                         faucet allows one claim per 60 s across ALL callers,
+ *                         so a revert falls back to `transfer`;
+ *   transfer           -- from the faucet wallet's own pre-funded balance;
  *   direct             -- asset.mint(user, amount);
  *   mint_then_transfer -- asset.mint(amount) to the faucet, then transfer.
  *
@@ -47,6 +50,26 @@ const LOW_BALANCE_RESERVES = 5n;
 
 const cooldownMs = () => config.faucetCooldownHours * 60 * 60 * 1000;
 const assetAmount = () => BigInt(config.faucetAssetAmount);
+/// What a claim is expected to pay, for display and the pending row: the
+/// external faucet's fixed payout in external mode (the row is corrected to
+/// the credited amount afterwards).
+const expectedAmount = () =>
+  config.faucetAssetMode === "external" ? BigInt(config.faucetExternalAmount) : assetAmount();
+/// Modes that can end up paying from the faucet wallet's own asset balance.
+const paysFromBalance = () => config.faucetAssetMode === "transfer" || config.faucetAssetMode === "external";
+
+/// Perpl's testnet AUSD faucet. `requestFunds(address)` = 0x544c7cf9, taken from
+/// UI claim transactions (the contract is not source-verified) -- see
+/// docs/perpl-findings.md, "external faucet".
+const externalFaucetAbi = [
+  {
+    type: "function",
+    name: "requestFunds",
+    inputs: [{ name: "receiver", type: "address" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+] as const;
 const nativeTarget = () => BigInt(config.faucetNativeTargetWei);
 const reserve = () => BigInt(config.faucetNativeMinReserveWei);
 
@@ -135,7 +158,7 @@ async function reserveClaim(walletAddress: string, ip: string | null): Promise<F
 
     // Column names predate the move: usdg* holds the asset, eth* the native token.
     return tx.faucetClaim.create({
-      data: { walletAddress, ip, usdgAmount: assetAmount().toString(), ethAmountWei: "0", status: "pending" },
+      data: { walletAddress, ip, usdgAmount: expectedAmount().toString(), ethAmountWei: "0", status: "pending" },
     });
   });
 }
@@ -151,6 +174,18 @@ async function reserveClaim(walletAddress: string, ip: string | null): Promise<F
  * Must run inside the faucet's queue.
  */
 async function sendWithNonce(label: string, build: (nonce: number) => Promise<Hash>): Promise<Hash> {
+  return (await sendWithNonceReceipt(label, build)).hash;
+}
+
+/// A transaction was broadcast but its fate is unknown (no receipt in time, or
+/// a receipt that credited nothing) -- never safe to fall back from: the funds
+/// may still arrive.
+class SentButUnconfirmedError extends Error {}
+
+async function sendWithNonceReceipt(
+  label: string,
+  build: (nonce: number) => Promise<Hash>,
+): Promise<{ hash: Hash; receipt: TransactionReceipt }> {
   const { address } = signer();
   const nonce = () => publicClient().getTransactionCount({ address, blockTag: "pending" });
 
@@ -163,9 +198,14 @@ async function sendWithNonce(label: string, build: (nonce: number) => Promise<Ha
     hash = await build(await nonce());
   }
 
-  const receipt = await publicClient().waitForTransactionReceipt({ hash, timeout: RECEIPT_TIMEOUT_MS });
+  let receipt: TransactionReceipt;
+  try {
+    receipt = await publicClient().waitForTransactionReceipt({ hash, timeout: RECEIPT_TIMEOUT_MS });
+  } catch (error) {
+    throw new SentButUnconfirmedError(`${label}: no receipt for ${hash} (${shortError(error)})`);
+  }
   if (receipt.status !== "success") throw new Error(`${label} reverted (tx ${hash})`);
-  return hash;
+  return { hash, receipt };
 }
 
 function inQueue<T>(task: () => Promise<T>): Promise<T> {
@@ -186,9 +226,63 @@ async function writeAsset(
   });
 }
 
-/// The asset to `to`, in the configured shape. Returns the hash of the
-/// transaction that credits the user.
-async function sendAsset(to: Address, amount: bigint): Promise<Hash> {
+/// The asset `to` received in this receipt (sum of the asset's Transfer logs to it).
+function creditedTo(receipt: TransactionReceipt, to: Address): bigint {
+  return parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs: receipt.logs })
+    .filter((log) => log.address.toLowerCase() === assetAddress().toLowerCase())
+    .filter((log) => (log.args as { to: Address }).to.toLowerCase() === to.toLowerCase())
+    .reduce((sum, log) => sum + (log.args as { value: bigint }).value, 0n);
+}
+
+/// requestFunds(to) on the external faucet, from the faucet wallet. Simulated
+/// first, so a cooldown revert (custom error 0x20e5bc67) costs no gas.
+async function requestExternal(to: Address): Promise<{ hash: Hash; amount: bigint }> {
+  return inQueue(async () => {
+    const { wallet } = signer();
+    const account = wallet.account!;
+    const { hash, receipt } = await sendWithNonceReceipt("external faucet requestFunds", async (nonce) => {
+      const { request } = await publicClient().simulateContract({
+        address: config.faucetExternalAddress as Address,
+        abi: externalFaucetAbi,
+        functionName: "requestFunds",
+        args: [to],
+        account,
+      } as never);
+      return wallet.writeContract({ ...(request as object), nonce } as never);
+    });
+    const amount = creditedTo(receipt, to);
+    if (amount === 0n) throw new SentButUnconfirmedError(`external faucet tx ${hash} credited nothing to ${to}`);
+    return { hash, amount };
+  });
+}
+
+/// The asset to `to`, in the configured shape: the transaction that credits
+/// the user, how much it credited, and which path paid.
+async function sendAsset(to: Address, amount: bigint): Promise<{ hash: Hash; amount: bigint; via: string }> {
+  if (config.faucetAssetMode === "external") {
+    try {
+      return { ...(await requestExternal(to)), via: "external" };
+    } catch (error) {
+      // Broadcast with no verdict: the funds may still land -- do not pay twice.
+      if (error instanceof SentButUnconfirmedError) throw error;
+      // A revert (usually another claim inside the faucet's 60 s window, ours
+      // or the Perpl UI's) moved nothing: pay from our own balance instead.
+      log.warn("external faucet reverted; falling back to transfer", { to, ...errorFields(error) });
+    }
+    const hash = await inQueue(() =>
+      writeAsset("asset transfer (external fallback)", {
+        abi: erc20Abi,
+        functionName: "transfer",
+        args: [to, assetAmount()],
+      }),
+    );
+    return { hash, amount: assetAmount(), via: "transfer (fallback)" };
+  }
+  return { hash: await sendFromAsset(to, amount), amount, via: config.faucetAssetMode };
+}
+
+/// transfer / direct / mint_then_transfer.
+async function sendFromAsset(to: Address, amount: bigint): Promise<Hash> {
   if (config.faucetAssetMode === "mint_then_transfer") {
     const mintHash = await inQueue(() =>
       writeAsset("asset mint (to faucet)", { abi: assetSelfMintAbi, functionName: "mint", args: [amount] }),
@@ -262,8 +356,8 @@ export async function faucetStatus(user: User, ip: string | null): Promise<Fauce
     enabled: true,
     canClaim: blocked === null,
     nextClaimAt: blocked?.toISOString() ?? null,
-    usdgAmount: assetHuman(assetAmount(), decimals),
-    assetAmount: assetHuman(assetAmount(), decimals),
+    usdgAmount: assetHuman(expectedAmount(), decimals),
+    assetAmount: assetHuman(expectedAmount(), decimals),
     balances: { usdg: assetText, eth: nativeText, asset: assetText, native: nativeText },
     faucetLow: faucetBal < reserve(),
   };
@@ -295,20 +389,30 @@ export async function claimTestFunds(user: User, ip: string | null): Promise<Cla
   let assetTxHash: Hash | undefined;
   let native: NativeResult | undefined;
   try {
-    assetTxHash = await sendAsset(to, amount);
+    const asset = await sendAsset(to, amount);
+    assetTxHash = asset.hash;
     native = await topUpNative(to);
 
     await db.faucetClaim.update({
       where: { id: claim.id },
       data: {
         status: "sent",
+        usdgAmount: asset.amount.toString(),
         usdgTxHash: assetTxHash,
         ethTxHash: native.hash,
         ethAmountWei: native.amount.toString(),
         ethSkipped: native.skipped,
       },
     });
-    log.info("claim sent", { claimId: claim.id, to, assetTxHash, nativeTxHash: native.hash, nativeWei: native.amount });
+    log.info("claim sent", {
+      claimId: claim.id,
+      to,
+      via: asset.via,
+      assetAmount: asset.amount,
+      assetTxHash,
+      nativeTxHash: native.hash,
+      nativeWei: native.amount,
+    });
     return {
       usdgTxHash: assetTxHash,
       ethTxHash: native.hash,
@@ -329,9 +433,9 @@ export async function claimTestFunds(user: User, ip: string | null): Promise<Cla
       .then((balance) => balance < reserve())
       .catch(() => false);
     const assetLow =
-      config.faucetAssetMode === "transfer"
+      paysFromBalance()
         ? await faucetAssetBalance()
-            .then((balance) => balance < amount)
+            .then((balance) => balance < assetAmount())
             .catch(() => false)
         : false;
     log.error("claim failed", { claimId: claim.id, to, assetSent: Boolean(assetTxHash), faucetLow, assetLow, ...errorFields(error) });
@@ -409,7 +513,8 @@ export function startFaucetMonitor(): () => void {
       if (balance < reserve()) log.error("faucet is below its MON reserve -- top-ups are paused; refill it", fields);
       else if (balance < reserve() * LOW_BALANCE_RESERVES) log.warn("faucet MON is running low; refill it", fields);
 
-      if (config.faucetAssetMode === "transfer") {
+      // External mode only pays from this balance as its fallback.
+      if (paysFromBalance()) {
         const assetBalance = await faucetAssetBalance();
         const decimals = await assetDecimals();
         const assetFields = {

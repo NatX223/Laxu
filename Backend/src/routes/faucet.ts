@@ -12,7 +12,11 @@ export const faucetRouter = Router();
 
 async function assetAmount(): Promise<string | null> {
   return config.faucetEnabled
-    ? formatTruncated(BigInt(config.faucetAssetAmount), await assetDecimals(), 2).replace(/\.00$/, "")
+    ? formatTruncated(
+        BigInt(config.faucetAssetMode === "external" ? config.faucetExternalAmount : config.faucetAssetAmount),
+        await assetDecimals(),
+        2,
+      ).replace(/\.00$/, "")
     : null;
 }
 

@@ -21,10 +21,11 @@
 
 import { existsSync, mkdirSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { relative, resolve, join } from "node:path";
-import type { Address } from "viem";
+import { encodeFunctionData, type Address, type Hex } from "viem";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
-import { assetDecimals, floatAddress, floatWallet, publicClient } from "../src/chain/clients";
-import { assetBalanceOf, transferAsset } from "../src/chain/writes";
+import { assetDecimals, faucetWallet, floatAddress, floatWallet, publicClient } from "../src/chain/clients";
+import { assetBalanceOf, sendTransaction, transferAsset } from "../src/chain/writes";
 import { db } from "../src/config/db";
 import { config } from "../src/config/env";
 import { credentialsFor, slotWallet, type SlotWithWallet } from "../src/services/allocator";
@@ -860,6 +861,86 @@ async function probeClose() {
   return { rows, data };
 }
 
+// --- External faucet (FAUCET_EXTERNAL_ADDRESS) -----------------------------------------
+
+/// `requestFunds(address)` = 0x544c7cf9 -- taken from UI claim txs (e.g. 0x8c6c7d5d…, input
+/// 0x544c7cf9 ++ receiver), and present in the proxy implementation's bytecode.
+const EXTERNAL_FAUCET_ABI = [
+  { type: "function", name: "requestFunds", inputs: [{ name: "receiver", type: "address" }], outputs: [], stateMutability: "nonpayable" },
+] as const;
+
+/// eth_call that returns the raw revert payload instead of throwing it away.
+async function rawCall(from: Address, to: Address, data: Hex): Promise<{ ok: boolean; result?: string; error?: unknown }> {
+  const res = await fetch(config.rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ from, to, data }, "latest"] }),
+  });
+  const out = (await res.json()) as { result?: string; error?: unknown };
+  return out.error ? { ok: false, error: out.error } : { ok: true, result: out.result };
+}
+
+async function probeFaucet() {
+  const faucet = (process.env.FAUCET_EXTERNAL_ADDRESS || "0xd236c18D274E54FAccC3dd9DDA4b27965a73ee6C") as Address;
+  const wallet = faucetWallet();
+  const caller = wallet.account!.address;
+  const fresh = () => privateKeyToAccount(generatePrivateKey()).address; // key discarded: receive-only
+  const receiverA = fresh();
+  const receiverB = fresh();
+  const dataFor = (r: Address) => encodeFunctionData({ abi: EXTERNAL_FAUCET_ABI, functionName: "requestFunds", args: [r] });
+  const tokenAddr = ("0x" + ((await rawCall(caller, faucet, "0xfc0c546a")).result ?? "").slice(-40)) as Address;
+
+  const claim = async (receiver: Address) => {
+    const before = await assetBalanceOf(receiver);
+    const sim = await rawCall(caller, faucet, dataFor(receiver));
+    if (!sim.ok) return { receiver, sent: false, simulateRevert: sim.error, before, after: before };
+    const { txHash } = await sendTransaction(wallet, "external faucet requestFunds", {
+      address: faucet,
+      abi: EXTERNAL_FAUCET_ABI as unknown as readonly unknown[],
+      functionName: "requestFunds",
+      args: [receiver],
+    });
+    return { receiver, sent: true, txHash, before, after: await assetBalanceOf(receiver) };
+  };
+
+  const first = await claim(receiverA);
+  const second = await claim(receiverA); // immediately, same receiver, same caller
+  const third = await claim(receiverB); // same caller, a different fresh receiver
+  const decimals = await assetDecimals();
+  const human = (x: bigint) => `${Number(x) / 10 ** decimals}`;
+  const data = { faucet, token: tokenAddr, caller, first, second, third };
+  const outcome = (c: typeof first) =>
+    c.sent ? `tx ${TX(c.txHash!)}, received ${c.after - c.before} (${human(c.after - c.before)} AUSD)` : `**reverted in simulation**: ${json(c.simulateRevert).replace(/\s+/g, " ")}`;
+  const rows: Row[] = [
+    {
+      verify: "faucet",
+      question: "Amount received per requestFunds(receiver)",
+      answer: `token() = ${tokenAddr}; first claim for fresh ${receiverA}: ${outcome(first)}`,
+      evidence: first.txHash ? TX(first.txHash) : "eth_call",
+    },
+    {
+      verify: "faucet",
+      question: "May a non-receiver call it (caller = Laxu faucet wallet, receiver = user)?",
+      answer: first.sent ? `**Yes** — caller ${caller} ≠ receiver ${receiverA}, funds went to the receiver` : "No — see the revert above",
+      evidence: first.txHash ? TX(first.txHash) : "eth_call",
+    },
+    {
+      verify: "faucet",
+      question: "Second immediate call (same caller, same receiver) — cooldown?",
+      answer: outcome(second),
+      evidence: second.txHash ? TX(second.txHash) : "eth_call revert payload (raw)",
+    },
+    {
+      verify: "faucet",
+      question: "Same caller, another fresh receiver right after (is the cooldown per caller or per receiver?)",
+      answer: outcome(third),
+      evidence: third.txHash ? TX(third.txHash) : "eth_call revert payload (raw)",
+    },
+  ];
+  appendFindings("faucet (external requestFunds)", rows, data);
+  return { rows, data };
+}
+
 // --- Main ------------------------------------------------------------------------------
 
 const COMMANDS: Record<string, () => Promise<{ rows: Row[]; data: unknown }>> = {
@@ -872,6 +953,7 @@ const COMMANDS: Record<string, () => Promise<{ rows: Row[]; data: unknown }>> = 
   "add-margin": probeAddMargin,
   increase: probeIncrease,
   close: probeClose,
+  faucet: probeFaucet,
 };
 
 async function main(): Promise<void> {
