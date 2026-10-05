@@ -4,7 +4,7 @@
 Borrow against your open perp trades. Earn when others back them.
 
 **Live app:** [App](https://laxu.vercel.app) · **Demo video:** [Demo](https://www.loom.com/share/9debdffa70c042d0a8f9f573f3c89843) · **Pitch deck:** [Pitch](https://pitch.com/v/laxu-bsyust) · **Litepaper:** [docs/LITEPAPER.md](docs/LITEPAPER.md)
-**Network:** Robinhood Chain testnet (chain ID 46630) · **Built for:** Arbitrum Open House Singapore 2026
+**Network:** Monad testnet (chain ID) · **Built for:** Arbitrum Open House Singapore 2026
 
 > ⚠️ Testnet only, no real funds. Laxu is an independent project built on Arcus,
 > not affiliated with or endorsed by Arcus.
