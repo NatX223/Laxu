@@ -358,9 +358,6 @@ CREATE UNIQUE INDEX "subaccount_slots_operator_wallet_id_account_index_key" ON "
 CREATE UNIQUE INDEX "positions_position_token_address_key" ON "positions"("position_token_address");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "positions_venue_request_id_key" ON "positions"("venue_request_id");
-
--- CreateIndex
 CREATE INDEX "positions_status_idx" ON "positions"("status");
 
 -- CreateIndex
@@ -374,9 +371,6 @@ CREATE INDEX "positions_listed_idx" ON "positions"("listed");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "position_open_requests_payment_tx_hash_key" ON "position_open_requests"("payment_tx_hash");
-
--- CreateIndex
-CREATE UNIQUE INDEX "position_open_requests_venue_request_id_key" ON "position_open_requests"("venue_request_id");
 
 -- CreateIndex
 CREATE INDEX "position_open_requests_status_idx" ON "position_open_requests"("status");

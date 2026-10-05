@@ -6,7 +6,7 @@ const log = createLogger("seed");
 
 /**
  * Markets are no longer a hard-coded list: they sync live from Perpl
-^ * `GET /v1/pub/context` (the backend also does this at boot and every minute). The
+ * `GET /v1/pub/context` (the backend also does this at boot and every minute). The
  * seed just runs one sync so a fresh database is usable straight away.
  */
 async function main(): Promise<void> {

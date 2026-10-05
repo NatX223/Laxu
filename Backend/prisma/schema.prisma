@@ -143,7 +143,7 @@ model Position {
   venueOrderId     String? @map("venue_order_id")
   /// The entry order's request id (`rq`), saved BEFORE placing so a restarted
   /// process can still recognise its own order.
-  venueRequestId   String? @unique @map("venue_request_id")
+  venueRequestId   String? @map("venue_request_id")
   /// Perpl's API position id (`pid`), used to match position stream events.
   venuePositionPid String? @map("venue_position_pid")
 
@@ -250,7 +250,7 @@ model PositionOpenRequest {
 
   /// Written before the order is sent (with the `lb` it is sent with), so a
   /// restart can look the order up instead of placing a second one.
-  venueRequestId     String? @unique @map("venue_request_id")
+  venueRequestId     String? @map("venue_request_id")
   venueLastExecBlock String? @map("venue_last_exec_block")
   venueOrderId       String? @map("venue_order_id")
   /// The actual position, human-readable decimals, read from the Exchange after
