@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { bytes32ToSymbol, leverageLimits, marketIdFor, maxLeverage, tradingHoursOf } from "./markets";
+import { bytes32ToSymbol, leverageLimits, marketIdFor, maxLeverage } from "./markets";
 
 const lev = (initialMarginFraction: string, offHoursInitialMarginFraction = initialMarginFraction) => ({
   inHours: maxLeverage({ initialMarginFraction, offHoursInitialMarginFraction, isOutsideRth: false }),
   offHours: maxLeverage({ initialMarginFraction, offHoursInitialMarginFraction, isOutsideRth: true }),
 });
 
-// Fractions as Arcus reports them today.
 test("maxLeverage matches the spec table", () => {
   assert.deepEqual(lev("0.025"), { inHours: 20, offHours: 20 }, "BTC 40x capped at 20");
   assert.deepEqual(lev("0.04"), { inHours: 20, offHours: 20 }, "ETH 25x capped at 20 (1/0.04 float)");
@@ -38,10 +37,3 @@ test("market ids are readable bytes32 of the base asset", () => {
   assert.equal(bytes32ToSymbol(id), "ETH");
 });
 
-test("tradingHoursOf converts Arcus seconds-of-day", () => {
-  assert.deepEqual(
-    tradingHoursOf({ startSecondsOfDay: 14400, endSecondsOfDay: 72000, timezone: "America/New_York" }),
-    { start: "04:00", end: "20:00", timezone: "America/New_York" },
-  );
-  assert.equal(tradingHoursOf(null), null);
-});

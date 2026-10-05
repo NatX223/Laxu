@@ -2,15 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  UnitsError,
-  fromArcusPositionRow,
   fromPrice18,
   fromUsdg6,
   toFixedDecimals,
   toPrice18,
   toSize6,
   toUsdg6,
-  usdg6ToArcusQuantums,
 } from "./units";
 
 const E18 = 10n ** 18n;
@@ -38,10 +35,6 @@ test("USDG amounts are signed 6dp", () => {
   assert.equal(fromUsdg6(-2_000_000n), "-2");
 });
 
-test("withdraw amounts are quote quantums, 1e9 per dollar", () => {
-  assert.equal(usdg6ToArcusQuantums(toUsdg6("5")), 5_000_000_000n);
-});
-
 test("toFixedDecimals truncates to a fixed width", () => {
   assert.equal(toFixedDecimals(148n * 10n ** 16n, 18, 2), "1.48");
   assert.equal(toFixedDecimals(1_999_999n, 6, 2), "1.99");
@@ -49,20 +42,3 @@ test("toFixedDecimals truncates to a fixed width", () => {
   assert.equal(toFixedDecimals(5n, 0, 1), "5.0");
 });
 
-test("fromArcusPositionRow parses a decimal row", () => {
-  const parsed = fromArcusPositionRow(
-    { size: "0.01", averageEntryPrice: "2000.5", cumulativeFunding: { sinceOpen: "-0.12" } },
-    "2010",
-  );
-  assert.equal(parsed.size6, 10000n);
-  assert.equal(parsed.entry18, 20005n * 10n ** 17n);
-  assert.equal(parsed.mark18, 2010n * E18);
-  assert.equal(parsed.funding6, -120000n);
-});
-
-test("fromArcusPositionRow refuses rows that look like engine quantums", () => {
-  assert.throws(
-    () => fromArcusPositionRow({ size: "50000000000", averageEntryPrice: "97500.5" }),
-    UnitsError,
-  );
-});
