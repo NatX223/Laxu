@@ -1,18 +1,18 @@
 import { Router, type Request } from "express";
 
 import { requireUser } from "../auth/privy";
+import { assetDecimals } from "../chain/clients";
 import { config } from "../config/env";
 import { asyncHandler } from "../lib/async";
 import { unauthorized } from "../lib/errors";
 import { claimTestFunds, faucetStatus } from "../services/faucet";
 import { normaliseIp, formatTruncated } from "../services/faucetRules";
-import { ASSET_DECIMALS_DEFAULT } from "../lib/units";
 
 export const faucetRouter = Router();
 
-function assetAmount(): string | null {
+async function assetAmount(): Promise<string | null> {
   return config.faucetEnabled
-    ? formatTruncated(BigInt(config.faucetAssetAmount), ASSET_DECIMALS_DEFAULT, 2).replace(/\.00$/, "")
+    ? formatTruncated(BigInt(config.faucetAssetAmount), await assetDecimals(), 2).replace(/\.00$/, "")
     : null;
 }
 
@@ -23,14 +23,18 @@ function registeredUser(req: Request) {
 
 /// Public: lets a signed-out visitor's UI decide whether to show "Sign in to
 /// get test funds" at all. Everything user-specific is behind /status.
-faucetRouter.get("/config", (_req, res) => {
-  res.json({
-    enabled: config.faucetEnabled,
-    /// `usdgAmount` is the old name for `assetAmount`, kept for the current frontend.
-    usdgAmount: assetAmount(),
-    assetAmount: assetAmount(),
-  });
-});
+faucetRouter.get(
+  "/config",
+  asyncHandler(async (_req, res) => {
+    const amount = await assetAmount();
+    res.json({
+      enabled: config.faucetEnabled,
+      /// `usdgAmount` is the old name for `assetAmount`, kept for the current frontend.
+      usdgAmount: amount,
+      assetAmount: amount,
+    });
+  }),
+);
 
 faucetRouter.get(
   "/status",

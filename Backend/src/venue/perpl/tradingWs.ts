@@ -5,6 +5,7 @@ import { config } from "../../config/env";
 import { loadEd25519PrivateKey } from "../../lib/ed25519";
 import { createLogger, errorFields } from "../../lib/logger";
 import { Mt, OrderStatus, perplChainId, perplTradingWsUrl } from "./config";
+import { recordFrame } from "./recorder";
 import { getWallet } from "./rest";
 import { signInFrame } from "./signing";
 import type { ApiAccount, ApiOrder, ApiPosition, ApiStatus, ApiWallet, OrderSpec, PerplCredentials } from "./types";
@@ -111,7 +112,8 @@ export type ConnectionState = "idle" | "connecting" | "open" | "reconnecting" | 
  *     mt:21 (account -- `fw` and `lfr` re-read every time), mt:24 (orders),
  *     mt:25 (fills), mt:27 (positions), mt:100 (heartbeat: head block).
  *   - A heartbeat whose `sn` is not previous + 1 means frames were lost:
- *     force a reconnect for fresh snapshots.
+ *     force a reconnect for fresh snapshots (only a warning when
+ *     PERPL_HEARTBEAT_GAP_RECONNECT=false).
  *   - Any close rejects every in-flight order with ConnectionLostError.
  *
  * Emits `position` (ApiPosition, plus each settlement event in `e[]`) and
@@ -255,7 +257,7 @@ export class PerplTradingConnection extends EventEmitter {
     const ack = this.awaitAck(sn);
 
     try {
-      ws.send(JSON.stringify({ mt: Mt.OrderRequest, sn, ...spec }));
+      this.send(ws, { mt: Mt.OrderRequest, sn, ...spec });
     } catch (error) {
       outcome.cancel();
       this.acks.get(sn)?.reject(new ConnectionLostError());
@@ -277,6 +279,12 @@ export class PerplTradingConnection extends EventEmitter {
   }
 
   // --- internals --------------------------------------------------------------------
+
+  /// Every outgoing frame goes through here (and the recorder, when on).
+  private send(ws: WebSocket, frame: Record<string, unknown>): void {
+    recordFrame(this.slotId, "out", frame);
+    ws.send(JSON.stringify(frame));
+  }
 
   private nextFrameSn(): number {
     this.frameSn = this.frameSn >= 2 ** 31 ? 1 : this.frameSn + 1;
@@ -364,14 +372,13 @@ export class PerplTradingConnection extends EventEmitter {
     ws.on("open", () => {
       try {
         // Must be the first frame, within the idle timeout.
-        ws.send(
-          JSON.stringify(
-            signInFrame({
-              key: loadEd25519PrivateKey(this.credentials.apiSecret),
-              apiKey: this.credentials.apiKey,
-              chainId: perplChainId(),
-            }),
-          ),
+        this.send(
+          ws,
+          signInFrame({
+            key: loadEd25519PrivateKey(this.credentials.apiSecret),
+            apiKey: this.credentials.apiKey,
+            chainId: perplChainId(),
+          }),
         );
       } catch (error) {
         this.lastError = `sign-in failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -381,7 +388,7 @@ export class PerplTradingConnection extends EventEmitter {
       }
       if (this.pingTimer) clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ mt: Mt.Ping, t: Date.now() }));
+        if (ws.readyState === WebSocket.OPEN) this.send(ws, { mt: Mt.Ping, t: Date.now() });
       }, PING_INTERVAL_MS);
     });
 
@@ -390,9 +397,11 @@ export class PerplTradingConnection extends EventEmitter {
       try {
         message = JSON.parse(data.toString()) as Record<string, unknown>;
       } catch {
+        recordFrame(this.slotId, "in", { raw: data.toString() });
         log.warn("unparseable trading frame", { slotId: this.slotId });
         return;
       }
+      recordFrame(this.slotId, "in", message);
       try {
         this.handle(message);
       } catch (error) {
@@ -472,8 +481,13 @@ export class PerplTradingConnection extends EventEmitter {
         // WalletSnapshot's `sn`; if that does not hold on testnet, every
         // connection will flap here.
         if (this.lastSn !== undefined && sn !== this.lastSn + 1) {
-          this.forceReconnect(`heartbeat sequence gap (${this.lastSn} -> ${sn})`);
-          return;
+          const why = `heartbeat sequence gap (${this.lastSn} -> ${sn})`;
+          if (config.perplHeartbeatGapReconnect) {
+            this.forceReconnect(why);
+            return;
+          }
+          // PERPL_HEARTBEAT_GAP_RECONNECT=false: note it and carry on.
+          log.warn("heartbeat sequence gap ignored", { slotId: this.slotId, why });
         }
         this.lastSn = sn;
         if (message.h !== undefined) {

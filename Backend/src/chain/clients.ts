@@ -206,10 +206,12 @@ export async function assetDecimals(): Promise<number> {
     functionName: "decimals",
   });
 
-  // lib/units.ts fixes the asset, shares and size at 6 decimals -- the scale
-  // that makes PositionToken's `size * (mark - entry) / 1e18` land in the
-  // asset. A token with any other decimals would make every amount silently
-  // wrong, so refuse it.
+  // The asset is fixed by the deployed contracts (AUSD). lib/units.ts's
+  // toAsset6/fromAsset6 and every share amount use ASSET_DECIMALS_DEFAULT, so
+  // this check is what makes that constant equal to assetDecimals(). It is a
+  // real constraint, not a convenience: PositionToken.totalAssets =
+  // capital + size * (mark - entry) / 1e18 only lands in the asset's units when
+  // size (10^6, Laxu's size6) shares the asset's scale.
   if (Number(decimals) !== ASSET_DECIMALS_DEFAULT) {
     throw new Error(`Asset at ${address} has ${decimals} decimals; lib/units.ts assumes ${ASSET_DECIMALS_DEFAULT}`);
   }

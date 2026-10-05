@@ -88,6 +88,13 @@ export const config = {
   /// Asset base units kept in every slot account. Empty = the exchange's
   /// minimum account open amount, converted to asset units.
   perplSlotReserve: optional("PERPL_SLOT_RESERVE"),
+  /// A heartbeat `sn` gap forces a trading-socket reconnect (fresh snapshots).
+  /// `false` only logs it -- a testing safety valve against a reconnect loop if
+  /// the gap rule itself turns out to be wrong.
+  perplHeartbeatGapReconnect: bool("PERPL_HEARTBEAT_GAP_RECONNECT", true),
+  /// When set, every trading-WS frame (in and out) and every REST call is
+  /// appended, redacted, as JSONL under this directory. Testing/fixtures only.
+  perplRecordDir: optional("PERPL_RECORD_DIR"),
 
   // --- Float ---------------------------------------------------------------
   /// Fronts buy-in funding and redeem payouts (replaces minting). Defaults to

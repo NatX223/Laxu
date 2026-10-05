@@ -30,7 +30,7 @@ import { badRequest, conflict, forbidden, notFound, serviceUnavailable } from ".
 import { alert, createLogger, errorFields } from "../lib/logger";
 import { PRICE_SCALE, fromPrice18, fromSize6, toPrice18, toSize6 } from "../lib/units";
 import { getPositions as getApiPositions } from "../venue/perpl/rest";
-import { apiAmountToAsset, collateralScale } from "../venue/perpl/units";
+import { apiAmountToAsset, assertSizeScaleSupported, collateralScale } from "../venue/perpl/units";
 import { raiseLastRequestId } from "../venue/requests";
 import { venue, type OrderOutcome } from "../venue/types";
 import {
@@ -130,6 +130,8 @@ async function minOpenAmount(market: ResolvedMarket): Promise<bigint> {
 
 export async function requestOpenPosition(request: OpenPositionRequest): Promise<OpenPositionReservation> {
   const market = await requireMarketByName(request.market);
+  // Before any money moves: the token could never be created otherwise.
+  assertSizeScaleSupported(await collateralScale());
 
   const decimals = await assetDecimals();
   let amount: bigint;

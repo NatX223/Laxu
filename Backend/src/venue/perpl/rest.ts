@@ -5,6 +5,7 @@ import { sleep } from "../../lib/async";
 import { loadEd25519PrivateKey } from "../../lib/ed25519";
 import { createLogger } from "../../lib/logger";
 import { perplApiUrl, perplChainId } from "./config";
+import { recordRest } from "./recorder";
 import { signedHeaders } from "./signing";
 import type {
   ApiAccountEvent,
@@ -57,6 +58,7 @@ async function request<T>(
   target: string,
   body: string,
   headers: () => Record<string, string>,
+  wallet?: string,
 ): Promise<T> {
   for (let attempt = 0; ; attempt += 1) {
     let status: number;
@@ -71,7 +73,17 @@ async function request<T>(
       });
       status = res.status;
       data = res.data;
+      recordRest({ method, target, status, body: data, requestBody: body === "" ? undefined : safeJson(body), wallet });
     } catch (error) {
+      recordRest({
+        method,
+        target,
+        status: error instanceof AxiosError ? (error.response?.status ?? null) : null,
+        body: error instanceof AxiosError ? error.response?.data : undefined,
+        requestBody: body === "" ? undefined : safeJson(body),
+        wallet,
+        error: error instanceof Error ? error.message : String(error),
+      });
       if (error instanceof AxiosError && error.response?.status === 503 && attempt < BACKOFF_MS.length) {
         await sleep(BACKOFF_MS[attempt]);
         continue;
@@ -92,6 +104,14 @@ async function request<T>(
   }
 }
 
+function safeJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 /// Unauthenticated GET. `target` starts at /v1/.
 export function publicGet<T>(target: string): Promise<T> {
   return request<T>(`GET ${target}`, "GET", target, "", () => ({}));
@@ -106,8 +126,13 @@ export function signedRequest<T>(
 ): Promise<T> {
   const raw = body === undefined ? "" : JSON.stringify(body);
   const key = loadEd25519PrivateKey(credentials.apiSecret);
-  return request<T>(`${method} ${target}`, method, target, raw, () =>
-    signedHeaders({ key, apiKey: credentials.apiKey, chainId: perplChainId(), method, target, body: raw }),
+  return request<T>(
+    `${method} ${target}`,
+    method,
+    target,
+    raw,
+    () => signedHeaders({ key, apiKey: credentials.apiKey, chainId: perplChainId(), method, target, body: raw }),
+    credentials.address,
   );
 }
 

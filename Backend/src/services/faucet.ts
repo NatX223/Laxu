@@ -2,13 +2,12 @@ import type { FaucetClaim, Prisma, User } from "@prisma/client";
 import { formatEther, type Address, type Hash, type WalletClient } from "viem";
 
 import { assetSelfMintAbi, erc20Abi } from "../chain/abi";
-import { assetAddress, faucetWallet, publicClient, withWalletLock } from "../chain/clients";
+import { assetAddress, assetDecimals, faucetWallet, publicClient, withWalletLock } from "../chain/clients";
 import { db } from "../config/db";
 import { config } from "../config/env";
 import { startWorker } from "../lib/async";
 import { forbidden, HttpError } from "../lib/errors";
 import { createLogger, errorFields } from "../lib/logger";
-import { ASSET_DECIMALS_DEFAULT } from "../lib/units";
 import {
   ACTIVE_STATUSES,
   IP_WINDOW_MS,
@@ -84,7 +83,7 @@ export async function faucetAssetBalance(): Promise<bigint> {
   })) as bigint;
 }
 
-const assetHuman = (units: bigint) => formatTruncated(units, ASSET_DECIMALS_DEFAULT, 2).replace(/\.00$/, "");
+const assetHuman = (units: bigint, decimals: number) => formatTruncated(units, decimals, 2).replace(/\.00$/, "");
 
 // ---------------------------------------------------------------------------
 // Claim windows
@@ -256,14 +255,15 @@ export async function faucetStatus(user: User, ip: string | null): Promise<Fauce
     publicClient().getBalance({ address }),
     faucetBalance(),
   ]);
-  const assetText = formatTruncated(asset as bigint, ASSET_DECIMALS_DEFAULT, 2);
+  const decimals = await assetDecimals();
+  const assetText = formatTruncated(asset as bigint, decimals, 2);
   const nativeText = formatTruncated(native, 18, 6);
   return {
     enabled: true,
     canClaim: blocked === null,
     nextClaimAt: blocked?.toISOString() ?? null,
-    usdgAmount: assetHuman(assetAmount()),
-    assetAmount: assetHuman(assetAmount()),
+    usdgAmount: assetHuman(assetAmount(), decimals),
+    assetAmount: assetHuman(assetAmount(), decimals),
     balances: { usdg: assetText, eth: nativeText, asset: assetText, native: nativeText },
     faucetLow: faucetBal < reserve(),
   };
@@ -364,7 +364,7 @@ export async function faucetSummary() {
     address: config.faucetPrivateKey ? faucetAddress() : null,
     balanceWei: balance?.toString() ?? null,
     balanceNative: balance === null ? null : formatEther(balance),
-    balanceAsset: assetBalance === null ? null : assetHuman(assetBalance),
+    balanceAsset: assetBalance === null ? null : assetHuman(assetBalance, await assetDecimals()),
     reserveWei: reserve().toString(),
     low: balance === null ? null : balance < reserve() * LOW_BALANCE_RESERVES,
     claimsLast24h: {
@@ -411,7 +411,12 @@ export function startFaucetMonitor(): () => void {
 
       if (config.faucetAssetMode === "transfer") {
         const assetBalance = await faucetAssetBalance();
-        const assetFields = { address: faucetAddress(), balanceAsset: assetHuman(assetBalance), perClaim: assetHuman(assetAmount()) };
+        const decimals = await assetDecimals();
+        const assetFields = {
+          address: faucetAddress(),
+          balanceAsset: assetHuman(assetBalance, decimals),
+          perClaim: assetHuman(assetAmount(), decimals),
+        };
         if (assetBalance < assetAmount()) log.error("faucet cannot cover one more asset claim; refill it", assetFields);
         else if (assetBalance < assetAmount() * LOW_BALANCE_RESERVES) log.warn("faucet asset is running low; refill it", assetFields);
       }

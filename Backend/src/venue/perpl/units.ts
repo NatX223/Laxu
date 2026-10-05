@@ -17,9 +17,9 @@ import { readExchangeInfo } from "./exchange";
  * API `Market.config.price_decimals` / `size_decimals` equal the on-chain
  * `priceDecimals` / `lotDecimals`; marketSync checks that once per market.
  * `collateralDecimals` may differ from the token's own `decimals()`, so the
- * two are kept apart here. (PerplReader scales size by 10^collateralDecimals;
- * Laxu's size6 equals it only while that is 6 -- {collateralScale} alerts
- * otherwise.)
+ * two are kept apart here and CNS <-> asset works for any pair of them.
+ * The one place collateralDecimals reaches *size* is the deployed
+ * PerplReader -- see {assertSizeScaleSupported}.
  */
 
 export interface CollateralScale {
@@ -34,20 +34,35 @@ let scaleCache: Promise<CollateralScale> | undefined;
 export function collateralScale(): Promise<CollateralScale> {
   scaleCache ??= (async () => {
     const [info, tokenDecimals] = await Promise.all([readExchangeInfo(), assetDecimals()]);
-    const cnsDecimals = Number(info.collateralDecimals);
-    if (cnsDecimals !== SIZE_DECIMALS) {
-      // PerplReader.toSize uses 10^collateralDecimals; Laxu's size6 uses 10^6.
-      // They only agree at 6 -- a mismatch would fail every createPosition.
-      throw new Error(
-        `Perpl collateralDecimals is ${cnsDecimals}; Laxu's size6 (and PerplReader's size scale) assume ${SIZE_DECIMALS}`,
-      );
-    }
-    return { cnsDecimals, assetDecimals: tokenDecimals };
+    return { cnsDecimals: Number(info.collateralDecimals), assetDecimals: tokenDecimals };
   })().catch((error) => {
     scaleCache = undefined;
     throw error;
   });
   return scaleCache;
+}
+
+/**
+ * Refuses to *open* a position (never to boot, deposit, withdraw or settle)
+ * when the deployed contracts would disagree with Laxu's size6. The deployed
+ * PerplReader fixed `sizeScale = 10^collateralDecimals` at construction, so:
+ *
+ *   PerplReader.toSize(lns, ld) = lns * 10^collateralDecimals / 10^ld
+ *   lotsToSize6(lns, ld)        = lns * 10^6                  / 10^ld
+ *
+ * and PositionToken.initialize requires `venueSize == size` exactly -- every
+ * createPosition reverts unless collateralDecimals == 6. Separately,
+ * PositionToken.totalAssets = capital + size * (mark - entry) / 1e18 adds a PnL
+ * scaled by 10^collateralDecimals to capital scaled by 10^assetDecimals, so the
+ * NAV is only right when those two match as well.
+ */
+export function assertSizeScaleSupported(scale: CollateralScale): void {
+  if (scale.cnsDecimals !== SIZE_DECIMALS || scale.assetDecimals !== SIZE_DECIMALS) {
+    throw new Error(
+      `cannot open positions: PerplReader sizes at 10^${scale.cnsDecimals} (collateralDecimals) and the asset has ` +
+        `${scale.assetDecimals} decimals, but Laxu's size6 and PositionToken.totalAssets need both to be ${SIZE_DECIMALS}`,
+    );
+  }
 }
 
 function pow10(exp: number): bigint {
@@ -118,7 +133,7 @@ export function pnsToDecimal(pns: bigint | number, priceDecimals: number): strin
 // --- Size ------------------------------------------------------------------------
 
 /// Lots -> size6, floored: `lots x 10^6 / 10^sd`. Identical integer maths to
-/// PerplReader.toSize while collateralDecimals is 6 (see {collateralScale}).
+/// PerplReader.toSize while collateralDecimals is 6 (see {assertSizeScaleSupported}).
 export function lotsToSize6(lots: bigint | number, sizeDecimals: number): bigint {
   return (BigInt(lots) * pow10(SIZE_DECIMALS)) / pow10(sizeDecimals);
 }
