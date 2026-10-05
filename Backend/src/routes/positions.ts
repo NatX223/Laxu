@@ -14,11 +14,11 @@ import { discoverPositions, holderTriggers, leaderboard, positionDetail, topHold
 export const positionsRouter = Router();
 
 const openSchema = z.object({
-  /// Laxu symbol ("ETH") or Arcus name ("ETH-USD").
+  /// Laxu symbol ("ETH") or display name ("ETH-USD").
   market: z.string().min(1).max(32),
   direction: z.enum(["long", "short"]),
   leverage: z.number().int().min(1).max(100),
-  /// Human USDG as a decimal string ("500") -- never a JS number, which would
+  /// Human asset amount as a decimal string ("500") -- never a JS number, which would
   /// lose precision and quietly change how much the user is committing.
   amount: z.string().regex(/^\d+(\.\d+)?$/, "amount must be a decimal string"),
   /// The creator's stop loss / take profit, human prices ("1900"): the
@@ -28,7 +28,7 @@ const openSchema = z.object({
 });
 
 /**
- * Step 1 of opening a position: reserve an internal Arcus subaccount and say
+ * Step 1 of opening a position: reserve a slot (a Perpl account) and say
  * where to pay. No nickname and no fee here -- the nickname is set when the
  * creator lists the position on-chain, and the buy-in fee is a contract
  * constant. The creator is always the logged-in user, never the body.
@@ -55,7 +55,7 @@ const paidSchema = z.object({
   txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/, "txHash must be a 32-byte hex hash"),
 });
 
-/// The creator's `USDG.transfer(payTo, amount)` has been sent. The rest runs in
+/// The creator's `asset.transfer(payTo, amount)` has been sent. The rest runs in
 /// the background; poll GET /positions/open/:id.
 positionsRouter.post(
   "/open/:id/paid",
@@ -96,7 +96,7 @@ function serialiseOpenRequest(request: PositionOpenRequest) {
     stopLoss: request.stopLoss,
     takeProfit: request.takeProfit,
     creditedAmount: request.creditedAmount,
-    /// The Arcus fill, human decimals -- set from `order_filled` on.
+    /// The venue position after the fill, human decimals -- set from `order_filled` on.
     entryPrice: request.entryPrice,
     filledSize: request.filledSize,
     paymentTxHash: request.paymentTxHash,
@@ -248,13 +248,17 @@ positionsRouter.get(
     res.json({
       ...serialise(position),
       slot: position.subaccountSlot
-        ? { accountIndex: position.subaccountSlot.accountIndex, status: position.subaccountSlot.status }
+        ? {
+            accountIndex: position.subaccountSlot.accountIndex,
+            perplAccountId: position.subaccountSlot.perplAccountId,
+            status: position.subaccountSlot.status,
+          }
         : null,
       ledger: position.ledgerEntries.map((entry) => ({
         id: entry.id,
         type: entry.type,
         amount: entry.amount,
-        arcusStatus: entry.arcusStatus,
+        venueStatus: entry.venueStatus,
         onchainFulfilledAt: entry.onchainFulfilledAt?.toISOString() ?? null,
         createdAt: entry.createdAt.toISOString(),
       })),
@@ -263,7 +267,7 @@ positionsRouter.get(
 );
 
 // Closing is on-chain: the creator calls `requestClose()` on the token, and
-// the indexer's CloseRequested handler runs the Arcus unwind and `close()`.
+// the indexer's CloseRequested handler runs the venue unwind and `close()`.
 
 type PositionColumns = NonNullable<Awaited<ReturnType<typeof db.position.findUnique>>>;
 
@@ -284,7 +288,7 @@ function serialise(position: PositionColumns) {
     depositedAmount: position.depositedAmount,
     entryPrice: position.entryPrice,
     size: position.size,
-    arcusOrderId: position.arcusOrderId,
+    venueOrderId: position.venueOrderId,
     failureReason: position.failureReason,
     liquidated: position.liquidated,
     createdAt: position.createdAt.toISOString(),

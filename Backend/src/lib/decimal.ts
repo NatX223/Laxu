@@ -1,15 +1,10 @@
 /**
  * Exact decimal arithmetic on strings, backed by BigInt.
  *
- * Money and order sizes never touch a float here. Two conversions in particular
- * have to be exact or the order is rejected outright:
- *
- *   - price / tickSize  -> the signed `p` integer (ticks)
- *   - size  / stepSize  -> the signed `q` integer (quantums)
- *
- * Arcus requires those divisions to have no remainder, so `divideExact` throws
- * rather than rounding -- a rounded tick produces a signature over a price the
- * caller never intended.
+ * Money and order sizes never touch a float here. Conversions onto a market's
+ * grid (price / tickSize, size / stepSize) have to be exact or an order would
+ * carry a value the caller never intended, so `divideExact` throws rather than
+ * rounding, and the step helpers floor or ceil explicitly.
  */
 
 export interface Decimal {
@@ -136,7 +131,7 @@ export function applyBps(value: string, bps: number, scale: number): string {
 // Fixed-point bridges between chain base units and human decimal strings.
 // ---------------------------------------------------------------------------
 
-/// Base units (e.g. USDG wei) -> human decimal string.
+/// Base units (e.g. asset base units) -> human decimal string.
 export function fromBaseUnits(units: bigint, decimals: number): string {
   return formatDecimal({ units, scale: decimals });
 }

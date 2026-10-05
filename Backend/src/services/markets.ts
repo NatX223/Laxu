@@ -1,19 +1,20 @@
 import type { Market } from "@prisma/client";
 import { hexToString, stringToHex } from "viem";
 
-import { getMarkets } from "../arcus/client";
-import type { ArcusMarketInfo, ArcusTradingHours } from "../arcus/types";
 import { db } from "../config/db";
 import { badRequest, serviceUnavailable } from "../lib/errors";
+import { fromPrice18 } from "../lib/units";
+import { LAXU_MAX_LEVERAGE as MAX_LEVERAGE } from "../venue/perpl/units";
+import { venue } from "../venue/types";
 
 /**
- * Laxu <-> Arcus market mapping. Rows are written by marketSync.ts from
- * `GET /v1/markets`; this file reads them.
+ * Laxu <-> Perpl market mapping. Rows are written by marketSync.ts from
+ * `GET /v1/pub/context`; this file reads them.
  *
- * This is not a display-name lookup. Order signing converts the human price and
- * size into the integer ticks and quantums that the Ed25519 payload is built
- * from, and those divisions must be exact against the market's `tickSize` and
- * `stepSize`. Without a row here an order cannot be signed at all.
+ * Not a display-name lookup: an order carries the price and size as integers
+ * scaled by the market's `priceDecimals` / `sizeDecimals`, the API addresses
+ * the market by `venueMarketId` and the chain by `perpetualId`. Without a row
+ * here no order can be built at all.
  *
  * The id is the base asset as bytes32, right-padded -- exactly what
  * PositionToken stores and what its `_bytes32ToString` renders back into the
@@ -28,7 +29,7 @@ export function bytes32ToSymbol(value: string): string {
   return hexToString(value as `0x${string}`, { size: 32 }).replace(/\0+$/, "");
 }
 
-/// The stable market id for an Arcus base asset. Lowercase hex, which is how
+/// The stable market id for a base asset. Lowercase hex, which is how
 /// positions and open requests store it.
 export function marketIdFor(baseAsset: string): string {
   return symbolToBytes32(baseAsset.toUpperCase()).toLowerCase();
@@ -40,9 +41,9 @@ export function marketIdFor(baseAsset: string): string {
 
 /// LendingPool's risk tiers stop at 20x; anything above would silently fall
 /// into the 11-20x tier.
-export const LAXU_MAX_LEVERAGE = 20;
+export const LAXU_MAX_LEVERAGE = MAX_LEVERAGE;
 
-type LeverageInputs = Pick<Market, "initialMarginFraction" | "offHoursInitialMarginFraction" | "isOutsideRth">;
+type LeverageInputs = Pick<Market, "initialMarginFraction">;
 
 function leverageFor(imf: string): number {
   const fraction = Number(imf);
@@ -52,32 +53,21 @@ function leverageFor(imf: string): number {
   return Math.max(1, Math.min(LAXU_MAX_LEVERAGE, Math.floor(1 / fraction + 1e-9)));
 }
 
-/// Arcus's limit is 1 / initialMarginFraction, using the off-hours fraction
-/// while the market is outside its trading-hours window. Laxu caps it at 20x.
+/// `min(20, floor(1 / initialMarginFraction))`. Perpl trades 24/7, so there is
+/// no off-hours limit.
 export function maxLeverage(m: LeverageInputs): number {
-  return leverageFor(m.isOutsideRth ? m.offHoursInitialMarginFraction : m.initialMarginFraction);
+  return leverageFor(m.initialMarginFraction);
 }
 
+/// Kept for callers written against a venue with trading hours: all three are
+/// the same limit on Perpl.
 export function leverageLimits(m: LeverageInputs): { now: number; inHours: number; offHours: number } {
-  return {
-    now: maxLeverage(m),
-    inHours: leverageFor(m.initialMarginFraction),
-    offHours: leverageFor(m.offHoursInitialMarginFraction),
-  };
-}
-
-/// The same inputs read straight off an Arcus response rather than a row.
-export function leverageInputsFrom(info: ArcusMarketInfo): LeverageInputs {
-  const initialMarginFraction = info.initialMarginFraction ?? "1";
-  return {
-    initialMarginFraction,
-    offHoursInitialMarginFraction: info.offHoursInitialMarginFraction ?? initialMarginFraction,
-    isOutsideRth: info.isOutsideRth ?? false,
-  };
+  const limit = maxLeverage(m);
+  return { now: limit, inHours: limit, offHours: limit };
 }
 
 // ---------------------------------------------------------------------------
-// Lookups -- throw rather than return null: every caller is about to sign an
+// Lookups -- throw rather than return null: every caller is about to build an
 // order or quote a market, and a missing one is not something to paper over.
 // ---------------------------------------------------------------------------
 
@@ -86,9 +76,20 @@ export interface ResolvedMarket {
   laxuMarket: string;
   /// Base asset, e.g. "ETH".
   symbol: string;
-  arcusMarketId: number;
-  /// Arcus display name, e.g. "ETH-USD".
-  arcusDisplayName: string;
+  /// "ETH-USD".
+  displaySymbol: string;
+  /// Perpl API market id (`mkt`).
+  venueMarketId: number;
+  /// Perpl on-chain perpetual id.
+  perpetualId: number;
+  priceDecimals: number;
+  sizeDecimals: number;
+  orderTtlBlocks: number;
+  maxSlippageBps: number;
+  takerFeeMicros: number;
+  /// Raw API Amount string.
+  minPostingAmount: string;
+  initialMarginFraction: string;
   tickSize: string;
   stepSize: string;
   minOrderSize: string;
@@ -104,7 +105,15 @@ export async function requireMarket(laxuMarket: string): Promise<ResolvedMarket>
   return assertOnline(row);
 }
 
-/// Accepts the base asset ("ETH") or the Arcus display name ("ETH-USD"), any case.
+/// The market a position trades on, whatever its status: closing, settling
+/// and liquidation checks must still work after a market goes OFFLINE.
+export async function marketForPosition(laxuMarket: string): Promise<ResolvedMarket> {
+  const row = await db.market.findUnique({ where: { id: laxuMarket.toLowerCase() } });
+  if (!row) throw new Error(`Unknown market ${laxuMarket} (${safeSymbol(laxuMarket)})`);
+  return toResolved(row);
+}
+
+/// Accepts the base asset ("ETH") or the display name ("ETH-USD"), any case.
 export async function requireMarketByName(name: string): Promise<ResolvedMarket> {
   const row = await findMarketByName(name);
   if (!row) throw badRequest(`Unknown market ${name}`, "UNKNOWN_MARKET");
@@ -129,17 +138,25 @@ function safeSymbol(laxuMarket: string): string {
 
 function assertOnline(row: Market): ResolvedMarket {
   if (row.status !== "ONLINE") {
-    throw serviceUnavailable(`${row.displaySymbol} is ${row.status} on Arcus`, "MARKET_OFFLINE");
+    throw serviceUnavailable(`${row.displaySymbol} is ${row.status} on Perpl`, "MARKET_OFFLINE");
   }
   return toResolved(row);
 }
 
-function toResolved(row: Market): ResolvedMarket {
+export function toResolved(row: Market): ResolvedMarket {
   return {
     laxuMarket: row.id,
     symbol: row.baseAsset,
-    arcusMarketId: row.arcusMarketId,
-    arcusDisplayName: row.displaySymbol,
+    displaySymbol: row.displaySymbol,
+    venueMarketId: row.venueMarketId,
+    perpetualId: row.perpetualId,
+    priceDecimals: row.priceDecimals,
+    sizeDecimals: row.sizeDecimals,
+    orderTtlBlocks: row.orderTtlBlocks,
+    maxSlippageBps: row.maxSlippageBps,
+    takerFeeMicros: row.takerFeeMicros,
+    minPostingAmount: row.minPostingAmount,
+    initialMarginFraction: row.initialMarginFraction,
     tickSize: row.tickSize,
     stepSize: row.stepSize,
     minOrderSize: row.minOrderSize,
@@ -159,24 +176,8 @@ export async function listMarkets({ all = false } = {}): Promise<Market[]> {
   });
 }
 
-/// Seconds-of-day -> "HH:MM".
-function clock(secondsOfDay: number): string {
-  const minutes = Math.floor(secondsOfDay / 60) % (24 * 60);
-  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
-}
-
-export function tradingHoursOf(
-  raw: unknown,
-): { start: string; end: string; timezone: string } | null {
-  const hours = raw as ArcusTradingHours | null | undefined;
-  if (!hours || typeof hours.startSecondsOfDay !== "number" || typeof hours.endSecondsOfDay !== "number") {
-    return null;
-  }
-  return { start: clock(hours.startSecondsOfDay), end: clock(hours.endSecondsOfDay), timezone: hours.timezone };
-}
-
+/// The frontend reads none of the trading-hours fields, so they are not sent.
 export function serialiseMarket(market: Market) {
-  const limits = leverageLimits(market);
   return {
     id: market.id,
     displaySymbol: market.displaySymbol,
@@ -187,44 +188,30 @@ export function serialiseMarket(market: Market) {
     logoUrl: market.logoUrl,
     markPrice: market.markPrice,
     priceChange24h: market.priceChange24h,
-    /// The limit right now; the other two drive the frontend's hours hint.
-    maxLeverage: limits.now,
-    maxLeverageInHours: limits.inHours,
-    maxLeverageOffHours: limits.offHours,
-    isOutsideRth: market.isOutsideRth,
-    tradingHours: tradingHoursOf(market.regularTradingHours),
+    maxLeverage: maxLeverage(market),
     stepSize: market.stepSize,
     minOrderSize: market.minOrderSize,
     minOrderNotional: market.minOrderNotional,
+    /// Perpl's API market id -- what the public market-data endpoints take.
+    venueMarketId: market.venueMarketId,
     syncedAt: market.syncedAt.toISOString(),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Fresh Arcus reads -- for anything that decides whether money moves, never
-// the (up to a minute old) row.
+// Fresh reads -- for anything that decides whether money moves, never the (up
+// to a minute old) row.
 // ---------------------------------------------------------------------------
 
-export async function liveMarketInfo(market: Pick<ResolvedMarket, "arcusMarketId" | "arcusDisplayName">): Promise<ArcusMarketInfo> {
-  const [info] = await getMarkets(String(market.arcusMarketId));
-  if (!info || info.marketId !== market.arcusMarketId) {
-    throw serviceUnavailable(`Arcus returned no data for ${market.arcusDisplayName}`, "MARKET_UNAVAILABLE");
-  }
-  return info;
-}
-
-/// Mark, falling back to oracle before the first trade. Null when Arcus has neither.
-export function markOf(info: ArcusMarketInfo): string | null {
-  if (info.markPrice && info.markPrice !== "0") return info.markPrice;
-  if (info.oraclePrice && info.oraclePrice !== "0") return info.oraclePrice;
-  return null;
-}
-
-/// Current mark, used for the protective slippage bound on a MARKET order.
+/// Current mark, human decimal string, from Perpl's ticker. Sizing and
+/// display only: the contracts read the venue's mark on-chain themselves.
 export async function markPriceFor(market: ResolvedMarket): Promise<string> {
-  const price = markOf(await liveMarketInfo(market));
-  if (!price) {
-    throw serviceUnavailable(`Arcus has no mark price for ${market.arcusDisplayName} yet`, "NO_MARK_PRICE");
+  try {
+    return fromPrice18(await venue().markPrice(market));
+  } catch (error) {
+    throw serviceUnavailable(
+      `No mark price for ${market.displaySymbol}: ${error instanceof Error ? error.message : String(error)}`,
+      "NO_MARK_PRICE",
+    );
   }
-  return price;
 }

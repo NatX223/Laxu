@@ -26,7 +26,7 @@ export function normaliseAddress(address: string): string {
  * `POST /users/me` -- called once after every login. Idempotent by Privy user
  * id: an existing row comes back untouched. On creation the wallet is
  * resolved through the Privy server SDK, never taken from the request. Gas
- * and test USDG come from the faucet (POST /faucet/claim), not from here.
+ * and the test asset come from the faucet (POST /faucet/claim), not from here.
  */
 export async function upsertPrivyUser(privyUserId: string): Promise<{ user: User; created: boolean }> {
   if (!privyUserId) throw unauthorized();

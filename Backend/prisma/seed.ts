@@ -5,13 +5,13 @@ import { syncMarkets } from "../src/services/marketSync";
 const log = createLogger("seed");
 
 /**
- * Markets are no longer a hard-coded list: they sync live from Arcus
- * `GET /v1/markets` (the backend also does this at boot and every minute). The
+ * Markets are no longer a hard-coded list: they sync live from Perpl
+^ * `GET /v1/pub/context` (the backend also does this at boot and every minute). The
  * seed just runs one sync so a fresh database is usable straight away.
  */
 async function main(): Promise<void> {
   const result = await syncMarkets();
-  log.info("markets synced from Arcus", result);
+  log.info("markets synced from Perpl", result);
 }
 
 main()

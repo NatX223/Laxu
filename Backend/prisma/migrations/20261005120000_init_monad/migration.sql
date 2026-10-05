@@ -9,6 +9,23 @@ CREATE TABLE "users" (
 );
 
 -- CreateTable
+CREATE TABLE "faucet_claims" (
+    "id" TEXT NOT NULL,
+    "wallet_address" TEXT NOT NULL,
+    "ip" TEXT,
+    "usdg_amount" TEXT NOT NULL,
+    "eth_amount_wei" TEXT NOT NULL,
+    "usdg_tx_hash" TEXT,
+    "eth_tx_hash" TEXT,
+    "eth_skipped" BOOLEAN NOT NULL DEFAULT false,
+    "status" TEXT NOT NULL DEFAULT 'pending',
+    "error" TEXT,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "faucet_claims_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "operator_wallets" (
     "id" TEXT NOT NULL,
     "address" TEXT NOT NULL,
@@ -24,8 +41,12 @@ CREATE TABLE "subaccount_slots" (
     "id" TEXT NOT NULL,
     "operator_wallet_id" TEXT NOT NULL,
     "account_index" INTEGER NOT NULL,
-    "arcus_api_key" TEXT NOT NULL,
-    "arcus_api_secret_ref" TEXT NOT NULL,
+    "api_key" TEXT NOT NULL,
+    "api_secret_ref" TEXT NOT NULL,
+    "perpl_account_id" TEXT,
+    "last_request_id" TEXT NOT NULL DEFAULT '0',
+    "forwarding_enabled" BOOLEAN NOT NULL DEFAULT false,
+    "reserve" TEXT NOT NULL DEFAULT '0',
     "status" TEXT NOT NULL DEFAULT 'free',
     "reserved_for_user" TEXT,
     "reserved_at" TIMESTAMP(3),
@@ -42,9 +63,10 @@ CREATE TABLE "positions" (
     "position_token_address" TEXT,
     "lending_pool_address" TEXT,
     "user_wallet_address" TEXT NOT NULL,
-    "arcus_position_id" TEXT,
-    "arcus_order_id" TEXT,
-    "arcus_client_id" TEXT,
+    "venue_position_id" TEXT,
+    "venue_order_id" TEXT,
+    "venue_request_id" TEXT,
+    "venue_position_pid" TEXT,
     "market" TEXT NOT NULL,
     "direction" TEXT NOT NULL,
     "leverage" INTEGER NOT NULL,
@@ -83,16 +105,17 @@ CREATE TABLE "position_open_requests" (
     "stop_loss" TEXT,
     "take_profit" TEXT,
     "payment_tx_hash" TEXT,
-    "arcus_deposit_tx_hash" TEXT,
+    "deposit_tx_hash" TEXT,
     "credited_amount" TEXT,
     "status" TEXT NOT NULL DEFAULT 'awaiting_payment',
-    "arcus_client_id" TEXT,
-    "arcus_order_id" TEXT,
+    "venue_request_id" TEXT,
+    "venue_last_exec_block" TEXT,
+    "venue_order_id" TEXT,
     "entry_price" TEXT,
     "filled_size" TEXT,
     "position_token_address" TEXT,
     "lending_pool_address" TEXT,
-    "refund_withdrawal_id" TEXT,
+    "refund_withdraw_tx_hash" TEXT,
     "refund_tx_hash" TEXT,
     "error" TEXT,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -123,15 +146,16 @@ CREATE TABLE "ledger_entries" (
     "position_id" TEXT NOT NULL,
     "type" TEXT NOT NULL,
     "amount" TEXT NOT NULL,
-    "arcus_status" TEXT NOT NULL DEFAULT 'pending',
+    "venue_status" TEXT NOT NULL DEFAULT 'pending',
     "onchain_request_id" TEXT,
     "tx_hash" TEXT,
     "log_index" INTEGER,
     "controller" TEXT,
     "onchain_fulfilled_at" TIMESTAMP(3),
-    "arcus_request_id" TEXT,
+    "venue_order_id" TEXT,
     "request_amount" TEXT,
-    "arcus_client_id" TEXT,
+    "venue_request_id" TEXT,
+    "venue_last_exec_block" TEXT,
     "filled_size" TEXT,
     "fill_price" TEXT,
     "batch" JSONB,
@@ -145,7 +169,8 @@ CREATE TABLE "ledger_entries" (
 -- CreateTable
 CREATE TABLE "markets" (
     "laxu_market" TEXT NOT NULL,
-    "arcus_market_id" INTEGER NOT NULL,
+    "venue_market_id" INTEGER NOT NULL,
+    "perpetual_id" INTEGER NOT NULL,
     "display_symbol" TEXT NOT NULL,
     "base_asset" TEXT NOT NULL,
     "full_asset_name" TEXT NOT NULL,
@@ -156,6 +181,12 @@ CREATE TABLE "markets" (
     "off_hours_initial_margin_fraction" TEXT NOT NULL,
     "is_outside_rth" BOOLEAN NOT NULL DEFAULT false,
     "regular_trading_hours" JSONB,
+    "price_decimals" INTEGER NOT NULL,
+    "size_decimals" INTEGER NOT NULL,
+    "order_ttl_blocks" INTEGER NOT NULL,
+    "max_slippage_bps" INTEGER NOT NULL,
+    "taker_fee_micros" INTEGER NOT NULL,
+    "min_posting_amount" TEXT NOT NULL,
     "tick_size" TEXT NOT NULL,
     "step_size" TEXT NOT NULL,
     "min_order_size" TEXT NOT NULL,
@@ -255,7 +286,7 @@ CREATE TABLE "settlements" (
     "final_funding" TEXT,
     "close_tx_hash" TEXT,
     "withdraw_started_at" TIMESTAMP(3),
-    "withdrawal_id" TEXT,
+    "withdraw_tx_hash" TEXT,
     "recovered_assets" TEXT,
     "fund_tx_hash" TEXT,
     "settle_tx_hash" TEXT,
@@ -306,6 +337,12 @@ CREATE UNIQUE INDEX "users_privy_user_id_key" ON "users"("privy_user_id");
 CREATE UNIQUE INDEX "users_tag_key" ON "users"("tag");
 
 -- CreateIndex
+CREATE INDEX "faucet_claims_wallet_address_created_at_idx" ON "faucet_claims"("wallet_address", "created_at");
+
+-- CreateIndex
+CREATE INDEX "faucet_claims_ip_created_at_idx" ON "faucet_claims"("ip", "created_at");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "operator_wallets_address_key" ON "operator_wallets"("address");
 
 -- CreateIndex
@@ -321,7 +358,7 @@ CREATE UNIQUE INDEX "subaccount_slots_operator_wallet_id_account_index_key" ON "
 CREATE UNIQUE INDEX "positions_position_token_address_key" ON "positions"("position_token_address");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "positions_arcus_client_id_key" ON "positions"("arcus_client_id");
+CREATE UNIQUE INDEX "positions_venue_request_id_key" ON "positions"("venue_request_id");
 
 -- CreateIndex
 CREATE INDEX "positions_status_idx" ON "positions"("status");
@@ -339,7 +376,7 @@ CREATE INDEX "positions_listed_idx" ON "positions"("listed");
 CREATE UNIQUE INDEX "position_open_requests_payment_tx_hash_key" ON "position_open_requests"("payment_tx_hash");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "position_open_requests_arcus_client_id_key" ON "position_open_requests"("arcus_client_id");
+CREATE UNIQUE INDEX "position_open_requests_venue_request_id_key" ON "position_open_requests"("venue_request_id");
 
 -- CreateIndex
 CREATE INDEX "position_open_requests_status_idx" ON "position_open_requests"("status");
@@ -354,13 +391,16 @@ CREATE UNIQUE INDEX "position_reports_position_id_timestamp_key" ON "position_re
 CREATE INDEX "ledger_entries_position_id_type_idx" ON "ledger_entries"("position_id", "type");
 
 -- CreateIndex
-CREATE INDEX "ledger_entries_arcus_status_idx" ON "ledger_entries"("arcus_status");
+CREATE INDEX "ledger_entries_venue_status_idx" ON "ledger_entries"("venue_status");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "ledger_entries_tx_hash_log_index_key" ON "ledger_entries"("tx_hash", "log_index");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "markets_arcus_market_id_key" ON "markets"("arcus_market_id");
+CREATE UNIQUE INDEX "markets_venue_market_id_key" ON "markets"("venue_market_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "markets_perpetual_id_key" ON "markets"("perpetual_id");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "markets_display_symbol_key" ON "markets"("display_symbol");
@@ -399,6 +439,9 @@ CREATE UNIQUE INDEX "buy_in_fees_tx_hash_log_index_key" ON "buy_in_fees"("tx_has
 CREATE INDEX "settlements_status_idx" ON "settlements"("status");
 
 -- AddForeignKey
+ALTER TABLE "faucet_claims" ADD CONSTRAINT "faucet_claims_wallet_address_fkey" FOREIGN KEY ("wallet_address") REFERENCES "users"("wallet_address") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "subaccount_slots" ADD CONSTRAINT "subaccount_slots_operator_wallet_id_fkey" FOREIGN KEY ("operator_wallet_id") REFERENCES "operator_wallets"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -430,3 +473,4 @@ ALTER TABLE "settlements" ADD CONSTRAINT "settlements_position_id_fkey" FOREIGN 
 
 -- AddForeignKey
 ALTER TABLE "position_stats" ADD CONSTRAINT "position_stats_position_id_fkey" FOREIGN KEY ("position_id") REFERENCES "positions"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+

@@ -70,7 +70,7 @@ export function levelError(side: Side, levels: Levels, ref18: bigint): string | 
 /**
  * The aggregate reduce-only fill shared out across the batch in proportion to
  * shares, the last holder taking the rounding remainder so the slices add up
- * to the fill exactly -- the contract's `size` then tracks the Arcus leg.
+ * to the fill exactly -- the contract's `size` then tracks the venue leg.
  */
 export function splitClosedSize(filled6: bigint, shares: bigint[]): bigint[] {
   const total = shares.reduce((sum, s) => sum + s, 0n);
@@ -83,13 +83,13 @@ export function splitClosedSize(filled6: bigint, shares: bigint[]): bigint[] {
 }
 
 /**
- * Arcus publishes no liquidation price, so this is an estimate: the mark at
+ * The venue publishes no per-position liquidation price, so this is an estimate: the mark at
  * which equity `V` falls to the maintenance requirement `MMF x S x M`.
  *
  *   Long:  M - (V - MMF·S·M) / S
  *   Short: M + (V - MMF·S·M) / S
  *
- * `value6` is USDG 6dp, `size6` base x 1e6, prices 1e18. Null when there is
+ * `value6` is asset 6dp, `size6` base x 1e6, prices 1e18. Null when there is
  * no size to liquidate; a long's estimate floors at 0.
  */
 export function estLiquidationPrice(params: {
@@ -102,9 +102,9 @@ export function estLiquidationPrice(params: {
   const { side, value6, size6, mark18 } = params;
   if (size6 <= 0n || mark18 <= 0n) return null;
   const mmf18 = toPrice18(params.mmf || "0");
-  // MMF x S x M in USDG 6dp.
+  // MMF x S x M in asset 6dp.
   const maintenance6 = (((mmf18 * size6) / PRICE_SCALE) * mark18) / PRICE_SCALE;
-  // (V - maintenance) / S, as a 1e18 price: usdg6 / size6 is dollars per unit.
+  // (V - maintenance) / S, as a 1e18 price: asset6 / size6 is dollars per unit.
   const cushion18 = ((value6 - maintenance6) * PRICE_SCALE) / size6;
   const price = side === "long" ? mark18 - cushion18 : mark18 + cushion18;
   return price > 0n ? price : 0n;

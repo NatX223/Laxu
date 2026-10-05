@@ -26,7 +26,7 @@ export interface StatsInput {
     "size" | "markPrice" | "totalAssets" | "totalSupply" | "fundingAccrued" | "fundingSettled"
   >;
   open: boolean;
-  /// Arcus's maintenanceMarginFraction for the market, decimal string.
+  /// The venue's maintenanceMarginFraction for the market, decimal string.
   maintenanceMarginFraction: string;
   holdings: Array<{ address: string; balance: string }>;
   /// This position's LendingPool addresses: tokens held there belong to borrowers.
@@ -84,12 +84,12 @@ export function derivePositionStats(input: StatsInput): DerivedStats {
   const nav = navOf(chain.totalAssets, chain.totalSupply);
   const pnlBps = Number(((nav - PRICE_SCALE) * BPS) / PRICE_SCALE);
 
-  // size6 x mark18 / 1e18 = notional in USDG 6dp.
+  // size6 x mark18 / 1e18 = notional in asset 6dp.
   const notional6 = (chain.size * chain.markPrice) / PRICE_SCALE;
   const effectiveLeverage =
     chain.totalAssets > 0n ? toFixedDecimals((notional6 * 100n) / chain.totalAssets, 2, 2) : "0.00";
 
-  // At Risk: equity / notional < 1.5 x MMF, i.e. within 50% of Arcus's
+  // At Risk: equity / notional < 1.5 x MMF, i.e. within 50% of the venue's
   // liquidation line. Compared at 1e18: 2 x ratio < 3 x MMF.
   const mmf18 = toPrice18(input.maintenanceMarginFraction || "0");
   const isAtRisk =
@@ -140,7 +140,7 @@ async function gather(position: Position, now: Date): Promise<StatsInput> {
   return {
     // Settled: claims burn supply towards zero, so the live ratio stops
     // meaning anything once the last holder is paid. Pin the numbers to the
-    // settlement itself (recovered USDG / supply at settle).
+    // settlement itself (recovered asset / supply at settle).
     chain: settledPoint
       ? { ...chain, totalAssets: BigInt(settledPoint.totalAssets), totalSupply: BigInt(settledPoint.totalSupply) }
       : chain,

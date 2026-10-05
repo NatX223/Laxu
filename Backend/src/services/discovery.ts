@@ -292,7 +292,7 @@ async function rowByToken(address: string): Promise<Row> {
 
 export type Lifecycle = "open" | "closing" | "settling" | "settled";
 
-/// Open -> Closing (unwinding on Arcus) -> Settling (returning funds) -> Settled.
+/// Open -> Closing (unwinding on the venue) -> Settling (returning funds) -> Settled.
 export function lifecycleOf(status: string, settlementStatus: string | null): Lifecycle {
   if (status === "settled" || settlementStatus === "settled") return "settled";
   if (status === "closed") return "settling";
@@ -316,7 +316,7 @@ export async function positionDetail(address: string) {
     closed,
     lifecycle,
     closedReason: closed || settlement ? (row.liquidated || settlement?.trigger === "liquidation" ? "liquidated" : "user_closed") : null,
-    // Until settled this is the contract's formula estimate; after, the USDG
+    // Until settled this is the contract's formula estimate; after, the asset
     // actually recovered per share.
     finalNavPerShare: closed ? nav4(nav) : null,
     recoveredAssets: lifecycle === "settled" && settlement?.recoveredAssets ? usd(BigInt(settlement.recoveredAssets)) : null,
@@ -331,7 +331,7 @@ export async function positionDetail(address: string) {
   };
 }
 
-/// Arcus publishes no liquidation price; this is where equity would meet the
+/// The venue publishes no per-position liquidation price; this is where equity would meet the
 /// maintenance requirement at the current size (triggerMath.ts). The UI warns
 /// when a stop loss sits beyond it.
 function liquidationEstimate(row: Row, mmf: string): string | null {
@@ -469,7 +469,7 @@ export async function portfolio(rawAddress: string) {
         controller: address,
         type: { in: ["margin_add", "margin_remove"] },
         onchainFulfilledAt: null,
-        arcusStatus: { in: ["pending", "confirmed"] },
+        venueStatus: { in: ["pending", "confirmed"] },
       },
       include: { position: true },
       orderBy: { createdAt: "asc" },
@@ -550,14 +550,14 @@ export async function portfolio(rawAddress: string) {
   );
 
   // Pending: requests without a matching fulfil or cancel -- the "Settling on
-  // Arcus…" state and the Cancel button. A redeem caught by a close is paid by
+  // venue…" state and the Cancel button. A redeem caught by a close is paid by
   // claim instead; a buy-in caught by one is refundable straight away.
   const pending = pendingEntries
     .filter((e) => e.position.positionTokenAddress && (e.position.status === "open" || e.type === "margin_add"))
     .map((e) => ({
       position: (e.position.positionTokenAddress as string).toLowerCase(),
       type: e.type === "margin_add" ? "buy_in" : "redeem",
-      // USDG for a buy-in, shares for a redeem.
+      // The asset for a buy-in, shares for a redeem.
       amount: e.type === "margin_add" ? usd(BigInt(e.requestAmount ?? e.amount)) : fromSize6(BigInt(e.requestAmount ?? "0")),
       requestedAt: e.createdAt.toISOString(),
       cancellableAt: (e.position.status === "open"

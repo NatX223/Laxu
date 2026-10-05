@@ -7,6 +7,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
+    "typecheck:src": "tsc --noEmit -p tsconfig.src.json",
     "test": "tsc --outDir .test-build --rootDir src && node --test --test-name-pattern=. .test-build/**/*.test.js && node -e \"require('fs').rmSync('.test-build',{recursive:true,force:true})\"",
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate dev",
@@ -14,7 +15,8 @@
     "db:seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts",
     "tags:fix": "ts-node-dev --transpile-only --respawn=false scripts/fix-numeric-tags.ts",
     "slots:provision": "ts-node-dev --transpile-only --respawn=false scripts/provisionSlots.ts",
-    "smoke": "ts-node-dev --transpile-only --respawn=false scripts/smoke.ts"
+    "markets:map": "ts-node-dev --transpile-only --respawn=false scripts/marketsMap.ts",
+    "abi:gen": "ts-node-dev --transpile-only --respawn=false scripts/genAbi.ts"
   },
   "prisma": {
     "seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts"

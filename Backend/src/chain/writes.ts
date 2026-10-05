@@ -9,10 +9,10 @@ import {
   type WalletClient,
 } from "viem";
 
+import { retry } from "../lib/async";
 import { createLogger } from "../lib/logger";
 import {
   DirectionEnum,
-  depositProxyAbi,
   erc20Abi,
   lendingPoolAbi,
   lendingPoolFactoryAbi,
@@ -21,28 +21,44 @@ import {
   type DirectionName,
 } from "./abi";
 import {
-  depositProxyAddress,
+  assetAddress,
   factoryAddress,
   lendingPoolFactoryAddress,
   liquidatorWallet,
   operatorWallet,
   publicClient,
-  usdgAddress,
   withWalletLock,
 } from "./clients";
 
 const log = createLogger("chain:write");
 
+export interface ContractCall {
+  address: Address;
+  abi: readonly unknown[];
+  functionName: string;
+  args?: readonly unknown[];
+}
+
+export interface SendOptions {
+  /// Called with the hash as soon as the transaction is broadcast, BEFORE the
+  /// receipt is awaited -- the caller persists it there, so a crash while
+  /// waiting resumes by checking the receipt instead of sending again. Retried
+  /// (it is a DB write); a failure after the retries is logged, not thrown,
+  /// because the transaction is already out.
+  onSent?: (txHash: Hash) => Promise<void>;
+}
+
 /**
  * Simulate, send and wait for one transaction, holding the sender's queue slot
  * for the whole round trip so the next transaction from the same wallet gets
  * the next nonce. Simulating first turns a revert into a readable error before
- * any gas is spent.
+ * any gas is spent -- with the custom errors in `abi`, viem decodes them by name.
  */
-async function send(
+export async function sendTransaction(
   wallet: WalletClient,
   label: string,
-  call: { address: Address; abi: readonly unknown[]; functionName: string; args?: readonly unknown[] },
+  call: ContractCall,
+  options: SendOptions = {},
 ): Promise<{ txHash: Hash; logs: Log[] }> {
   const account = wallet.account;
   if (!account) throw new Error(`${label}: wallet has no account`);
@@ -50,6 +66,11 @@ async function send(
   return withWalletLock(account.address, async () => {
     const { request } = await publicClient().simulateContract({ ...call, account } as never);
     const txHash = await wallet.writeContract(request as never);
+    if (options.onSent) {
+      await retry(() => options.onSent!(txHash), { attempts: 5, baseMs: 500, label: `${label} onSent` }).catch(
+        (error) => log.error(`${label}: could not persist the sent tx hash`, { txHash, error: String(error) }),
+      );
+    }
     const receipt = await publicClient().waitForTransactionReceipt({ hash: txHash });
     if (receipt.status !== "success") {
       throw new Error(`${label} reverted (tx ${txHash})`);
@@ -58,14 +79,30 @@ async function send(
   });
 }
 
+const send = sendTransaction;
+
+/// The receipt of a transaction sent earlier (resume path): success, reverted,
+/// or not found yet.
+export async function receiptStatus(txHash: Hash): Promise<"success" | "reverted" | "unknown"> {
+  try {
+    const receipt = await publicClient().waitForTransactionReceipt({ hash: txHash, timeout: 60_000 });
+    return receipt.status;
+  } catch {
+    return "unknown";
+  }
+}
+
 /**
- * Arcus exposes no position identifier of its own -- the entry order id is the
- * closest thing. It is a variable-length string, so it is hashed into the
- * bytes32 the contract wants. The readable id stays in `positions.arcusOrderId`;
- * this value is only ever compared, never decoded.
+ * The bytes32 the token stores as `venuePositionId`: one per entry order,
+ * `perpl:<accountId>:<requestId>`. Only ever compared, never decoded -- the
+ * readable string stays in `positions.venuePositionId`.
  */
-export function arcusPositionIdFor(orderId: string): `0x${string}` {
-  return keccak256(toHex(orderId));
+export function venuePositionKey(perplAccountId: string, requestId: string): string {
+  return `perpl:${perplAccountId}:${requestId}`;
+}
+
+export function venuePositionIdFor(perplAccountId: string, requestId: string): `0x${string}` {
+  return keccak256(toHex(venuePositionKey(perplAccountId, requestId)));
 }
 
 export interface CreatePositionArgs {
@@ -74,21 +111,25 @@ export interface CreatePositionArgs {
   market: `0x${string}`;
   direction: DirectionName;
   leverage: number;
-  /// Actual fill price, 1e18 fixed point.
+  /// The venue position's entry price, 1e18 fixed point (Exchange.getPosition,
+  /// converted exactly as PerplReader converts it).
   entryPrice: bigint;
-  /// Actual filled size, in USDG base units per unit of the asset (see
-  /// onChainSize in services/openPosition.ts).
+  /// The venue position's size, size6 -- must equal PerplReader.position().size.
   size: bigint;
-  /// What Arcus credited, USDG base units.
+  /// What the venue credited, asset base units.
   initialDeposit: bigint;
-  arcusOrderId: string;
+  /// keccak256("perpl:<accountId>:<requestId>") -- see {venuePositionIdFor}.
+  venuePositionId: `0x${string}`;
+  /// The slot's Perpl account id: the token reads its venue position from it.
+  venueAccountId: bigint;
   /// The creator's SL/TP -- defaults for every holder. 1e18; 0n = none.
   defaultStopLoss: bigint;
   defaultTakeProfit: bigint;
 }
 
-/// PositionTokenFactory.createPosition -- the 10-argument signature. Mints the
-/// whole initial supply to `creator`.
+/// PositionTokenFactory.createPosition -- the 11-argument signature. The token's
+/// initializer checks the claimed trade against the real venue position held by
+/// `venueAccountId`, then mints the whole initial supply to `creator`.
 export async function createPosition(
   args: CreatePositionArgs,
 ): Promise<{ positionToken: Address; txHash: Hash }> {
@@ -104,7 +145,8 @@ export async function createPosition(
       args.entryPrice,
       args.size,
       args.initialDeposit,
-      arcusPositionIdFor(args.arcusOrderId),
+      args.venuePositionId,
+      args.venueAccountId,
       args.defaultStopLoss,
       args.defaultTakeProfit,
     ],
@@ -127,9 +169,9 @@ export async function createPosition(
  */
 export async function findExistingPositionToken(
   creator: Address,
-  arcusOrderId: string,
+  venuePositionId: `0x${string}`,
 ): Promise<Address | undefined> {
-  const wanted = arcusPositionIdFor(arcusOrderId).toLowerCase();
+  const wanted = venuePositionId.toLowerCase();
   const tokens = (await publicClient().readContract({
     address: factoryAddress(),
     abi: positionTokenFactoryAbi,
@@ -142,7 +184,7 @@ export async function findExistingPositionToken(
     const id = (await publicClient().readContract({
       address: token,
       abi: positionTokenAbi,
-      functionName: "arcusPositionId",
+      functionName: "venuePositionId",
     })) as `0x${string}`;
     if (id.toLowerCase() === wanted) return token;
   }
@@ -191,7 +233,7 @@ async function operatorWrite(
     | "fulfillDepositRequest"
     | "fulfillRedeemRequest"
     | "close"
-    | "applyReport"
+    | "applyFunding"
     | "settle"
     | "claimFor"
     | "recoverExcess"
@@ -214,14 +256,14 @@ async function operatorWrite(
  * identifies whose request is being fulfilled.
  *
  * The fulfil settles in the same transaction -- shares are minted straight to
- * the buyer, USDG paid straight to the redeemer -- so nothing follows it but
- * ledger writes. A revert with "no pending deposit"/"no pending redeem" means
- * the user cancelled first; see {isNoPendingRevert}.
+ * the buyer, the asset paid straight to the redeemer -- so nothing follows it
+ * but ledger writes. A revert with "no pending deposit"/"no pending redeem"
+ * means the user cancelled first; see {isNoPendingRevert}.
  */
 export async function fulfillDepositRequest(params: {
   positionToken: Address;
   controller: Address;
-  /// The Arcus fill that grew the position, size6. 0 = added as margin only.
+  /// The venue fill that grew the position, size6. 0 = added as margin only.
   addedSize: bigint;
   /// Its price, 1e18. 0 when addedSize is 0.
   fillPrice: bigint;
@@ -238,7 +280,7 @@ export async function fulfillDepositRequest(params: {
 export async function fulfillRedeemRequest(params: {
   positionToken: Address;
   controller: Address;
-  /// The reduce-only fill on Arcus, size6. 0 = paid from the buffer only.
+  /// The reduce-only fill on the venue, size6. 0 = paid from the buffer only.
   closedSize: bigint;
   fillPrice: bigint;
 }): Promise<Hash> {
@@ -257,7 +299,7 @@ export function isNoPendingRevert(error: unknown): boolean {
   return /no pending (deposit|redeem)/i.test(message);
 }
 
-/// Exits one holder whose own SL/TP is breached at the stored mark, paying
+/// Exits one holder whose own SL/TP is breached at the LIVE venue mark, paying
 /// `balanceOf(holder) x navPerShare()`. The token must already hold the payout
 /// on top of pending buy-ins, or this reverts "insufficient assets".
 export async function executeTrigger(params: {
@@ -270,36 +312,32 @@ export async function executeTrigger(params: {
   return operatorWrite(params.positionToken, "executeTrigger", [params.holder, params.closedSize, params.fillPrice]);
 }
 
-/// Only succeeds while a default level is breached at the stored mark.
+/// Only succeeds while a default level is breached at the live venue mark.
 export async function retireDefaultTriggers(positionToken: Address): Promise<Hash> {
   return operatorWrite(positionToken, "retireDefaultTriggers", []);
 }
 
 /// Normal closes need the creator's on-chain requestClose() first; the
-/// contract only waives that for `wasLiquidated`.
+/// contract only waives that for `wasLiquidated`. The contract reads the final
+/// mark from the venue itself (falling back to the cached mark only for a
+/// liquidation); the operator supplies only the final cumulative funding.
 export async function closePosition(params: {
   positionToken: Address;
-  /// 1e18 fixed point.
-  finalMarkPrice: bigint;
-  /// USDG base units, signed.
-  finalFunding: bigint;
+  /// Asset base units, signed -- cumulative for the whole position.
+  funding: bigint;
   wasLiquidated: boolean;
 }): Promise<Hash> {
-  return operatorWrite(params.positionToken, "close", [
-    params.finalMarkPrice,
-    params.finalFunding,
-    params.wasLiquidated,
-  ]);
+  return operatorWrite(params.positionToken, "close", [params.funding, params.wasLiquidated]);
 }
 
-/// Records the USDG actually recovered from Arcus. The token must already hold
-/// `assets` on top of any pending buy-ins, or this reverts "settlement not funded".
+/// Records the asset actually recovered from the venue. The token must already
+/// hold `assets` on top of any pending buy-ins, or this reverts "settlement not funded".
 export async function settle(positionToken: Address, assets: bigint): Promise<Hash> {
   return operatorWrite(positionToken, "settle", [assets]);
 }
 
 /// Pushes a settled holder's payout to them. The operator pays the gas; the
-/// USDG always goes to `holder`. Reverts for contract addresses.
+/// asset always goes to `holder`. Reverts for contract addresses.
 export async function claimFor(positionToken: Address, holder: Address): Promise<Hash> {
   return operatorWrite(positionToken, "claimFor", [holder]);
 }
@@ -310,23 +348,18 @@ export async function recoverExcess(positionToken: Address, to: Address): Promis
   return operatorWrite(positionToken, "recoverExcess", [to]);
 }
 
-/// Pushes a new mark price/funding onto a live position. Gated to `arcusOperator`
-/// on-chain -- the same wallet that already fulfils deposits/redeems and closes.
-export async function applyReport(params: {
+/// Sets the position's cumulative funding. Gated to the token's `operator`.
+/// The mark is never reported -- the token reads it from the venue.
+export async function applyFunding(params: {
   positionToken: Address;
-  /// 1e18 fixed point.
-  markPrice: bigint;
-  /// USDG base units, signed.
+  /// Asset base units, signed: cumulative for the whole position (the
+  /// contract nets out `fundingSettled` itself).
   funding: bigint;
-  /// Unix seconds; must be strictly greater than the position's current
-  /// lastReportTimestamp or the call reverts.
+  /// Unix seconds; must be strictly greater than the token's
+  /// lastFundingTimestamp and at most block.timestamp + 60, or the call reverts.
   timestamp: bigint;
 }): Promise<Hash> {
-  return operatorWrite(params.positionToken, "applyReport", [
-    params.markPrice,
-    params.funding,
-    params.timestamp,
-  ]);
+  return operatorWrite(params.positionToken, "applyFunding", [params.funding, params.timestamp]);
 }
 
 // ---------------------------------------------------------------------------
@@ -343,9 +376,84 @@ export async function navPerShare(positionToken: Address): Promise<bigint> {
   })) as bigint;
 }
 
+/// The mark every valuation uses: the live venue mark, or the token's cached
+/// one with `live == false` when the venue can't be read.
+export async function currentMark(positionToken: Address): Promise<{ price: bigint; live: boolean }> {
+  const [price, live] = (await publicClient().readContract({
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "currentMark",
+  })) as readonly [bigint, boolean];
+  return { price, live };
+}
+
+/// What LendingPool checks before opening new risk: a recent funding report
+/// and a live venue mark.
+export async function isPriceFresh(positionToken: Address): Promise<boolean> {
+  return (await publicClient().readContract({
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "isPriceFresh",
+  })) as boolean;
+}
+
+export interface TokenAccounting {
+  capital: bigint;
+  size: bigint;
+  entryPrice: bigint;
+  fundingAccrued: bigint;
+  fundingSettled: bigint;
+  direction: DirectionName;
+  /// Unix seconds.
+  lastFundingTimestamp: bigint;
+}
+
+/// The inputs of the token's value formula, for the funding reporter. Parallel
+/// reads (no Multicall3 address is configured for the chain).
+export async function tokenAccounting(positionToken: Address): Promise<TokenAccounting> {
+  const read = <T>(functionName: string) =>
+    publicClient().readContract({ address: positionToken, abi: positionTokenAbi, functionName } as never) as Promise<T>;
+  const [capital, size, entryPrice, fundingAccrued, fundingSettled, direction, lastFundingTimestamp] =
+    await Promise.all([
+      read<bigint>("capital"),
+      read<bigint>("size"),
+      read<bigint>("entryPrice"),
+      read<bigint>("fundingAccrued"),
+      read<bigint>("fundingSettled"),
+      read<number>("direction"),
+      read<bigint>("lastFundingTimestamp"),
+    ]);
+  return {
+    capital,
+    size,
+    entryPrice,
+    fundingAccrued,
+    fundingSettled,
+    direction: Number(direction) === DirectionEnum.short ? "short" : "long",
+    lastFundingTimestamp,
+  };
+}
+
+/// The token's size/entry next to the venue's -- a risk view.
+export async function venueDrift(positionToken: Address): Promise<{
+  ourSize: bigint;
+  venueSize: bigint;
+  ourEntry: bigint;
+  venueEntry: bigint;
+  venueExists: boolean;
+}> {
+  const [ourSize, venueSize, ourEntry, venueEntry, venueExists] = (await publicClient().readContract({
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "venueDrift",
+  })) as readonly [bigint, bigint, bigint, bigint, boolean];
+  return { ourSize, venueSize, ourEntry, venueEntry, venueExists };
+}
+
 export interface OnChainPositionState {
   size: bigint;
   entryPrice: bigint;
+  /// The token's currentMark(): the live venue mark, or the cached one.
   markPrice: bigint;
   capital: bigint;
   fundingAccrued: bigint;
@@ -360,11 +468,11 @@ export async function readPositionState(positionToken: Address): Promise<OnChain
   const client = publicClient();
   const read = <T>(functionName: string) =>
     client.readContract({ address: positionToken, abi: positionTokenAbi, functionName } as never) as Promise<T>;
-  const [size, entryPrice, markPrice, capital, fundingAccrued, fundingSettled, totalAssets, supply, closed] =
+  const [size, entryPrice, mark, capital, fundingAccrued, fundingSettled, totalAssets, supply, closed] =
     await Promise.all([
       read<bigint>("size"),
       read<bigint>("entryPrice"),
-      read<bigint>("markPrice"),
+      currentMark(positionToken),
       read<bigint>("capital"),
       read<bigint>("fundingAccrued"),
       read<bigint>("fundingSettled"),
@@ -372,10 +480,20 @@ export async function readPositionState(positionToken: Address): Promise<OnChain
       read<bigint>("totalSupply"),
       read<boolean>("closed"),
     ]);
-  return { size, entryPrice, markPrice, capital, fundingAccrued, fundingSettled, totalAssets, totalSupply: supply, closed };
+  return {
+    size,
+    entryPrice,
+    markPrice: mark.price,
+    capital,
+    fundingAccrued,
+    fundingSettled,
+    totalAssets,
+    totalSupply: supply,
+    closed,
+  };
 }
 
-/// USDG sitting in the token for buyers whose requests are still pending --
+/// Asset sitting in the token for buyers whose requests are still pending --
 /// theirs to take back on cancel, so never usable for a redeem payout.
 export async function totalPendingDepositAssets(positionToken: Address): Promise<bigint> {
   return (await publicClient().readContract({
@@ -403,17 +521,16 @@ export async function pendingRedeem(positionToken: Address, controller: Address)
   })) as bigint;
 }
 
-/// Combined read the reporting job uses to decide whether a position's price has
-/// moved enough (or gone stale enough) to be worth a fresh {applyReport} call.
+/// `(currentMark, fundingAccrued, lastFundingTimestamp)` in one read.
 export async function getLastReport(
   positionToken: Address,
-): Promise<{ markPrice: bigint; funding: bigint; timestamp: bigint }> {
-  const [markPrice, funding, timestamp] = (await publicClient().readContract({
+): Promise<{ markPrice: bigint; funding: bigint; lastFundingTimestamp: bigint }> {
+  const [markPrice, funding, lastFundingTimestamp] = (await publicClient().readContract({
     address: positionToken,
     abi: positionTokenAbi,
     functionName: "getLastReport",
-  })) as [bigint, bigint, bigint];
-  return { markPrice, funding, timestamp };
+  })) as readonly [bigint, bigint, bigint];
+  return { markPrice, funding, lastFundingTimestamp };
 }
 
 export async function isClosed(positionToken: Address): Promise<boolean> {
@@ -469,33 +586,37 @@ export async function positionSizeOnChain(positionToken: Address): Promise<bigin
 }
 
 // ---------------------------------------------------------------------------
-// USDG movements
+// Asset movements
 // ---------------------------------------------------------------------------
 
-export async function usdgBalanceOf(account: Address): Promise<bigint> {
+export async function assetBalanceOf(account: Address): Promise<bigint> {
   return (await publicClient().readContract({
-    address: usdgAddress(),
+    address: assetAddress(),
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [account],
   })) as bigint;
 }
 
-export async function transferUsdg(wallet: WalletClient, to: Address, amount: bigint): Promise<Hash> {
-  const { txHash } = await send(wallet, "USDG transfer", {
-    address: usdgAddress(),
-    abi: erc20Abi,
-    functionName: "transfer",
-    args: [to, amount],
-  });
+export async function transferAsset(
+  wallet: WalletClient,
+  to: Address,
+  amount: bigint,
+  options: SendOptions = {},
+): Promise<Hash> {
+  const { txHash } = await send(
+    wallet,
+    "asset transfer",
+    { address: assetAddress(), abi: erc20Abi, functionName: "transfer", args: [to, amount] },
+    options,
+  );
   return txHash;
 }
 
-/// Testnet only: USDG has an open mint. See the known limitations in
-/// services/margin.ts for why the backend needs it.
-export async function mintUsdg(wallet: WalletClient, to: Address, amount: bigint): Promise<Hash> {
-  const { txHash } = await send(wallet, "USDG mint", {
-    address: usdgAddress(),
+/// Only for a test token with an open mint (ASSET_MINTABLE=true).
+export async function mintAsset(wallet: WalletClient, to: Address, amount: bigint): Promise<Hash> {
+  const { txHash } = await send(wallet, "asset mint", {
+    address: assetAddress(),
     abi: erc20Abi,
     functionName: "mint",
     args: [to, amount],
@@ -504,61 +625,47 @@ export async function mintUsdg(wallet: WalletClient, to: Address, amount: bigint
 }
 
 /**
- * One-time per internal wallet, and again whenever an Arcus reset moves the
- * proxy: approve the deposit proxy for MAX so every deposit after is a single
- * transaction. Checked (cheaply) before each deposit rather than trusted.
+ * Approve `spender` for MAX once, so every later pull is a single transaction.
+ * Checked (cheaply) before each use rather than trusted.
  */
-export async function ensureDepositProxyApproval(wallet: WalletClient, amount: bigint): Promise<void> {
+export async function ensureAllowance(
+  wallet: WalletClient,
+  spender: Address,
+  amount: bigint,
+  label = "asset approve",
+): Promise<void> {
   const owner = wallet.account?.address;
   if (!owner) throw new Error("wallet has no account");
   const allowance = (await publicClient().readContract({
-    address: usdgAddress(),
+    address: assetAddress(),
     abi: erc20Abi,
     functionName: "allowance",
-    args: [owner, depositProxyAddress()],
+    args: [owner, spender],
   })) as bigint;
   if (allowance >= amount) return;
 
-  const { txHash } = await send(wallet, "USDG approve (deposit proxy)", {
-    address: usdgAddress(),
+  const { txHash } = await send(wallet, label, {
+    address: assetAddress(),
     abi: erc20Abi,
     functionName: "approve",
-    args: [depositProxyAddress(), 2n ** 256n - 1n],
+    args: [spender, 2n ** 256n - 1n],
   });
-  log.info("deposit proxy approved", { owner, txHash });
-}
-
-/// `initiateDeposit(owner = signer, accountIndex, USDG, amount)` -- the only way
-/// to route funds to a specific subaccount; `owner` must be the signer.
-export async function initiateArcusDeposit(
-  wallet: WalletClient,
-  accountIndex: number,
-  amount: bigint,
-): Promise<Hash> {
-  const owner = wallet.account?.address;
-  if (!owner) throw new Error("wallet has no account");
-  const { txHash } = await send(wallet, "initiateDeposit", {
-    address: depositProxyAddress(),
-    abi: depositProxyAbi,
-    functionName: "initiateDeposit",
-    args: [owner, accountIndex, usdgAddress(), amount],
-  });
-  return txHash;
+  log.info("allowance granted", { owner, spender, txHash });
 }
 
 /**
- * The USDG `Transfer`s a payment transaction emitted, and whether it succeeded.
- * Only logs emitted by the USDG contract itself count -- a lookalike token's
+ * The asset `Transfer`s a transaction emitted, and whether it succeeded. Only
+ * logs emitted by the asset contract itself count -- a lookalike token's
  * Transfer carries the same topic.
  */
-export async function usdgTransfersIn(txHash: Hash): Promise<{
+export async function assetTransfersIn(txHash: Hash): Promise<{
   status: "success" | "reverted";
   transfers: Array<{ from: Address; to: Address; value: bigint }>;
 }> {
   const receipt = await publicClient().waitForTransactionReceipt({ hash: txHash, timeout: 120_000 });
-  const usdg = usdgAddress().toLowerCase();
+  const asset = assetAddress().toLowerCase();
   const transfers = parseEventLogs({ abi: erc20Abi, logs: receipt.logs, eventName: "Transfer" })
-    .filter((entry) => entry.address.toLowerCase() === usdg)
+    .filter((entry) => entry.address.toLowerCase() === asset)
     .map((entry) => ({ from: entry.args.from, to: entry.args.to, value: entry.args.value }));
   return { status: receipt.status, transfers };
 }
@@ -643,15 +750,6 @@ export async function liquidate(
   return { txHash, seizedShares: seized?.args.seizedShares ?? 0n };
 }
 
-/**
- * Queues seized collateral shares back into USDG through the same async
- * ERC-7540 redeem flow every other holder uses -- `controller` and `owner`
- * are both the liquidator wallet itself (as requestRedeem requires), since it
- * already holds the shares outright (LendingPool.liquidate() moves them as a
- * plain ERC-20 transfer, not a redeem). The indexer already watches every open
- * PositionToken for `RedeemRequested`, so this call alone is what puts the
- * request in front of the existing margin-remove orchestration.
- */
 /// Seized shares of a settled position: take the payout directly.
 export async function claimAsLiquidator(positionToken: Address): Promise<Hash> {
   const { txHash } = await send(liquidatorWallet(), "claim (liquidator)", {
@@ -662,6 +760,15 @@ export async function claimAsLiquidator(positionToken: Address): Promise<Hash> {
   return txHash;
 }
 
+/**
+ * Queues seized collateral shares back into the asset through the same async
+ * ERC-7540 redeem flow every other holder uses -- `controller` and `owner`
+ * are both the liquidator wallet itself (as requestRedeem requires), since it
+ * already holds the shares outright (LendingPool.liquidate() moves them as a
+ * plain ERC-20 transfer, not a redeem). The indexer already watches every open
+ * PositionToken for `RedeemRequested`, so this call alone is what puts the
+ * request in front of the existing margin-remove orchestration.
+ */
 export async function requestRedeemAsLiquidator(
   positionToken: Address,
   shares: bigint,

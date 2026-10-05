@@ -6,9 +6,15 @@ import { asyncHandler } from "../lib/async";
 import { unauthorized } from "../lib/errors";
 import { claimTestFunds, faucetStatus } from "../services/faucet";
 import { normaliseIp, formatTruncated } from "../services/faucetRules";
-import { USDG_DECIMALS } from "../lib/units";
+import { ASSET_DECIMALS_DEFAULT } from "../lib/units";
 
 export const faucetRouter = Router();
+
+function assetAmount(): string | null {
+  return config.faucetEnabled
+    ? formatTruncated(BigInt(config.faucetAssetAmount), ASSET_DECIMALS_DEFAULT, 2).replace(/\.00$/, "")
+    : null;
+}
 
 function registeredUser(req: Request) {
   if (!req.user) throw unauthorized("Call POST /users/me first", "USER_NOT_REGISTERED");
@@ -20,9 +26,9 @@ function registeredUser(req: Request) {
 faucetRouter.get("/config", (_req, res) => {
   res.json({
     enabled: config.faucetEnabled,
-    usdgAmount: config.faucetEnabled
-      ? formatTruncated(BigInt(config.faucetUsdgAmount), USDG_DECIMALS, 2).replace(/\.00$/, "")
-      : null,
+    /// `usdgAmount` is the old name for `assetAmount`, kept for the current frontend.
+    usdgAmount: assetAmount(),
+    assetAmount: assetAmount(),
   });
 });
 

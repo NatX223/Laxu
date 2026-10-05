@@ -1,13 +1,15 @@
-import type { OperatorWallet, Prisma, SubaccountSlot } from "@prisma/client";
-import { privateKeyToAccount } from "viem/accounts";
+import { Prisma, type OperatorWallet, type SubaccountSlot } from "@prisma/client";
+import type { WalletClient } from "viem";
 
+import { addressOfKey, slotWalletClient } from "../chain/clients";
 import { db } from "../config/db";
 import { config } from "../config/env";
 import { resolveSecret } from "../config/secrets";
-import { publicKeyHex, loadEd25519PrivateKey } from "../arcus/ed25519";
-import type { ArcusCredentials } from "../arcus/types";
+import { loadEd25519PrivateKey } from "../lib/ed25519";
 import { serviceUnavailable } from "../lib/errors";
 import { createLogger } from "../lib/logger";
+import { getWallet } from "../venue/perpl/rest";
+import type { PerplCredentials } from "../venue/perpl/types";
 
 const log = createLogger("allocator");
 
@@ -16,7 +18,7 @@ export type SlotWithWallet = SubaccountSlot & { operatorWallet: OperatorWallet }
 /**
  * Slot lifecycle:
  *
- *   free -> reserved   (an open request was told to pay this slot's internal wallet)
+ *   free -> reserved   (an open request was told to pay this slot's wallet)
  *        -> allocated  (position token minted; the slot is linked to its position)
  *        -> free       (position closed, collateral swept -- or the open request
  *                       failed/refunded -- and the slot recycled)
@@ -101,6 +103,10 @@ export async function reserveSlot<T>(
   await reclaimExpiredReservations();
 
   const expiresAt = new Date(Date.now() + config.reservationTimeoutMs);
+  // Slots the boot-time verification found a problem with are never handed out.
+  const excluded = [...slotProblems.keys()];
+  const notExcluded =
+    excluded.length > 0 ? Prisma.sql`AND s.id NOT IN (${Prisma.join(excluded)})` : Prisma.empty;
 
   const claimed = await db.$transaction(async (tx) => {
     const rows = await tx.$queryRaw<Array<{ id: string }>>`
@@ -108,6 +114,8 @@ export async function reserveSlot<T>(
       FROM subaccount_slots s
       JOIN operator_wallets w ON w.id = s.operator_wallet_id
       WHERE s.status = 'free' AND w.status = 'active'
+        AND s.perpl_account_id IS NOT NULL AND s.forwarding_enabled = true
+        ${notExcluded}
       ORDER BY s.updated_at ASC
       LIMIT 1
       FOR UPDATE OF s SKIP LOCKED
@@ -142,7 +150,7 @@ export async function reserveSlot<T>(
   const slot = await getSlot(claimed.slotId);
   log.info("slot reserved", {
     slotId: claimed.slotId,
-    accountIndex: slot.accountIndex,
+    perplAccountId: slot.perplAccountId,
     operatorWallet: slot.operatorWallet.address,
     expiresAt: expiresAt.toISOString(),
   });
@@ -197,18 +205,15 @@ export async function releaseSlot(slotId: string): Promise<void> {
 }
 
 /**
- * Arcus credentials for a slot.
- *
- * The API key is scoped to exactly this (wallet, accountIndex) pair -- a key
- * binds to one index at creation and cannot be reused across them, which is why
- * credentials live on the slot rather than the wallet.
+ * Perpl credentials for a slot: one wallet owns one Perpl account, and its
+ * API key is the wallet's. The secret is resolved here, never stored.
  */
-export function credentialsFor(slot: SlotWithWallet): ArcusCredentials {
+export function credentialsFor(slot: SlotWithWallet): PerplCredentials {
   return {
     address: slot.operatorWallet.address,
-    accountIndex: slot.accountIndex,
-    apiKey: slot.arcusApiKey,
-    secret: resolveSecret(slot.arcusApiSecretRef),
+    perplAccountId: slot.perplAccountId,
+    apiKey: slot.apiKey,
+    apiSecret: resolveSecret(slot.apiSecretRef),
   };
 }
 
@@ -216,59 +221,91 @@ export function operatorEvmKey(slot: SlotWithWallet): string {
   return resolveSecret(slot.operatorWallet.evmSignerRef);
 }
 
-/// Verify every slot's stored public key actually matches its secret. A
-/// mismatched pair is otherwise invisible until the first order comes back 401.
-export async function verifySlotCredentials(): Promise<
-  Array<{ slotId: string; accountIndex: number; problem: string }>
-> {
-  const slots = await db.subaccountSlot.findMany({ include: { operatorWallet: true } });
-  const problems: Array<{ slotId: string; accountIndex: number; problem: string }> = [];
+/// The slot wallet's signer: it funds, withdraws from and enables forwarding
+/// on its own Perpl account, and sends refunds and sweeps.
+export function slotWallet(slot: SlotWithWallet): WalletClient {
+  return slotWalletClient(operatorEvmKey(slot), slot.operatorWallet.evmSignerRef);
+}
 
-  const checkedWallets = new Set<string>();
+export interface SlotProblem {
+  slotId: string;
+  wallet: string;
+  problem: string;
+}
+
+/// Problems found by the last {verifySlotCredentials}, by slot. reserveSlot
+/// skips these slots; /health lists them.
+const slotProblems = new Map<string, SlotProblem[]>();
+
+export function currentSlotProblems(): SlotProblem[] {
+  return [...slotProblems.values()].flat();
+}
+
+/**
+ * Verify every slot end to end, at boot. A slot that fails here would fail on
+ * the creator's first order -- after they paid -- so it is reported and kept
+ * out of reserveSlot instead:
+ *
+ *   - the wallet's EVM key resolves and controls the wallet address;
+ *   - the API secret resolves and loads as an Ed25519 key;
+ *   - `GET /v1/trading/wallet` signed with it answers for this wallet, with an
+ *     account whose id is the slot's perplAccountId and `fw == true`.
+ */
+export async function verifySlotCredentials(): Promise<SlotProblem[]> {
+  const slots = await db.subaccountSlot.findMany({ include: { operatorWallet: true } });
+  const found = new Map<string, SlotProblem[]>();
+  const add = (slot: SlotWithWallet, problem: string) => {
+    const list = found.get(slot.id) ?? [];
+    list.push({ slotId: slot.id, wallet: slot.operatorWallet.address, problem });
+    found.set(slot.id, list);
+  };
+
   for (const slot of slots) {
-    // The internal wallet's EVM key signs deposits, refunds and sweeps at
-    // runtime; a wrong key would strand a creator's payment on it.
-    if (!checkedWallets.has(slot.operatorWalletId)) {
-      checkedWallets.add(slot.operatorWalletId);
-      try {
-        const key = operatorEvmKey(slot);
-        const derived = privateKeyToAccount((key.startsWith("0x") ? key : `0x${key}`) as `0x${string}`).address;
-        if (derived.toLowerCase() !== slot.operatorWallet.address.toLowerCase()) {
-          problems.push({
-            slotId: slot.id,
-            accountIndex: slot.accountIndex,
-            problem: `EVM key ${slot.operatorWallet.evmSignerRef} does not control ${slot.operatorWallet.address}`,
-          });
-        }
-      } catch (error) {
-        problems.push({
-          slotId: slot.id,
-          accountIndex: slot.accountIndex,
-          problem: error instanceof Error ? error.message : String(error),
-        });
+    try {
+      const derived = addressOfKey(operatorEvmKey(slot), slot.operatorWallet.evmSignerRef);
+      if (derived.toLowerCase() !== slot.operatorWallet.address.toLowerCase()) {
+        add(slot, `EVM key ${slot.operatorWallet.evmSignerRef} does not control ${slot.operatorWallet.address}`);
       }
+    } catch (error) {
+      add(slot, error instanceof Error ? error.message : String(error));
+    }
+
+    if (!slot.perplAccountId) {
+      add(slot, "no Perpl account recorded (run slots:provision)");
+      continue;
+    }
+
+    let credentials: PerplCredentials;
+    try {
+      credentials = credentialsFor(slot);
+      loadEd25519PrivateKey(credentials.apiSecret);
+    } catch (error) {
+      add(slot, error instanceof Error ? error.message : String(error));
+      continue;
     }
 
     try {
-      const secret = resolveSecret(slot.arcusApiSecretRef);
-      const derived = publicKeyHex(loadEd25519PrivateKey(secret));
-      if (derived.toLowerCase() !== slot.arcusApiKey.toLowerCase()) {
-        problems.push({
-          slotId: slot.id,
-          accountIndex: slot.accountIndex,
-          problem: `stored arcus_api_key does not match the key derived from ${slot.arcusApiSecretRef}`,
-        });
+      const wallet = await getWallet(credentials);
+      if (wallet.addr.toLowerCase() !== slot.operatorWallet.address.toLowerCase()) {
+        add(slot, `API key ${slot.apiKey.slice(0, 8)}... belongs to ${wallet.addr}, not ${slot.operatorWallet.address}`);
+      }
+      const account = (wallet.as ?? []).find((entry) => String(entry.id) === slot.perplAccountId);
+      if (!account) {
+        add(slot, `wallet has no Perpl account ${slot.perplAccountId}`);
+      } else {
+        if (!account.fw) add(slot, `order forwarding is off for account ${slot.perplAccountId}`);
+        if (account.fw !== slot.forwardingEnabled) {
+          await db.subaccountSlot.update({ where: { id: slot.id }, data: { forwardingEnabled: account.fw } });
+        }
       }
     } catch (error) {
-      problems.push({
-        slotId: slot.id,
-        accountIndex: slot.accountIndex,
-        problem: error instanceof Error ? error.message : String(error),
-      });
+      add(slot, `signed wallet read failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  return problems;
+  slotProblems.clear();
+  for (const [slotId, list] of found) slotProblems.set(slotId, list);
+  return currentSlotProblems();
 }
 
 export interface PoolStats {

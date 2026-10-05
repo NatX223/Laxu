@@ -1,7 +1,7 @@
 /**
  * Secret resolution.
  *
- * The schema stores `evm_signer_ref` and `arcus_api_secret_ref` -- names, not
+ * The schema stores `evm_signer_ref` and `api_secret_ref` -- names, not
  * secrets. This module is the one place that turns a name into key material, so
  * swapping the env-backed store for a real KMS is a change to `resolveSecret`
  * and nothing else.

@@ -4,7 +4,7 @@ import { notFound } from "../lib/errors";
 import { lifecycleOf } from "./discovery";
 import { bytes32ToSymbol } from "./markets";
 
-/// USDG (6dp) paid to `holder` out of a settled position, summed over its
+/// The asset (6dp) paid to `holder` out of a settled position, summed over its
 /// Claimed events -- the position page's "You received $X".
 export async function claimedBy(positionTokenAddress: string, holder: string): Promise<{ assets: string }> {
   const position = await findByToken(positionTokenAddress);
@@ -22,9 +22,9 @@ export async function claimedBy(positionTokenAddress: string, holder: string): P
  *
  * Every point is the contract's own totalAssets()/totalSupply() as the indexer
  * read them at that report's block (see indexer `handleFunding`), so nothing
- * here re-implements PositionToken's value formula. Shares and USDG share
+ * here re-implements PositionToken's value formula. Shares and the asset share
  * decimals (ERC-7540 over the asset, no offset), so the ratio is directly
- * USDG per token.
+ * asset per token.
  */
 
 /// Decimal places navPerToken is rendered to. Strings, so JSON never rounds.
@@ -122,12 +122,14 @@ export async function getPublicPosition(positionTokenAddress: string) {
   return {
     positionTokenAddress: position.positionTokenAddress,
     status: position.status,
-    /// open -> closing (unwinding on Arcus) -> settling (returning funds) -> settled.
+    /// open -> closing (unwinding on the venue) -> settling (returning funds) -> settled.
     lifecycle: lifecycleOf(position.status, settlement?.status ?? null),
     symbol,
-    /// Arcus market name the candles endpoint takes, e.g. "ETH-USD".
-    arcusMarket: market?.displaySymbol ?? null,
-    /// Null when Arcus has no logo -- the page draws a letter avatar.
+    /// Display name, e.g. "ETH-USD".
+    venueMarket: market?.displaySymbol ?? null,
+    /// Perpl's API market id -- what its public candles/book/trades endpoints take.
+    venueMarketId: market?.venueMarketId ?? null,
+    /// Null when the venue has no logo -- the page draws a letter avatar.
     logoUrl: market?.logoUrl ?? null,
     fullAssetName: market?.fullAssetName ?? null,
     direction: position.direction,

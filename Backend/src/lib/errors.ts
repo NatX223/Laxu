@@ -24,16 +24,3 @@ export const conflict = (message: string, code = "CONFLICT") => new HttpError(40
 
 export const serviceUnavailable = (message: string, code = "SERVICE_UNAVAILABLE") =>
   new HttpError(503, message, code);
-
-/// A failure from the Arcus gateway, carrying enough of the response to decide
-/// whether the ledger entry should be reversed or retried.
-export class ArcusError extends Error {
-  constructor(
-    message: string,
-    readonly status?: number,
-    readonly body?: unknown,
-  ) {
-    super(message);
-    this.name = "ArcusError";
-  }
-}

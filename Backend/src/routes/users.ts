@@ -54,7 +54,7 @@ usersRouter.patch(
 );
 
 /// Portfolio page: positions created, holdings (with collateral and cost
-/// basis), loans (health read live) and requests still settling on Arcus.
+/// basis), loans (health read live) and requests still settling on the venue.
 usersRouter.get(
   "/:address/portfolio",
   asyncHandler(async (req, res) => {

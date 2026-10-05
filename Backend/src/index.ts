@@ -16,12 +16,13 @@ import { verifySlotCredentials } from "./services/allocator";
 import { startSettlementJob } from "./services/closePosition";
 import { startFaucetMonitor } from "./services/faucet";
 import { startLiquidationJob } from "./services/liquidator";
-import { closeArcusStream, getArcusStream, startArcusStream } from "./services/arcusStream";
 import { startMarketSync } from "./services/marketSync";
 import { resumeOpenRequests } from "./services/openPosition";
 import { startReconciler } from "./services/reconciler";
 import { onStreamLiquidationSignal, startReportingJob } from "./services/reporter";
 import { statsRouter } from "./routes/stats";
+import { POSITION_FORCED_EXIT_REASONS, PositionStatus } from "./venue/perpl/config";
+import { closeAll as closeTradingSockets, onPosition, openForActiveSlots } from "./venue/perpl/connections";
 
 const log = createLogger("server");
 
@@ -66,12 +67,16 @@ async function start(): Promise<void> {
   if (config.enableIndexer || config.enableReconciler || config.enableReporter || config.enableLiquidator) {
     assertOrchestrationConfig();
 
-    // A slot whose stored public key does not match its secret fails with a 401
-    // on the first order and nowhere earlier; surfacing it at boot turns that
-    // into a config error instead of a stuck position.
-    const problems = await verifySlotCredentials();
+    // A slot whose API key, account or forwarding flag is wrong fails on the
+    // creator's first order and nowhere earlier; surfacing it at boot turns
+    // that into a config error instead of a stuck position. Slots with a
+    // problem are kept out of reserveSlot (and listed on /health).
+    const problems = await verifySlotCredentials().catch((error) => {
+      log.error("slot verification failed", errorFields(error));
+      return [];
+    });
     for (const problem of problems) {
-      log.error("slot credentials are inconsistent", problem);
+      log.error("slot is not usable", { ...problem });
     }
   }
 
@@ -90,25 +95,27 @@ async function start(): Promise<void> {
     void resumeOpenRequests().catch((error) => log.error("open-request resume at boot failed", errorFields(error)));
   }
 
-  // Always on: GET /markets needs the table, and the open flow needs each
-  // market's tickSize/stepSize to sign an order. Syncs once now, then every
-  // minute -- one public Arcus call per tick.
+  // Always on: GET /markets needs the table, and every order needs each
+  // market's ids and decimals. Syncs once now, then every minute -- one public
+  // Perpl call per tick.
   stopWorkers.push(startMarketSync());
 
   if (config.enableIndexer || config.enableReconciler || config.enableReporter) {
-    // One shared Arcus stream for every slot: fills, positions and transfers.
-    // Liquidation-marked fills and unexpected FLAT rows go to the same
-    // idempotent check the reporter uses as its fallback.
-    const stream = getArcusStream();
-    stream.onLiquidationFill((account, fill) => {
-      void onStreamLiquidationSignal(account, { marketId: fill.marketId, fill });
+    // One Perpl trading socket per slot with something live on it. A position
+    // the venue liquidated, deleveraged or unwound goes to the same idempotent
+    // check the reporter's on-chain read uses as its fallback.
+    onPosition((slotId, position) => {
+      const forced =
+        position.st === PositionStatus.Liquidated ||
+        position.st === PositionStatus.Deleveraged ||
+        position.st === PositionStatus.Unwound ||
+        (position.sr !== undefined && POSITION_FORCED_EXIT_REASONS.has(position.sr));
+      if (!forced) return;
+      void onStreamLiquidationSignal(slotId, { venueMarketId: position.mkt, atMs: position.at?.t }).catch((error) =>
+        log.error("stream liquidation check failed", { slotId, ...errorFields(error) }),
+      );
     });
-    // A FLAT row can also be a creator close landing; checkForLiquidation
-    // ignores it then (a close is in progress).
-    stream.onPositionFlat((account, row) => {
-      void onStreamLiquidationSignal(account, { marketId: row.marketId });
-    });
-    stopWorkers.push(startArcusStream());
+    void openForActiveSlots().catch((error) => log.error("opening trading sockets failed", errorFields(error)));
   }
 
   if (config.enableIndexer) stopWorkers.push(startIndexer());
@@ -132,7 +139,7 @@ async function start(): Promise<void> {
   const shutdown = async (signal: string) => {
     log.info("shutting down", { signal });
     for (const stop of stopWorkers) stop();
-    closeArcusStream();
+    closeTradingSockets();
     server.close();
     await db.$disconnect();
     process.exit(0);

@@ -23,7 +23,7 @@ const log = createLogger("liquidator");
 /**
  * Lending-side liquidation bot.
  *
- * Entirely separate surface from the Arcus-side detection in reporter.ts --
+ * Entirely separate surface from the venue-side detection in reporter.ts --
  * this one is Laxu's own liquidation, already fully built into LendingPool:
  * `liquidate()` is permissionless, close-factor/dust logic lives in
  * `maxLiquidatableDebt()`, and the seizure bonus is baked into the shares it

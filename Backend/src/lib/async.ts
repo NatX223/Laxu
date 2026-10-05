@@ -37,7 +37,7 @@ export async function withTimeout<T>(
   }
 }
 
-/// Retry with exponential backoff. Used for Arcus reads and RPC calls, never for
+/// Retry with exponential backoff. Used for venue reads and RPC calls, never for
 /// a signed mutation -- replaying one of those risks a duplicate order.
 export async function retry<T>(
   fn: () => Promise<T>,

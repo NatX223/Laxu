@@ -1,9 +1,9 @@
-import { PRICE_SCALE, toSize6, toUsdg6 } from "../lib/units";
+import { PRICE_SCALE, toAsset6, toSize6 } from "../lib/units";
 
 /**
  * Buy-in and redeem sizing. A buy-in or redeem changes how BIG a position is,
  * never how leveraged: every share always represents the same slice of the
- * same trade. All amounts in on-chain units (lib/units.ts): USDG and size at
+ * same trade. All amounts in on-chain units (lib/units.ts): the asset and size at
  * 6dp, prices at 1e18.
  */
 
@@ -27,7 +27,7 @@ export function belowMinimums(size6: bigint, mark18: bigint, grid: MarketGrid): 
   if (size6 <= 0n) return true;
   if (size6 < toSize6(grid.minOrderSize)) return true;
   const notional6 = (size6 * mark18) / PRICE_SCALE;
-  return notional6 < toUsdg6(grid.minOrderNotional || "0");
+  return notional6 < toAsset6(grid.minOrderNotional || "0");
 }
 
 /**
@@ -60,14 +60,14 @@ export function buyInAddedSize(params: {
 /**
  * The reduce-only size for redeeming `shares` of `supply` (supply taken BEFORE
  * settlement -- it includes the pending shares): `shares / supply x S`, rounded
- * down to the step and never more than the live Arcus leg. Below the minimum
+ * down to the step and never more than the live venue leg. Below the minimum
  * order size, 0: the redeem is paid from the token's buffer only.
  */
 export function redeemClosedSize(params: {
   shares: bigint;
   supply: bigint;
   size6: bigint;
-  /// The live Arcus leg, size6 -- an upper bound.
+  /// The live venue leg, size6 -- an upper bound.
   legSize6: bigint;
   mark18: bigint;
   grid: MarketGrid;
@@ -82,7 +82,7 @@ export function redeemClosedSize(params: {
   return belowMinimums(sized, mark18, grid) ? 0n : sized;
 }
 
-/// Margin the fill took at `leverage` (notional / L), USDG 6dp, rounded up.
+/// Margin the fill took at `leverage` (notional / L), asset 6dp, rounded up.
 export function marginUsed6(filled6: bigint, price18: bigint, leverage: number): bigint {
   const notional6 = (filled6 * price18) / PRICE_SCALE;
   const lev = BigInt(leverage);
