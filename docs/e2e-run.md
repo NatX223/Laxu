@@ -197,7 +197,7 @@ Checks:
 
 Steps 1, 2, 5 and 9 did not pass on the first try. The failed attempts stay in the log above; each was
 fixed in the backend (or the check corrected), and the step re-run against the fixed code. One fix moved
-money back, and one holder (B) was left underpaid by $0.45 (#5).
+money back; one holder (B) was underpaid by $0.45 (#5) and has since been paid it.
 
 1. **Indexer could not start (before step 1).** Monad's public RPC refuses `eth_getLogs` over more than
    100 blocks; the backfill asked for ~90,000. *Fix:* every `getLogs` on the shared client is split into
@@ -226,7 +226,11 @@ money back, and one holder (B) was left underpaid by $0.45 (#5).
    ([transfer](https://testnet.monadvision.com/tx/0xd333008bd9b15b5b0700a4d0ebc0dc0423a2dd7b8a2c3f89e68aafc7164c61ca),
    [deposit](https://testnet.monadvision.com/tx/0x66894d95727d865cb1699c475932c002ac3fabfc7d21319872965dd25e49e478));
    the next tick pushed funding −$0.0896 and NAV returned to 1.0020 before A's close, so A's settlement
-   is fair. B's $0.45 was not made good.
+   is fair.
+   **Remediation:** B's shortfall, $0.450644, paid from the float to B
+   ([0xe2c229b1…](https://testnet.monadvision.com/tx/0xe2c229b1120f89f4ec95280ee83bcf62312f19c8e53973345f3112c8e74cd9c5)).
+   A guard in `recycleFreedMargin` now refuses (and alerts on) any withdrawal above the payout it funded,
+   with a regression test.
 6. **`withdrawCollateral` ran out of gas (step 9, first attempt).** The node's exact gas estimate left no
    headroom; a trace shows the pool's share transfer succeeding and the function then running out.
    *Fix:* every backend write (and the e2e script) sends with `GAS_BUFFER_BPS` (default +30%) over the
@@ -258,4 +262,4 @@ _2026-10-05T20:17:06.252Z_
 | 9 | Close: repay, withdraw, requestClose, settle, claims | **PASS** | [0xc58c9ebf…](https://testnet.monadvision.com/tx/0xc58c9ebf548b91499360b684fef160d8b7e68da7260b09abc95674d3432a4a99) |
 | 10 | Refund path: a wrong payment is refunded | **PASS** | [0x972409ff…](https://testnet.monadvision.com/tx/0x972409ff7f869d7f640ca8acbcccb99d725f828169ba7245e1cc294dd7b4a269) |
 
-Steps 1, 2, 5 and 9 passed only after a fix or a corrected check — see **Incidents and fixes** above. One holder (B) was underpaid $0.450644 by incident #5.
+Steps 1, 2, 5 and 9 passed only after a fix or a corrected check — see **Incidents and fixes** above. One holder (B) was underpaid $0.450644 by incident #5; that was paid back from the float afterwards (see its Remediation line).

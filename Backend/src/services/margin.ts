@@ -330,15 +330,36 @@ export async function fundPayout(slot: SlotWithWallet, positionToken: Address, p
  */
 export function recycleFreedMargin(ctx: { slot: SlotWithWallet; position: { id: string } }, amount: bigint): void {
   void withSlotLock(ctx.slot.id, async () => {
-    const reserve = BigInt(ctx.slot.reserve);
     const free = await venue().accountBalance(ctx.slot);
-    const excess = free > reserve ? free - reserve : 0n;
-    const toWithdraw = excess < amount ? excess : amount;
+    const toWithdraw = planRecycle({ free, reserve: BigInt(ctx.slot.reserve), paidOut: amount });
+    assertRecycleWithinPayout(toWithdraw, amount, { positionId: ctx.position.id, slotId: ctx.slot.id });
     if (toWithdraw > 0n) await venue().withdraw(ctx.slot, toWithdraw);
     const held = await assetBalanceOf(ctx.slot.operatorWallet.address as Address);
     if (held > 0n) await transferAsset(slotWallet(ctx.slot), floatAddress(), held);
     log.info("freed margin recycled to the float", { positionId: ctx.position.id, amount: fromAsset6(held) });
   }).catch((error) => log.warn("freed-margin recycle skipped", { positionId: ctx.position.id, ...errorFields(error) }));
+}
+
+/// What a recycle may withdraw: the free balance above the reserve, but never
+/// more than `paidOut` -- the payout (or float deposit) it is paying back.
+export function planRecycle(params: { free: bigint; reserve: bigint; paidOut: bigint }): bigint {
+  const excess = params.free > params.reserve ? params.free - params.reserve : 0n;
+  if (params.paidOut <= 0n) return 0n;
+  return excess < params.paidOut ? excess : params.paidOut;
+}
+
+export class RecycleGuardError extends Error {}
+
+/// Last check before money leaves the venue for the float: refuse, and raise
+/// an alert, if a recycle would take more than the payout it funded.
+export function assertRecycleWithinPayout(toWithdraw: bigint, paidOut: bigint, fields: Record<string, unknown> = {}): void {
+  if (toWithdraw <= paidOut) return;
+  alert("refused a recycle above the payout it funded", {
+    ...fields,
+    toWithdraw: toWithdraw.toString(),
+    paidOut: paidOut.toString(),
+  });
+  throw new RecycleGuardError(`recycle of ${toWithdraw} exceeds the ${paidOut} paid out; refused`);
 }
 
 // ---------------------------------------------------------------------------
