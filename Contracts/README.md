@@ -181,3 +181,22 @@ could run several independent wallets doing it, because nothing in the contract 
 "liquidator" as an identity. Worth funding those wallets separately from
 `arcusOperator` and the deployer: they hold none of the protocol's privileged roles and can still
 liquidate. `test/Lending.js` asserts exactly that.
+
+---
+
+## Perpl venue facts (Monad deployment)
+
+**Market ids.** Perpl's API `Market` has two ids: `id` (the API market id, used in orders) and
+`perpetual_id` (the on-chain `perpId` that `getPerpetualInfo` / `getPosition` take).
+`PerplReader.setMarket(market, perpId)` takes `perpetual_id`, and the mapping is set-once.
+`scripts/perplMarkets.js` snapshots both into `deployments/perplMarkets.testnet.json`, which
+`deploy.js` maps from (cross-checking each perp's on-chain decimals) and `scripts/checkReader.js`
+audits the live reader against. On testnet today the two ids happen to be equal for every market.
+
+**Position direction.** On-chain `PositionInfo.positionType` is `0 = Long, 1 = Short`; the API's
+`Position.sd` is `1 = Long, 2 = Short`. `PerplReader` reads the on-chain field.
+
+**Collateral units.** Perpl's `…CNS` amounts are scaled by `getExchangeInfo().collateralDecimals`,
+which may differ from the ERC-20's `decimals()`. Laxu never values positions off CNS amounts, but
+`PerplReader.sizeScale` is `10^collateralDecimals` while `PositionToken` computes PnL in asset base
+units, so `deploy.js` refuses to deploy if the two differ (both are 6 for AUSD today).

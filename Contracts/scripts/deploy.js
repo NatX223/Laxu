@@ -6,29 +6,25 @@
 // already-mapped markets / an already-set registrar are skipped, so a failed run can just be re-run.
 const hre = require("hardhat");
 const fs = require("fs");
+const { seedVault } = require("./seed-vault");
 
 const DEFAULT_PERPL_EXCHANGE = "0x1964C32f0bE608E7D29302AFF5E61268E72080cc";
-// Perpl testnet perp ids (api-docs "Markets"). Keys are the base asset the backend uses.
-const DEFAULT_MARKETS = [
-  { symbol: "ETH", perpId: 32 },
-  { symbol: "BTC", perpId: 16 },
-  { symbol: "SOL", perpId: 48 },
-  { symbol: "MON", perpId: 64 },
-];
+const MARKETS_FILE = "deployments/perplMarkets.testnet.json";
 
-/// The backend's market id: `stringToHex(baseAsset.toUpperCase(), { size: 32 })`
-/// (Backend/src/services/markets.ts marketIdFor) == ethers.encodeBytes32String.
-const marketIdFor = (symbol) => hre.ethers.encodeBytes32String(symbol.toUpperCase());
-
-/// MARKETS env: JSON `[{ "symbol": "ETH", "perpId": 32 }]` or `[{ "id": "0x…", "perpId": 32 }]`.
+/// Markets from Perpl's API snapshot (`npx hardhat run scripts/perplMarkets.js`): open ones only,
+/// optionally narrowed by MARKET_SYMBOLS=ETH,BTC,SOL,MON. `id` is the backend's marketId (bytes32 of
+/// the upper-case base asset); `perpId` is Perpl's `perpetual_id`, NOT the API market id.
 function loadMarkets() {
-  const raw = process.env.MARKETS;
-  const list = raw ? JSON.parse(raw) : DEFAULT_MARKETS;
-  return list.map((m) => {
-    const id = m.id ?? marketIdFor(m.symbol);
-    const symbol = m.symbol ?? hre.ethers.decodeBytes32String(id);
-    return { symbol, id, perpId: Number(m.perpId) };
-  });
+  if (!fs.existsSync(MARKETS_FILE)) throw new Error(`${MARKETS_FILE} missing -- run scripts/perplMarkets.js first`);
+  const only = process.env.MARKET_SYMBOLS?.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  const markets = JSON.parse(fs.readFileSync(MARKETS_FILE, "utf8"))
+    .filter((m) => m.isOpen)
+    .filter((m) => !only || only.includes(m.symbol));
+  if (only) {
+    const missing = only.filter((s) => !markets.some((m) => m.symbol === s));
+    if (missing.length) throw new Error(`MARKET_SYMBOLS not open in ${MARKETS_FILE}: ${missing.join(", ")}`);
+  }
+  return markets;
 }
 
 async function main() {
@@ -62,11 +58,21 @@ async function main() {
   const assetToken = await hre.ethers.getContractAt("IERC20Metadata", asset);
   const assetDecimals = Number(await assetToken.decimals());
   const assetSymbol = await assetToken.symbol();
-  console.log(`Perpl collateral: ${assetSymbol} ${asset}, collateralDecimals ${collateralDecimals}`);
-  if (assetDecimals !== collateralDecimals) {
-    throw new Error(`asset.decimals() = ${assetDecimals} but Perpl collateralDecimals = ${collateralDecimals}; aborting`);
+  console.log(`Perpl collateral: ${assetSymbol} ${asset}, asset decimals ${assetDecimals}, collateralDecimals ${collateralDecimals}`);
+  Object.assign(out, { asset, assetSymbol, assetDecimals, collateralDecimals });
+  // Perpl's CNS amounts may use their own scale (SDK state/mod.rs:200), and Laxu never values off
+  // CNS amounts -- but PerplReader derives `sizeScale` from collateralDecimals while PositionToken
+  // computes PnL in the asset's base units. A difference would mis-scale every token's size and NAV,
+  // so it stays a hard stop until PerplReader takes its size scale from the asset instead.
+  if (collateralDecimals > assetDecimals) {
+    console.warn(`WARNING: collateralDecimals (${collateralDecimals}) > asset decimals (${assetDecimals})`);
   }
-  Object.assign(out, { asset, assetSymbol, assetDecimals });
+  if (collateralDecimals !== assetDecimals) {
+    throw new Error(
+      `collateralDecimals ${collateralDecimals} != asset decimals ${assetDecimals}: PerplReader.sizeScale ` +
+        `(10^collateralDecimals) would not match PositionToken's asset-unit PnL; aborting`
+    );
+  }
 
   // Debt ceiling defaults to 100k of the asset.
   const debtCeiling = DEFAULT_DEBT_CEILING ?? (100_000n * 10n ** BigInt(assetDecimals)).toString();
@@ -91,6 +97,14 @@ async function main() {
   const markets = loadMarkets();
   out.markets = out.markets ?? {};
   for (const m of markets) {
+    // The perp the API points at must be the one on-chain: same decimals, or the id is wrong.
+    const perp = await exchange.getPerpetualInfo(m.perpId);
+    if (Number(perp.priceDecimals) !== m.priceDecimals || Number(perp.lotDecimals) !== m.sizeDecimals) {
+      throw new Error(
+        `${m.symbol}: perp ${m.perpId} on-chain has priceDecimals ${perp.priceDecimals} / lotDecimals ` +
+          `${perp.lotDecimals}, API says ${m.priceDecimals} / ${m.sizeDecimals}; aborting (setMarket is set-once)`
+      );
+    }
     if (!(await reader.isMapped(m.id))) {
       await (await reader.setMarket(m.id, m.perpId)).wait();
       console.log(`mapped ${m.symbol} ${m.id} -> perp ${m.perpId}`);
@@ -98,7 +112,7 @@ async function main() {
       throw new Error(`${m.symbol} is already mapped to perp ${await reader.perpIdOf(m.id)}, not ${m.perpId} (set-once)`);
     }
     const [price, , valid] = await reader.mark(m.id);
-    out.markets[m.symbol] = { id: m.id, perpId: m.perpId };
+    out.markets[m.symbol] = { id: m.id, perpId: m.perpId, apiMarketId: m.apiMarketId };
     console.log(`  ${m.symbol} mark $${hre.ethers.formatUnits(price, 18)} valid=${valid}`);
   }
   save();
@@ -118,6 +132,11 @@ async function main() {
     console.log("vault.registrar -> LendingPoolFactory");
   }
   save();
+
+  // --- 6b. Optional: seed lender liquidity from the deployer's AUSD (see scripts/seed-vault.js) ---
+  if (process.env.SEED_VAULT_AMOUNT) {
+    await seedVault({ vaultAddress: await vault.getAddress(), amount: process.env.SEED_VAULT_AMOUNT, signer: admin });
+  }
 
   // --- 7. README table ---
   const explorer = "https://testnet.monadvision.com/address/";

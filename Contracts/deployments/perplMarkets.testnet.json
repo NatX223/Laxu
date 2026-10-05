@@ -1,0 +1,74 @@
+[
+  {
+    "symbol": "BTC",
+    "id": "0x4254430000000000000000000000000000000000000000000000000000000000",
+    "perpId": 16,
+    "apiMarketId": 16,
+    "priceDecimals": 1,
+    "sizeDecimals": 5,
+    "isOpen": true
+  },
+  {
+    "symbol": "ETH",
+    "id": "0x4554480000000000000000000000000000000000000000000000000000000000",
+    "perpId": 32,
+    "apiMarketId": 32,
+    "priceDecimals": 2,
+    "sizeDecimals": 3,
+    "isOpen": true
+  },
+  {
+    "symbol": "SOL",
+    "id": "0x534f4c0000000000000000000000000000000000000000000000000000000000",
+    "perpId": 48,
+    "apiMarketId": 48,
+    "priceDecimals": 2,
+    "sizeDecimals": 3,
+    "isOpen": true
+  },
+  {
+    "symbol": "MON",
+    "id": "0x4d4f4e0000000000000000000000000000000000000000000000000000000000",
+    "perpId": 64,
+    "apiMarketId": 64,
+    "priceDecimals": 5,
+    "sizeDecimals": 0,
+    "isOpen": true
+  },
+  {
+    "symbol": "ZEC",
+    "id": "0x5a45430000000000000000000000000000000000000000000000000000000000",
+    "perpId": 256,
+    "apiMarketId": 256,
+    "priceDecimals": 3,
+    "sizeDecimals": 3,
+    "isOpen": true
+  },
+  {
+    "symbol": "LIT",
+    "id": "0x4c49540000000000000000000000000000000000000000000000000000000000",
+    "perpId": 272,
+    "apiMarketId": 272,
+    "priceDecimals": 5,
+    "sizeDecimals": 1,
+    "isOpen": true
+  },
+  {
+    "symbol": "PUMP",
+    "id": "0x50554d5000000000000000000000000000000000000000000000000000000000",
+    "perpId": 320,
+    "apiMarketId": 320,
+    "priceDecimals": 6,
+    "sizeDecimals": 0,
+    "isOpen": true
+  },
+  {
+    "symbol": "NEAR",
+    "id": "0x4e45415200000000000000000000000000000000000000000000000000000000",
+    "perpId": 336,
+    "apiMarketId": 336,
+    "priceDecimals": 4,
+    "sizeDecimals": 2,
+    "isOpen": true
+  }
+]
