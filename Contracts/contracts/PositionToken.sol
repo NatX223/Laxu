@@ -12,23 +12,26 @@ import {ERC7540} from "./vendor/ERC7540.sol";
 import {ERC7540AdminDeposit} from "./vendor/ERC7540AdminDeposit.sol";
 import {ERC7540AdminRedeem} from "./vendor/ERC7540AdminRedeem.sol";
 import {Direction} from "./ILaxuTypes.sol";
+import {IVenueReader} from "./interfaces/IVenueReader.sol";
 
 /**
  * @title PositionToken
  * @dev ERC-4626 vault (async, via ERC-7540) representing pro-rata ownership of one specific
- * Arcus perpetuals position. Deployed as an EIP-1167 minimal proxy clone by a Factory -- state is
- * set once via {initialize}, not a constructor.
+ * perpetuals position on an on-chain venue (Perpl on Monad). Deployed as an EIP-1167 minimal proxy
+ * clone by a Factory -- state is set once via {initialize}, not a constructor.
  *
  * Built on OpenZeppelin community-contracts' {ERC7540} base combined with the
  * {ERC7540AdminDeposit} / {ERC7540AdminRedeem} fulfillment strategies (vendored under ./vendor/ so
  * {cancelDepositRequest} / {cancelRedeemRequest} can reach the pending-request state):
- * `arcusOperator` explicitly fulfils a controller's pending request, providing the exact exchange
+ * `operator` explicitly fulfils a controller's pending request, providing the exact exchange
  * rate, and the request settles in the same transaction. That matches this vault's real-world
- * constraint -- a request can only settle after the backend has actually moved margin on Arcus,
- * not on a timer or a price tick.
+ * constraint -- a request can only settle after the backend has actually moved margin on the
+ * venue, not on a timer or a price tick.
  *
- * `arcusOperator` is the one off-chain trust role: it reports price/funding via {applyReport},
- * confirms real capital movement on Arcus before a request settles (via
+ * The mark price is NOT an operator input: it is read live from the venue through `venueReader`
+ * on every valuation, and {initialize} checks the claimed trade against the real venue position.
+ * `operator` is the remaining off-chain trust role: it reports funding via {applyFunding} (bounded
+ * by {FUNDING_MAX_AGE}), confirms real capital movement on the venue before a request settles (via
  * {fulfillDepositRequest} / {fulfillRedeemRequest}), and closes the position via {close}. It is the
  * same backend wallet as the Factory's `deployer`, same trust level as everything else it does.
  *
@@ -36,14 +39,14 @@ import {Direction} from "./ILaxuTypes.sol";
  * and {requestClose} asks the backend to unwind a position they wholly own.
  *
  * Closing runs close -> settle -> claim: {close} freezes the value, the backend withdraws the
- * margin from Arcus into this contract and records the amount actually recovered via {settle},
+ * margin from the venue into this contract and records the amount actually recovered via {settle},
  * then every holder takes their pro-rata slice of it via {claim} (or is pushed it via {claimFor}).
  */
 contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem {
     using Math for uint256;
     using Strings for uint256;
 
-    /// @dev Fixed-point scale for entryPrice/markPrice, matching whatever the backend reports in.
+    /// @dev Fixed-point scale for entryPrice/markPrice, matching {IVenueReader}.
     uint256 public constant PRICE_SCALE = 1e18;
 
     uint256 public constant BPS_DENOMINATOR = 10_000;
@@ -53,8 +56,18 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     uint256 public constant MAX_NICKNAME_LENGTH = 32; // bytes
 
     /// @dev How long a request must sit unfulfilled before its controller can cancel it and take
-    /// the money back -- the escape hatch if the backend is down or the Arcus leg fails.
+    /// the money back -- the escape hatch if the backend is down or the venue leg fails.
     uint256 public constant REQUEST_CANCEL_TIMEOUT = 20 minutes;
+
+    /// @dev Our own cap on the venue mark's age, on top of the venue's own validity rule.
+    uint256 public constant MARK_MAX_AGE = 5 minutes;
+
+    /// @dev How long the operator's last funding report stays good for {isPriceFresh}. With the
+    /// backend down, borrowing keeps working on live venue marks for this long, then pauses.
+    uint256 public constant FUNDING_MAX_AGE = 2 hours;
+
+    /// @dev Max gap between the claimed entry and the venue's at creation (0.5%).
+    uint256 public constant ENTRY_TOLERANCE_BPS = 50;
 
     // ---------------------------------------------------------------------
     // Position identity -- set once via `initialize`
@@ -69,7 +82,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     /// @dev Actual margin/capital behind the position (not notional) -- minted as shares 1:1 at genesis.
     /// Historical record only; the value formula uses {capital}.
     uint256 public initialDeposit;
-    bytes32 public arcusPositionId;
+    bytes32 public venuePositionId;
     /// @dev Optional, empty until {list}, which sets it once and for good -- see {name} for why
     /// there is deliberately no other setter, even gated to `creator`.
     string public nickname;
@@ -83,21 +96,31 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     bool public listed;
 
     // ---------------------------------------------------------------------
-    // Live oracle state -- written only via `applyReport`, gated to `arcusOperator`
+    // Price/funding state
     // ---------------------------------------------------------------------
 
+    /// @dev Read-only venue adapter, set once in {initialize}. The live mark comes from here.
+    IVenueReader public venueReader;
+    /// @dev The venue account holding the position {initialize} verified.
+    uint256 public venueAccountId;
+
+    /// @dev The last mark synced from the venue (see {sync}) -- a cache, used only when the venue
+    /// can't be read. Never written by the operator.
     uint256 public markPrice;
-    int256 public fundingAccrued;
+    /// @dev Venue timestamp of `markPrice` (UI / back-compat).
     uint256 public lastReportTimestamp;
+    /// @dev Cumulative funding, operator-reported via {applyFunding}.
+    int256 public fundingAccrued;
+    uint256 public lastFundingTimestamp;
 
     // ---------------------------------------------------------------------
     // Capital accounting -- buy-ins and redeems resize the position, never re-lever it
     // ---------------------------------------------------------------------
 
-    /// @dev USDG backing the position now. Starts equal to `initialDeposit`, grows by each
+    /// @dev AUSD backing the position now. Starts equal to `initialDeposit`, grows by each
     /// buy-in's assets and shrinks by each redeemer's fraction.
     uint256 public capital;
-    /// @dev The part of `fundingAccrued` (Arcus's cumulative funding since open) already paid out
+    /// @dev The part of `fundingAccrued` (the venue's cumulative funding since open) already paid out
     /// to redeemers in cash -- netted out in {_computeValue} so it is never counted twice.
     int256 public fundingSettled;
 
@@ -105,7 +128,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     // Off-chain trust role
     // ---------------------------------------------------------------------
 
-    address public arcusOperator;
+    address public operator;
 
     // ---------------------------------------------------------------------
     // Request timestamps -- start the {REQUEST_CANCEL_TIMEOUT} clock
@@ -130,24 +153,24 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     /// @dev Set by the creator via {requestClose}; {close} requires it unless recording a liquidation.
     bool public closeRequested;
     /// @dev Locked in once `closed = true`: the formula estimate that values the shares until
-    /// {settle} replaces it with the USDG actually recovered.
+    /// {settle} replaces it with the AUSD actually recovered.
     uint256 public finalNavValue;
     ClosedReason public closedReason;
 
     // ---------------------------------------------------------------------
-    // Settlement -- the USDG actually recovered from Arcus, shared out by {claim}
+    // Settlement -- the AUSD actually recovered from the venue, shared out by {claim}
     // ---------------------------------------------------------------------
 
     bool public settled;
-    /// @dev USDG holders share, set once by {settle}. The real recovery, not the formula estimate
-    /// in `finalNavValue` -- a liquidation's leftover after Arcus's penalty is often below it.
+    /// @dev AUSD holders share, set once by {settle}. The real recovery, not the formula estimate
+    /// in `finalNavValue` -- a liquidation's leftover after the venue's penalty is often below it.
     uint256 public settlementAssets;
     /// @dev Paid out of `settlementAssets` so far.
     uint256 public claimedAssets;
 
     // ---------------------------------------------------------------------
     // Per-holder stop loss / take profit -- a triggered level is an automatic redeem of that one
-    // holder's wallet balance, never a stop order on the shared Arcus position
+    // holder's wallet balance, never a stop order on the shared venue position
     // ---------------------------------------------------------------------
 
     /// @dev The creator's levels, set once at creation and never editable: every holder who hasn't
@@ -168,7 +191,8 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     mapping(address => HolderTriggers) public holderTriggers;
 
     event PositionInitialized(address indexed creator, bytes32 market, uint256 leverage, uint256 initialDeposit);
-    event FundingUpdated(uint256 markPrice, int256 fundingAccrued, uint256 timestamp);
+    event FundingUpdated(int256 fundingAccrued, uint256 timestamp);
+    event MarkSynced(uint256 markPrice, uint256 updatedAt);
     event DepositRequested(address indexed controller, uint256 assets, uint256 requestId);
     event RedeemRequested(address indexed controller, uint256 shares, uint256 requestId);
     event DepositFulfilled(
@@ -210,7 +234,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
      * @dev Implementation-contract constructor only -- clones never run this. `asset_` becomes an
      * immutable baked into the shared implementation bytecode, which every clone delegate-calls
      * into. That's safe here because every PositionToken clone (any market, any direction) is
-     * denominated in the same underlying asset (USDG); `initialize` sanity-checks the Factory
+     * denominated in the same underlying asset (AUSD); `initialize` sanity-checks the Factory
      * agrees. Disables initializers on the implementation itself so it can't be mistaken for a
      * live position (clones each get their own initializer state and are unaffected).
      */
@@ -239,7 +263,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
             " ",
             leverageLabel(),
             " #",
-            _shortId(arcusPositionId)
+            _shortId(venuePositionId)
         );
         if (bytes(nickname).length == 0) return base;
         return string.concat(base, unicode" · ", nickname);
@@ -261,8 +285,8 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         return string.concat(leverage.toString(), "x");
     }
 
-    /// @dev First 4 bytes of `arcusPositionId` as 8 lowercase hex chars, no `0x`. The id is an opaque
-    /// hash (keccak256 of the Arcus order id), not text, so it can't be rendered as a string; this
+    /// @dev First 4 bytes of `venuePositionId` as 8 lowercase hex chars, no `0x`. The id is an opaque
+    /// hash (keccak256 of the venue order id), not text, so it can't be rendered as a string; this
     /// short prefix is enough to tell positions apart in a wallet or explorer.
     function _shortId(bytes32 id) internal pure returns (string memory) {
         bytes memory out = new bytes(8);
@@ -293,6 +317,11 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
      * @dev Called once by the Factory immediately after cloning. Mints `_initialDeposit` shares to
      * `_creator` at 1:1 (bootstrap price = 1) -- safe from inflation-attack concerns since only the
      * Factory calls this, exactly once, atomically with position creation (no empty-vault window).
+     *
+     * The claimed trade is checked against the real venue position held by `_venueAccountId`:
+     * direction and size must match exactly (the backend computes `_size` with
+     * {PerplReader-toSize}, the same maths the reader uses), entry within {ENTRY_TOLERANCE_BPS}.
+     * The operator cannot mint a token for a trade that does not exist.
      */
     function initialize(
         address _creator,
@@ -302,9 +331,11 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         uint256 _entryPrice,
         uint256 _size,
         uint256 _initialDeposit,
-        bytes32 _arcusPositionId,
+        bytes32 _venuePositionId,
         address _asset,
-        address _arcusOperator,
+        address _operator,
+        address _venueReader,
+        uint256 _venueAccountId,
         uint256 _defaultStopLoss,
         uint256 _defaultTakeProfit
     ) external initializer {
@@ -312,9 +343,10 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         // asset() reads the immutable set at implementation-deploy time (see constructor); this is
         // a sanity check that the Factory is wiring up the asset it thinks it is, not a live setter.
         require(_asset == asset(), "PositionToken: asset mismatch");
-        require(_arcusOperator != address(0), "PositionToken: zero operator");
+        require(_operator != address(0), "PositionToken: zero operator");
         require(_entryPrice > 0, "PositionToken: zero entry price");
         require(_initialDeposit > 0, "PositionToken: zero deposit");
+        require(_venueReader != address(0), "PositionToken: zero venue reader");
 
         creator = _creator;
         market = _market;
@@ -324,23 +356,38 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         size = _size;
         initialDeposit = _initialDeposit;
         capital = _initialDeposit;
-        arcusPositionId = _arcusPositionId;
-        arcusOperator = _arcusOperator;
+        venuePositionId = _venuePositionId;
+        operator = _operator;
+        venueReader = IVenueReader(_venueReader);
+        venueAccountId = _venueAccountId;
         // `nickname` stays empty until {list}.
+
+        _verifyVenuePosition();
 
         _validateLevels(_defaultStopLoss, _defaultTakeProfit, _entryPrice);
         defaultStopLoss = _defaultStopLoss;
         defaultTakeProfit = _defaultTakeProfit;
         defaultsActive = _defaultStopLoss != 0 || _defaultTakeProfit != 0;
 
-        // Bootstrap price = 1: mark == entry means PnL == 0 the instant the vault exists, so
-        // totalAssets() == initialDeposit right after the mint below.
-        markPrice = _entryPrice;
+        // Shares are minted 1:1, but totalAssets() == initialDeposit at genesis only when the live
+        // mark equals the entry; any gap is the PnL the venue position already has.
+        (uint256 mark, bool live) = currentMark();
+        markPrice = live ? mark : _entryPrice;
         lastReportTimestamp = block.timestamp;
+        lastFundingTimestamp = block.timestamp;
 
         _mint(_creator, _initialDeposit);
 
         emit PositionInitialized(_creator, _market, _leverage, _initialDeposit);
+    }
+
+    function _verifyVenuePosition() internal view {
+        (bool exists, Direction dir, uint256 vSize, uint256 vEntry) = venueReader.position(market, venueAccountId);
+        require(exists, "PositionToken: no venue position");
+        require(dir == direction, "PositionToken: direction mismatch");
+        require(vSize == size, "PositionToken: size mismatch");
+        uint256 diff = vEntry > entryPrice ? vEntry - entryPrice : entryPrice - vEntry;
+        require(diff * BPS_DENOMINATOR <= entryPrice * ENTRY_TOLERANCE_BPS, "PositionToken: entry mismatch");
     }
 
     // ---------------------------------------------------------------------
@@ -350,7 +397,8 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     /**
      * @dev Total current value (principal + PnL + funding), not PnL alone -- if this computed
      * PnL alone, totalAssets() / totalSupply() would collapse the share price to near-zero
-     * whenever PnL is merely flat.
+     * whenever PnL is merely flat. Priced on the live venue mark; never reverts (falls back to the
+     * cached mark when the venue can't be read -- see {currentMark}).
      */
     function totalAssets() public view override returns (uint256) {
         // Every claim burns shares and pays the matching assets, so totalAssets / totalSupply stays
@@ -362,11 +410,12 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         // backend should have already called close(..., wasLiquidated: true) -- a
         // zero-value-but-still-"open" position is a misleading state. Clamping to zero here is a
         // defensive backstop, not the primary liquidation mechanism (see spec's open decision #3).
-        int256 value = _computeValue(markPrice, fundingAccrued);
+        (uint256 mark, ) = currentMark();
+        int256 value = _computeValue(mark, fundingAccrued);
         return value > 0 ? uint256(value) : 0;
     }
 
-    /// @dev Shared PnL/value formula used by {totalAssets} and {close}. `funding` is Arcus's
+    /// @dev Shared PnL/value formula used by {totalAssets} and {close}. `funding` is the venue's
     /// cumulative total for the whole position; the part already paid to redeemers is netted out.
     function _computeValue(uint256 mark, int256 funding) internal view returns (int256) {
         int256 pnl = (int256(size) * (int256(mark) - int256(entryPrice))) / int256(PRICE_SCALE);
@@ -374,7 +423,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         return int256(capital) + pnl + (funding - fundingSettled);
     }
 
-    /// @dev USDG per share, PRICE_SCALE fixed point. `totalSupply()` includes shares with a redeem
+    /// @dev AUSD per share, PRICE_SCALE fixed point. `totalSupply()` includes shares with a redeem
     /// pending (library behaviour), so a redeemer is priced against the pre-redeem supply.
     function navPerShare() public view returns (uint256) {
         uint256 supply = totalSupply();
@@ -382,25 +431,76 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     }
 
     // ---------------------------------------------------------------------
-    // Price/funding reporting -- backend only, never capital movement
+    // Mark price -- read from the venue, never reported
     // ---------------------------------------------------------------------
 
-    function applyReport(uint256 newMarkPrice, int256 newFunding, uint256 reportTimestamp) external {
-        require(msg.sender == arcusOperator, "PositionToken: not arcusOperator");
-        require(!closed, "PositionToken: position closed");
-        require(reportTimestamp > lastReportTimestamp, "PositionToken: stale report");
-
-        markPrice = newMarkPrice;
-        fundingAccrued = newFunding;
-        lastReportTimestamp = reportTimestamp;
-
-        emit FundingUpdated(newMarkPrice, newFunding, reportTimestamp);
+    /// @dev The venue's mark if it is readable and valid; otherwise `(0, 0, false)`. Never reverts.
+    function _readMark() internal view returns (uint256 price, uint256 updatedAt, bool live) {
+        try venueReader.mark(market) returns (uint256 p, uint256 at, bool valid) {
+            if (valid && p > 0) return (p, at, true);
+        } catch {}
     }
 
-    /// @dev One combined read so the backend's reporting job is not making three separate calls
-    /// per position to decide whether a report has moved enough to be worth pushing an update for.
+    /// @dev The mark every valuation uses: live from the venue, or the last synced `markPrice`
+    /// (with `live == false`) when the venue can't be read.
+    function currentMark() public view returns (uint256 price, bool live) {
+        (price, , live) = _readMark();
+        if (!live) price = markPrice;
+    }
+
+    /// @dev Permissionless: caches the live venue mark into `markPrice`. Purely a cache refresh --
+    /// valuation reads the venue directly; the cache only matters when the venue is unreadable.
+    function sync() public returns (uint256 price, bool live) {
+        uint256 updatedAt;
+        (price, updatedAt, live) = _readMark();
+        if (live) {
+            markPrice = price;
+            lastReportTimestamp = updatedAt;
+            emit MarkSynced(price, updatedAt);
+        } else {
+            price = markPrice;
+        }
+    }
+
+    /**
+     * @dev What {LendingPool-freshOracle} checks before opening new risk. Needs both a recent
+     * funding report (so with the backend down, borrowing pauses after {FUNDING_MAX_AGE}) and a
+     * live, valid venue mark no older than {MARK_MAX_AGE}. A closed position's value is final.
+     */
+    function isPriceFresh() public view returns (bool) {
+        if (closed) return true;
+        if (block.timestamp > lastFundingTimestamp + FUNDING_MAX_AGE) return false;
+        (, uint256 updatedAt, bool live) = _readMark();
+        return live && (updatedAt >= block.timestamp || block.timestamp - updatedAt <= MARK_MAX_AGE);
+    }
+
+    // ---------------------------------------------------------------------
+    // Funding reporting -- operator only, never price, never capital movement
+    // ---------------------------------------------------------------------
+
+    /// @dev Perpl resets a position's funding accumulator whenever it is increased, so cumulative
+    /// funding can't be read on-chain; the operator reports it, bounded by {FUNDING_MAX_AGE}.
+    function applyFunding(int256 newFunding, uint256 reportTimestamp) external {
+        _onlyOperator();
+        require(!closed, "PositionToken: position closed");
+        require(reportTimestamp > lastFundingTimestamp, "PositionToken: stale report");
+        require(reportTimestamp <= block.timestamp + 60, "PositionToken: future report");
+
+        fundingAccrued = newFunding;
+        lastFundingTimestamp = reportTimestamp;
+
+        emit FundingUpdated(newFunding, reportTimestamp);
+    }
+
+    /// @dev One combined read for the backend's reporting job: (current mark, funding, last
+    /// funding report time).
     function getLastReport() external view returns (uint256, int256, uint256) {
-        return (markPrice, fundingAccrued, lastReportTimestamp);
+        (uint256 mark, ) = currentMark();
+        return (mark, fundingAccrued, lastFundingTimestamp);
+    }
+
+    function _onlyOperator() internal view {
+        require(msg.sender == operator, "PositionToken: not operator");
     }
 
     // ---------------------------------------------------------------------
@@ -490,13 +590,12 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     }
 
     /**
-     * @dev Called AFTER the backend has grown the Arcus position for this buy-in. The contract
-     * prices the shares itself at the current {navPerShare} (the backend pushes a fresh
-     * {applyReport} first) and settles in the same transaction: the shares are minted straight to
+     * @dev Called AFTER the backend has grown the venue position for this buy-in. The contract
+     * prices the shares itself at the current {navPerShare} (on the live venue mark) and settles in the same transaction: the shares are minted straight to
      * the buyer, so nothing is ever left claimable-but-unclaimed and there is no claim step.
      *
      * A buy-in changes how big the position is, never how leveraged: `addedSize` is the actual
-     * Arcus fill (the buyer's proportional share of the current size) at `fillPrice`, and the entry
+     * venue fill (the buyer's proportional share of the current size) at `fillPrice`, and the entry
      * becomes the size-weighted average. `addedSize` is 0 when the proportional add is below the
      * market's minimum order size -- the buy-in then backs the position as margin only.
      *
@@ -505,14 +604,15 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
      * fulfil; `requestId` is kept for interface parity and is always 0.
      */
     function fulfillDepositRequest(uint256 requestId, address controller, uint256 addedSize, uint256 fillPrice) external {
-        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
+        _onlyOperator();
         require(requestId == 0, "PositionToken: invalid requestId");
         require(!closed, "PositionToken: position closed");
+        sync();
 
         uint256 assets = pendingDepositRequest(0, controller);
         require(assets > 0, "PositionToken: no pending deposit");
 
-        uint256 nav = navPerShare(); // at the latest reported mark
+        uint256 nav = navPerShare(); // at the live venue mark
         require(nav > 0, "PositionToken: zero NAV");
         uint256 shares = assets.mulDiv(PRICE_SCALE, nav);
 
@@ -534,20 +634,21 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     }
 
     /**
-     * @dev Called AFTER the backend has shrunk the Arcus position by the redeemer's fraction
-     * `f = shares / totalSupply()` and made sure this contract holds enough USDG to pay. Pays
+     * @dev Called AFTER the backend has shrunk the venue position by the redeemer's fraction
+     * `f = shares / totalSupply()` and made sure this contract holds enough AUSD to pay. Pays
      * `f x totalAssets()` straight to the redeemer and shrinks capital and effective funding by
      * the same `f`, so every remaining share still represents the same slice of the same trade.
      *
-     * `closedSize` is the actual reduce-only fill on Arcus (0 when the proportional reduction was
+     * `closedSize` is the actual reduce-only fill on the venue (0 when the proportional reduction was
      * below the market's minimum order size). A partial close leaves the entry price unchanged.
      *
      * Blocked once closed: a redeem still pending at close is paid out of the settlement by {claim}.
      */
     function fulfillRedeemRequest(uint256 requestId, address controller, uint256 closedSize, uint256 fillPrice) external {
-        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
+        _onlyOperator();
         require(requestId == 0, "PositionToken: invalid requestId");
         require(!closed, "PositionToken: position closed");
+        sync();
 
         uint256 shares = pendingRedeemRequest(0, controller);
         require(shares > 0, "PositionToken: no pending redeem");
@@ -564,11 +665,11 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         int256 fundingEff = fundingAccrued - fundingSettled;
         fundingSettled += (fundingEff * int256(shares)) / int256(supply);
         capital -= capital.mulDiv(shares, supply);
-        // The actual Arcus reduce-only fill; entry is unchanged by a partial close.
+        // The actual venue reduce-only fill; entry is unchanged by a partial close.
         size = closedSize >= size ? 0 : size - closedSize;
 
         _fulfillRedeem(shares, assets, controller);
-        // Auto-settle: send the USDG straight to the redeemer.
+        // Auto-settle: send the AUSD straight to the redeemer.
         uint256 paid = _consumeClaimableRedeem(shares, controller);
         _withdraw(controller, controller, controller, paid, shares);
 
@@ -585,7 +686,8 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     /// them before their buy-in settles. A level already breached at the current mark is rejected.
     function setTriggers(uint256 stopLoss, uint256 takeProfit) external {
         require(!closed, "PositionToken: position closed");
-        _validateLevels(stopLoss, takeProfit, markPrice);
+        (uint256 mark, ) = currentMark();
+        _validateLevels(stopLoss, takeProfit, mark);
         holderTriggers[msg.sender] = HolderTriggers(true, uint128(stopLoss), uint128(takeProfit));
         emit TriggersSet(msg.sender, stopLoss, takeProfit, true);
     }
@@ -636,22 +738,24 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     /**
      * @dev Exits `holder`'s wallet balance at the current NAV -- tokens posted as {LendingPool}
      * collateral are the pool's, not the holder's, and aren't covered. The backend has already
-     * reduced the Arcus position by `closedSize` at `fillPrice` and put enough USDG here to pay.
+     * reduced the venue position by `closedSize` at `fillPrice` and put enough AUSD here to pay.
      *
-     * The operator can only exit a holder whose OWN effective level is breached at the stored
-     * mark, and never picks the price: the payout is the contract's own {navPerShare}. The shrink
+     * The operator can only exit a holder whose OWN effective level is breached at the LIVE venue
+     * mark (reverts if the venue can't be read), and never picks the price: the payout is the contract's own {navPerShare}. The shrink
      * is the same proportional one as {fulfillRedeemRequest}, so every other holder keeps the same
      * slice of the same trade at the same leverage.
      */
     function executeTrigger(address holder, uint256 closedSize, uint256 fillPrice) external {
-        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
+        _onlyOperator();
         require(!closed, "PositionToken: position closed");
 
         uint256 shares = balanceOf(holder);
         require(shares > 0, "PositionToken: nothing to exit");
 
+        (uint256 mark, bool live) = sync();
+        require(live, "PositionToken: venue mark unavailable");
         (uint256 sl, uint256 tp, bool usedDefault) = effectiveTriggers(holder);
-        (bool slHit, bool tpHit) = _levelsHit(sl, tp, markPrice);
+        (bool slHit, bool tpHit) = _levelsHit(sl, tp, mark);
         require(slHit || tpHit, "PositionToken: trigger not hit");
 
         uint256 supply = totalSupply();
@@ -670,8 +774,8 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         _burn(holder, shares);
         if (!usedDefault) delete holderTriggers[holder]; // a personal trigger fires once
         SafeERC20.safeTransfer(IERC20(asset()), holder, assets);
-        emit TriggerExecuted(holder, slHit, usedDefault, shares, assets, markPrice);
-        fillPrice; // the Arcus fill is recorded off-chain; kept for parity with fulfillRedeemRequest
+        emit TriggerExecuted(holder, slHit, usedDefault, shares, assets, mark);
+        fillPrice; // the venue fill is recorded off-chain; kept for parity with fulfillRedeemRequest
 
         _closeIfEmpty();
     }
@@ -679,12 +783,14 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     /// @dev Once a default level has been crossed, the creator's plan has played out: stop applying
     /// the defaults to anyone who buys in later. Only callable while a default is actually breached.
     function retireDefaultTriggers() external {
-        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
+        _onlyOperator();
         require(defaultsActive, "PositionToken: defaults not active");
-        (bool slHit, bool tpHit) = _levelsHit(defaultStopLoss, defaultTakeProfit, markPrice);
+        (uint256 mark, bool live) = currentMark();
+        require(live, "PositionToken: venue mark unavailable");
+        (bool slHit, bool tpHit) = _levelsHit(defaultStopLoss, defaultTakeProfit, mark);
         require(slHit || tpHit, "PositionToken: default not hit");
         defaultsActive = false;
-        emit DefaultTriggersRetired(markPrice);
+        emit DefaultTriggersRetired(mark);
     }
 
     /// @dev The last share leaving -- by trigger or redeem -- would otherwise leave an "open"
@@ -769,21 +875,26 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         emit CloseRequested(creator);
     }
 
-    function close(uint256 finalMarkPrice, int256 finalFunding, bool wasLiquidated) external {
-        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
+    /**
+     * @dev Freezes the value at the live venue mark -- the operator supplies only the final
+     * funding. A normal close needs the venue readable; a liquidation must always be recordable,
+     * so it falls back to the last synced mark when the venue can't be read.
+     */
+    function close(int256 finalFunding, bool wasLiquidated) external {
+        _onlyOperator();
         require(!closed, "PositionToken: already closed");
-        // Normal closes need the creator's request. Liquidations don't: Arcus already closed the
+        // Normal closes need the creator's request. Liquidations don't: the venue already closed the
         // position, and the backend is only recording it.
         require(closeRequested || wasLiquidated, "PositionToken: no close request");
 
-        int256 value = _computeValue(finalMarkPrice, finalFunding);
+        (uint256 finalMark, bool live) = sync(); // falls back to the cached mark when not live
+        require(live || wasLiquidated, "PositionToken: venue mark unavailable");
+
+        int256 value = _computeValue(finalMark, finalFunding);
         finalNavValue = value > 0 ? uint256(value) : 0;
         closed = true;
         closedReason = wasLiquidated ? ClosedReason.Liquidated : ClosedReason.UserClosed;
-
-        markPrice = finalMarkPrice;
         fundingAccrued = finalFunding;
-        lastReportTimestamp = block.timestamp;
 
         emit PositionClosed(finalNavValue, wasLiquidated);
     }
@@ -793,12 +904,12 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     // ---------------------------------------------------------------------
 
     /**
-     * @dev Records the USDG actually recovered from Arcus, once it sits in this contract. Pending
+     * @dev Records the AUSD actually recovered from the venue, once it sits in this contract. Pending
      * buy-ins are still owed back as refunds (via {cancelDepositRequest}), so the balance must cover
      * both. `assets` may be 0 -- a fully wiped liquidation.
      */
     function settle(uint256 assets) external {
-        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
+        _onlyOperator();
         require(closed, "PositionToken: not closed");
         require(!settled, "PositionToken: already settled");
         require(
@@ -815,7 +926,7 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
     }
 
     /// @dev Anyone can call; the money always goes to `holder`, never the caller. EOAs only, so
-    /// USDG is never pushed into a contract that can't use it (e.g. a LendingPool holding collateral).
+    /// AUSD is never pushed into a contract that can't use it (e.g. a LendingPool holding collateral).
     function claimFor(address holder) external returns (uint256 assets) {
         require(holder.code.length == 0, "PositionToken: holder is a contract");
         return _claim(holder);
@@ -845,10 +956,10 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
         emit Claimed(holder, shares, assets);
     }
 
-    /// @dev Buy-in USDG sits here as a buffer while the backend fronts the matching margin on
-    /// Arcus. After settlement, anything beyond what is still owed belongs to that float.
+    /// @dev Buy-in AUSD sits here as a buffer while the backend fronts the matching margin on
+    /// the venue. After settlement, anything beyond what is still owed belongs to that float.
     function recoverExcess(address to) external {
-        require(msg.sender == arcusOperator, "PositionToken: not backend operator");
+        _onlyOperator();
         require(settled, "PositionToken: not settled");
         uint256 owed = (settlementAssets - claimedAssets) + totalPendingDepositAssets();
         uint256 bal = IERC20(asset()).balanceOf(address(this));
@@ -872,7 +983,22 @@ contract PositionToken is Initializable, ERC7540AdminDeposit, ERC7540AdminRedeem
             bool closed_
         )
     {
-        return (market, direction, leverage, entryPrice, markPrice, closed);
+        (uint256 mark, ) = currentMark();
+        return (market, direction, leverage, entryPrice, mark, closed);
+    }
+
+    /// @dev Risk view: the token's size/entry next to the venue's. They drift apart by design
+    /// when buy-ins/redeems fall below the venue's minimum order size; a large gap is an alarm.
+    function venueDrift()
+        external
+        view
+        returns (uint256 ourSize, uint256 venueSize, uint256 ourEntry, uint256 venueEntry, bool venueExists)
+    {
+        ourSize = size;
+        ourEntry = entryPrice;
+        try venueReader.position(market, venueAccountId) returns (bool e, Direction, uint256 s, uint256 en) {
+            (venueExists, venueSize, venueEntry) = (e, s, en);
+        } catch {}
     }
 
     /// @dev NAV per share against the genesis value of 1.0, in basis points. Buy-ins and redeems

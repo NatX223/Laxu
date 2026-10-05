@@ -1,0 +1,92 @@
+{
+  "network": "monadTestnet",
+  "chainId": 10143,
+  "admin": "0x74935ce204D98aE5648bA05F393fC2E8978B6ABf",
+  "operator": "0xF38fF6a7f0C884576545589b7D5deda4857644aB",
+  "perplExchange": "0x1964C32f0bE608E7D29302AFF5E61268E72080cc",
+  "contracts": {
+    "PerplReader": {
+      "name": "PerplReader",
+      "address": "0xF880353b3DE09ca7684e63cc1Ec3f5Ef33599e08",
+      "block": 68364651,
+      "args": [
+        "0x1964C32f0bE608E7D29302AFF5E61268E72080cc"
+      ],
+      "verified": true
+    },
+    "PositionToken": {
+      "name": "PositionToken",
+      "address": "0x96ddDA169839B83Ac13B452B5BDfF35B9c61F94d",
+      "block": 68367394,
+      "args": [
+        "0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC"
+      ],
+      "verified": true
+    },
+    "PositionTokenFactory": {
+      "name": "PositionTokenFactory",
+      "address": "0x2df05E826b70a2719a2828fFE9Dc25FB65CfA690",
+      "block": 68367400,
+      "args": [
+        "0x96ddDA169839B83Ac13B452B5BDfF35B9c61F94d",
+        "0xF38fF6a7f0C884576545589b7D5deda4857644aB",
+        "0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC",
+        "0xF880353b3DE09ca7684e63cc1Ec3f5Ef33599e08"
+      ],
+      "verified": true
+    },
+    "LendingVault": {
+      "name": "LendingVault",
+      "address": "0x2805D873Acea8441E1411040Af4FCd28DcDEc1a3",
+      "block": 68367406,
+      "args": [
+        "0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC",
+        "Laxu Lending AUSD",
+        "lxAUSD",
+        "0x74935ce204D98aE5648bA05F393fC2E8978B6ABf"
+      ],
+      "verified": true
+    },
+    "LendingPool": {
+      "name": "LendingPool",
+      "address": "0x1ad132b698f3B8839414A652ed5ab14bAf1211E5",
+      "block": 68367412,
+      "args": [],
+      "verified": true
+    },
+    "LendingPoolFactory": {
+      "name": "LendingPoolFactory",
+      "address": "0x111255949cb82ca42927f6537047398c3d32B3c8",
+      "block": 68367418,
+      "args": [
+        "0x1ad132b698f3B8839414A652ed5ab14bAf1211E5",
+        "0x2805D873Acea8441E1411040Af4FCd28DcDEc1a3",
+        "10000000000",
+        "0x74935ce204D98aE5648bA05F393fC2E8978B6ABf"
+      ],
+      "verified": true
+    }
+  },
+  "asset": "0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC",
+  "assetSymbol": "AUSD",
+  "assetDecimals": 6,
+  "deployBlock": 68364651,
+  "markets": {
+    "ETH": {
+      "id": "0x4554480000000000000000000000000000000000000000000000000000000000",
+      "perpId": 32
+    },
+    "BTC": {
+      "id": "0x4254430000000000000000000000000000000000000000000000000000000000",
+      "perpId": 16
+    },
+    "SOL": {
+      "id": "0x534f4c0000000000000000000000000000000000000000000000000000000000",
+      "perpId": 48
+    },
+    "MON": {
+      "id": "0x4d4f4e0000000000000000000000000000000000000000000000000000000000",
+      "perpId": 64
+    }
+  }
+}

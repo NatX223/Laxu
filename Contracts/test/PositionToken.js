@@ -2,6 +2,7 @@ const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-toolbox/network-helpers");
 const { anyUint } = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
+const { deployVenue, setMark, report: venueReport } = require("./helpers/venue");
 
 const PRICE_SCALE = 10n ** 18n;
 const BPS_DENOMINATOR = 10_000n;
@@ -9,7 +10,7 @@ const BUY_IN_FEE_BPS = 200n; // 2%
 const REQUEST_CANCEL_TIMEOUT = 20n * 60n;
 const Direction = { Long: 0, Short: 1 };
 
-// "#" + first 4 bytes of arcusPositionId as hex -- "arcu" from encodeBytes32String("arcus-1").
+// "#" + first 4 bytes of venuePositionId as hex -- "arcu" from encodeBytes32String("arcus-1").
 const STRUCTURED_NAME = "Laxu ETH-PERP Long 5x #61726375";
 
 async function deployPositionTokenFixture({
@@ -21,6 +22,7 @@ async function deployPositionTokenFixture({
   listed = false,
   defaultStopLoss = 0n,
   defaultTakeProfit = 0n,
+  sizeDecimals = 18n, // the collateral decimals the venue reader scales size by
 } = {}) {
   const [deployer, creator, backendOperator, depositor, otherAccount] =
     await ethers.getSigners();
@@ -47,8 +49,16 @@ async function deployPositionTokenFixture({
     .find((parsed) => parsed && parsed.name === "Cloned");
   const positionToken = PositionToken.attach(clonedEvent.args.instance);
 
-  const arcusPositionId = ethers.encodeBytes32String("arcus-1");
+  const venuePositionId = ethers.encodeBytes32String("arcus-1");
   const market = ethers.encodeBytes32String("ETH-PERP");
+
+  // The real venue position the token is checked against, with the mark at entry.
+  const { exchange, reader, accountId } = await deployVenue({
+    market,
+    markPrice: entryPrice,
+    sizeDecimals,
+    position: { direction, entryPrice, size },
+  });
 
   await positionToken
     .connect(deployer)
@@ -60,9 +70,11 @@ async function deployPositionTokenFixture({
       entryPrice,
       size,
       initialDeposit,
-      arcusPositionId,
+      venuePositionId,
       usdg.target,
       backendOperator.address,
+      reader.target,
+      accountId,
       defaultStopLoss,
       defaultTakeProfit
     );
@@ -78,13 +90,16 @@ async function deployPositionTokenFixture({
     usdg,
     implementation,
     positionToken,
+    exchange,
+    reader,
+    accountId,
     deployer,
     creator,
     backendOperator,
     depositor,
     otherAccount,
     market,
-    arcusPositionId,
+    venuePositionId,
     direction,
     leverage,
     entryPrice,
@@ -95,8 +110,10 @@ async function deployPositionTokenFixture({
 
 const feeOn = (assets) => (assets * BUY_IN_FEE_BPS) / BPS_DENOMINATOR;
 
-async function reportPrice(positionToken, backendOperator, markPrice, funding, timestamp) {
-  return positionToken.connect(backendOperator).applyReport(markPrice, funding, timestamp);
+// The venue mark moves on its own; the operator only reports funding. (The trailing timestamp
+// argument of the old applyReport-era helper is ignored -- applyFunding is stamped "now".)
+async function reportPrice(positionToken, backendOperator, markPrice, funding) {
+  return venueReport(positionToken, backendOperator, markPrice, funding);
 }
 
 // A listed position with `depositor` holding shares bought in at price 1 (net of the fee).
@@ -124,7 +141,7 @@ describe("PositionToken", function () {
     });
 
     it("sets identity/state fields", async function () {
-      const { positionToken, creator, market, arcusPositionId, leverage, entryPrice, direction } =
+      const { positionToken, creator, market, venuePositionId, leverage, entryPrice, direction, reader, accountId } =
         await deployPositionTokenFixture();
 
       expect(await positionToken.creator()).to.equal(creator.address);
@@ -132,13 +149,15 @@ describe("PositionToken", function () {
       expect(await positionToken.direction()).to.equal(direction);
       expect(await positionToken.leverage()).to.equal(leverage);
       expect(await positionToken.entryPrice()).to.equal(entryPrice);
-      expect(await positionToken.arcusPositionId()).to.equal(arcusPositionId);
+      expect(await positionToken.venuePositionId()).to.equal(venuePositionId);
+      expect(await positionToken.venueReader()).to.equal(reader.target);
+      expect(await positionToken.venueAccountId()).to.equal(accountId);
       expect(await positionToken.markPrice()).to.equal(entryPrice);
       expect(await positionToken.listed()).to.equal(false);
     });
 
     it("cannot be initialized twice", async function () {
-      const { positionToken, creator, market, direction, leverage, entryPrice, size, initialDeposit, arcusPositionId, usdg, backendOperator } =
+      const { positionToken, creator, market, direction, leverage, entryPrice, size, initialDeposit, venuePositionId, usdg, backendOperator, reader, accountId } =
         await deployPositionTokenFixture();
 
       await expect(
@@ -150,9 +169,11 @@ describe("PositionToken", function () {
           entryPrice,
           size,
           initialDeposit,
-          arcusPositionId,
+          venuePositionId,
           usdg.target,
           backendOperator.address,
+          reader.target,
+          accountId,
           0n,
           0n
         )
@@ -196,6 +217,8 @@ describe("PositionToken", function () {
             ethers.encodeBytes32String("arcus-1"),
             wrongAsset.target,
             backendOperator.address,
+            backendOperator.address, // venue reader: never reached, the asset check fires first
+            0n,
             0n,
             0n
           )
@@ -204,25 +227,32 @@ describe("PositionToken", function () {
   });
 
   describe("PositionTokenFactory.createPosition", function () {
-    it("creates a position with the 10-argument signature, unlisted and with no nickname", async function () {
+    it("creates a position with the 11-argument signature, unlisted and with no nickname", async function () {
       const [, creator, operator] = await ethers.getSigners();
 
       const MockUSDG = await ethers.getContractFactory("MockUSDG");
       const usdg = await MockUSDG.deploy();
       const PositionToken = await ethers.getContractFactory("PositionToken");
       const implementation = await PositionToken.deploy(usdg.target);
+      const market = ethers.encodeBytes32String("ETH-PERP");
+      const { reader, accountId } = await deployVenue({
+        market,
+        markPrice: 2000n * PRICE_SCALE,
+        position: { direction: Direction.Long, entryPrice: 2000n * PRICE_SCALE, size: (5n * PRICE_SCALE) / 2n },
+      });
       const Factory = await ethers.getContractFactory("PositionTokenFactory");
-      const factory = await Factory.deploy(implementation.target, operator.address, usdg.target);
+      const factory = await Factory.deploy(implementation.target, operator.address, usdg.target, reader.target);
 
       const args = [
         creator.address,
-        ethers.encodeBytes32String("ETH-PERP"),
+        market,
         Direction.Long,
         5n,
         2000n * PRICE_SCALE,
         (5n * PRICE_SCALE) / 2n,
         1000n * PRICE_SCALE,
         ethers.encodeBytes32String("arcus-1"),
+        accountId,
         1900n * PRICE_SCALE,
         2400n * PRICE_SCALE,
       ];
@@ -233,11 +263,15 @@ describe("PositionToken", function () {
       expect(await token.nickname()).to.equal("");
       expect(await token.name()).to.equal(STRUCTURED_NAME);
       expect(await token.listed()).to.equal(false);
-      expect(await token.arcusOperator()).to.equal(operator.address);
+      expect(await token.operator()).to.equal(operator.address);
+      expect(await token.venueReader()).to.equal(reader.target);
+      expect(await token.venueAccountId()).to.equal(accountId);
       expect(await token.balanceOf(creator.address)).to.equal(1000n * PRICE_SCALE);
       expect(await token.defaultStopLoss()).to.equal(1900n * PRICE_SCALE);
       expect(await token.defaultTakeProfit()).to.equal(2400n * PRICE_SCALE);
       expect(await token.defaultsActive()).to.equal(true);
+      expect(await factory.asset()).to.equal(usdg.target);
+      expect(await factory.usdg()).to.equal(usdg.target); // back-compat alias the backend reads
     });
   });
 
@@ -291,22 +325,21 @@ describe("PositionToken", function () {
     });
   });
 
-  describe("applyReport", function () {
-    it("only arcusOperator can report", async function () {
+  describe("applyFunding and the live venue mark", function () {
+    it("only the operator can apply funding", async function () {
       const { positionToken, otherAccount } = await deployPositionTokenFixture();
 
       await expect(
-        reportPrice(positionToken, otherAccount, 2100n * PRICE_SCALE, 0n, (await ethers.provider.getBlock("latest")).timestamp + 1000)
-      ).to.be.revertedWith("PositionToken: not arcusOperator");
+        positionToken.connect(otherAccount).applyFunding(0n, (await ethers.provider.getBlock("latest")).timestamp + 1)
+      ).to.be.revertedWith("PositionToken: not operator");
     });
 
-    it("updates markPrice/funding and moves totalAssets with PnL (Long)", async function () {
+    it("follows the venue mark and moves totalAssets with PnL (Long)", async function () {
       const { positionToken, backendOperator, initialDeposit } = await deployPositionTokenFixture();
 
-      const ts = (await ethers.provider.getBlock("latest")).timestamp + 1000;
-      await reportPrice(positionToken, backendOperator, 2100n * PRICE_SCALE, 0n, ts);
+      await reportPrice(positionToken, backendOperator, 2100n * PRICE_SCALE, 0n);
 
-      expect(await positionToken.markPrice()).to.equal(2100n * PRICE_SCALE);
+      expect((await positionToken.currentMark())[0]).to.equal(2100n * PRICE_SCALE);
       // size = 2.5e18, entry=2000, mark=2100 -> pnl = 2.5 * 100 = 250
       expect(await positionToken.totalAssets()).to.equal(initialDeposit + 250n * PRICE_SCALE);
     });
@@ -316,8 +349,7 @@ describe("PositionToken", function () {
         direction: Direction.Short,
       });
 
-      const ts = (await ethers.provider.getBlock("latest")).timestamp + 1000;
-      await reportPrice(positionToken, backendOperator, 2100n * PRICE_SCALE, 0n, ts);
+      await reportPrice(positionToken, backendOperator, 2100n * PRICE_SCALE, 0n);
 
       expect(await positionToken.totalAssets()).to.equal(initialDeposit - 250n * PRICE_SCALE);
     });
@@ -325,19 +357,22 @@ describe("PositionToken", function () {
     it("includes signed funding", async function () {
       const { positionToken, backendOperator, initialDeposit, entryPrice } = await deployPositionTokenFixture();
 
-      const ts = (await ethers.provider.getBlock("latest")).timestamp + 1000;
-      await reportPrice(positionToken, backendOperator, entryPrice, -50n * PRICE_SCALE, ts);
+      await reportPrice(positionToken, backendOperator, entryPrice, -50n * PRICE_SCALE);
 
       expect(await positionToken.totalAssets()).to.equal(initialDeposit - 50n * PRICE_SCALE);
     });
 
-    it("rejects a stale (non-increasing) report timestamp", async function () {
+    it("rejects a stale (non-increasing) or future funding timestamp", async function () {
       const { positionToken, backendOperator } = await deployPositionTokenFixture();
 
-      const lastReportTimestamp = await positionToken.lastReportTimestamp();
-      await expect(
-        reportPrice(positionToken, backendOperator, 2100n * PRICE_SCALE, 0n, lastReportTimestamp)
-      ).to.be.revertedWith("PositionToken: stale report");
+      const last = await positionToken.lastFundingTimestamp();
+      await expect(positionToken.connect(backendOperator).applyFunding(1n, last)).to.be.revertedWith(
+        "PositionToken: stale report"
+      );
+      const now = BigInt((await ethers.provider.getBlock("latest")).timestamp);
+      await expect(positionToken.connect(backendOperator).applyFunding(1n, now + 120n)).to.be.revertedWith(
+        "PositionToken: future report"
+      );
     });
   });
 
@@ -406,7 +441,7 @@ describe("PositionToken", function () {
 
       await expect(
         positionToken.connect(otherAccount).fulfillDepositRequest(0, depositor.address, 0n, 0n)
-      ).to.be.revertedWith("PositionToken: not backend operator");
+      ).to.be.revertedWith("PositionToken: not operator");
     });
 
     it("auto-settles on fulfil: mints shares straight to the buyer, nothing left pending or claimable", async function () {
@@ -440,7 +475,7 @@ describe("PositionToken", function () {
     it("rejects requestDeposit once the position is closed", async function () {
       const { positionToken, depositor, backendOperator, entryPrice } = await deployPositionTokenFixture({ listed: true });
 
-      await positionToken.connect(backendOperator).close(entryPrice, 0n, true);
+      await positionToken.connect(backendOperator).close(0n, true);
 
       await expect(
         positionToken.connect(depositor).requestDeposit(100n * PRICE_SCALE, depositor.address, depositor.address)
@@ -469,12 +504,12 @@ describe("PositionToken", function () {
 
       await expect(
         positionToken.connect(otherAccount).fulfillRedeemRequest(0, depositor.address, 0n, 0n)
-      ).to.be.revertedWith("PositionToken: not backend operator");
+      ).to.be.revertedWith("PositionToken: not operator");
     });
 
     it("reverts fulfillment if the vault hasn't received the freed USDG yet", async function () {
       // The creator's initialDeposit shares were minted at genesis with no matching USDG ever
-      // entering the vault (the real capital lives on Arcus) -- so redeeming them requires the
+      // entering the vault (the real capital lives on the venue) -- so redeeming them requires the
       // backend to have actually sent freed USDG back in first.
       const { positionToken, creator, backendOperator, initialDeposit } = await deployPositionTokenFixture();
 
@@ -703,15 +738,15 @@ describe("PositionToken", function () {
     it("only the backend operator can close", async function () {
       const { positionToken, otherAccount, entryPrice } = await closeRequestedFixture();
 
-      await expect(positionToken.connect(otherAccount).close(entryPrice, 0n, false)).to.be.revertedWith(
-        "PositionToken: not backend operator"
+      await expect(positionToken.connect(otherAccount).close(0n, false)).to.be.revertedWith(
+        "PositionToken: not operator"
       );
     });
 
     it("close(..., false) reverts without a prior request", async function () {
       const { positionToken, backendOperator, entryPrice } = await deployPositionTokenFixture();
 
-      await expect(positionToken.connect(backendOperator).close(entryPrice, 0n, false)).to.be.revertedWith(
+      await expect(positionToken.connect(backendOperator).close(0n, false)).to.be.revertedWith(
         "PositionToken: no close request"
       );
     });
@@ -719,7 +754,7 @@ describe("PositionToken", function () {
     it("close(..., true) records a liquidation without a request", async function () {
       const { positionToken, backendOperator, entryPrice } = await deployPositionTokenFixture({ listed: true });
 
-      await expect(positionToken.connect(backendOperator).close(entryPrice, 0n, true))
+      await expect(positionToken.connect(backendOperator).close(0n, true))
         .to.emit(positionToken, "PositionClosed");
       expect(await positionToken.closedReason()).to.equal(1); // ClosedReason.Liquidated
     });
@@ -727,7 +762,8 @@ describe("PositionToken", function () {
     it("locks finalNavValue using the same PnL formula and freezes totalAssets", async function () {
       const { positionToken, backendOperator, initialDeposit } = await closeRequestedFixture();
 
-      await expect(positionToken.connect(backendOperator).close(2100n * PRICE_SCALE, 0n, false))
+      await setMark(positionToken, 2100n * PRICE_SCALE);
+      await expect(positionToken.connect(backendOperator).close(0n, false))
         .to.emit(positionToken, "PositionClosed")
         .withArgs(initialDeposit + 250n * PRICE_SCALE, false);
 
@@ -740,19 +776,18 @@ describe("PositionToken", function () {
     it("cannot be closed twice", async function () {
       const { positionToken, backendOperator, entryPrice } = await closeRequestedFixture();
 
-      await positionToken.connect(backendOperator).close(entryPrice, 0n, false);
-      await expect(positionToken.connect(backendOperator).close(entryPrice, 0n, false)).to.be.revertedWith(
+      await positionToken.connect(backendOperator).close(0n, false);
+      await expect(positionToken.connect(backendOperator).close(0n, false)).to.be.revertedWith(
         "PositionToken: already closed"
       );
     });
 
-    it("rejects applyReport and list after closure", async function () {
+    it("rejects applyFunding and list after closure", async function () {
       const { positionToken, backendOperator, creator, entryPrice } = await closeRequestedFixture();
 
-      await positionToken.connect(backendOperator).close(entryPrice, 0n, false);
+      await positionToken.connect(backendOperator).close(0n, false);
 
-      const ts = (await ethers.provider.getBlock("latest")).timestamp + 1000;
-      await expect(reportPrice(positionToken, backendOperator, entryPrice, 0n, ts)).to.be.revertedWith(
+      await expect(reportPrice(positionToken, backendOperator, entryPrice, 0n)).to.be.revertedWith(
         "PositionToken: position closed"
       );
       await expect(positionToken.connect(creator).list("")).to.be.revertedWith("PositionToken: position closed");
@@ -771,6 +806,7 @@ describe("PositionToken", function () {
         size: (125n * ETH) / 100n,
         initialDeposit: 500n * USD,
         listed,
+        sizeDecimals: 6n,
       });
     }
 
@@ -784,7 +820,7 @@ describe("PositionToken", function () {
       const [size, entry, mark, capital, funding, settled] = await Promise.all([
         positionToken.size(),
         positionToken.entryPrice(),
-        positionToken.markPrice(),
+        positionToken.currentMark().then((m) => m[0]),
         positionToken.capital(),
         positionToken.fundingAccrued(),
         positionToken.fundingSettled(),
@@ -913,7 +949,8 @@ describe("PositionToken", function () {
       ]);
       const expected = capital + (size * (finalMark - entry)) / PRICE_SCALE + (finalFunding - settled);
 
-      await positionToken.connect(backendOperator).close(finalMark, finalFunding, true);
+      await setMark(positionToken, finalMark);
+      await positionToken.connect(backendOperator).close(finalFunding, true);
       expect(await positionToken.finalNavValue()).to.equal(expected);
     });
 
@@ -921,7 +958,8 @@ describe("PositionToken", function () {
       const { positionToken, creator, backendOperator, usdg } = await realUnitsFixture({ listed: false });
 
       await positionToken.connect(creator).requestRedeem(100n * USD, creator.address, creator.address);
-      await positionToken.connect(backendOperator).close(2200n * PRICE_SCALE, 0n, true);
+      await setMark(positionToken, 2200n * PRICE_SCALE);
+      await positionToken.connect(backendOperator).close(0n, true);
       expect(await positionToken.navPerShare()).to.equal((15n * PRICE_SCALE) / 10n); // (500 + 250) / 500
 
       await usdg.mint(positionToken.target, 150n * USD);
@@ -934,7 +972,7 @@ describe("PositionToken", function () {
       const { positionToken, depositor, backendOperator } = await realUnitsFixture();
 
       await positionToken.connect(depositor).requestDeposit(100n * USD, depositor.address, depositor.address);
-      await positionToken.connect(backendOperator).close(2000n * PRICE_SCALE, 0n, true);
+      await positionToken.connect(backendOperator).close(0n, true); // venue mark still at entry
       await expect(
         positionToken.connect(backendOperator).fulfillDepositRequest(0, depositor.address, 0n, 0n)
       ).to.be.revertedWith("PositionToken: position closed");
@@ -944,13 +982,13 @@ describe("PositionToken", function () {
   describe("settle and claim", function () {
     const SUPPLY = 1000n * PRICE_SCALE;
 
-    // Creator 50%, depositor 30%, otherAccount 20%, then liquidated on Arcus.
+    // Creator 50%, depositor 30%, otherAccount 20%, then liquidated on the venue.
     async function threeHolderClosedFixture() {
       const fixture = await deployPositionTokenFixture({ initialDeposit: SUPPLY });
       const { positionToken, creator, depositor, otherAccount, backendOperator, entryPrice } = fixture;
       await positionToken.connect(creator).transfer(depositor.address, (SUPPLY * 30n) / 100n);
       await positionToken.connect(creator).transfer(otherAccount.address, (SUPPLY * 20n) / 100n);
-      await positionToken.connect(backendOperator).close(entryPrice, 0n, true);
+      await positionToken.connect(backendOperator).close(0n, true);
       return fixture;
     }
 
@@ -960,7 +998,7 @@ describe("PositionToken", function () {
 
       const assets = 100n * PRICE_SCALE;
       await positionToken.connect(depositor).requestDeposit(assets, depositor.address, depositor.address);
-      await positionToken.connect(backendOperator).close(entryPrice, 0n, true);
+      await positionToken.connect(backendOperator).close(0n, true);
 
       const before = await usdg.balanceOf(depositor.address);
       await positionToken.connect(depositor).cancelDepositRequest();
@@ -979,11 +1017,11 @@ describe("PositionToken", function () {
       // A pending buy-in is still owed back, so it doesn't count towards the payout.
       const deposit = 100n * PRICE_SCALE;
       await positionToken.connect(depositor).requestDeposit(deposit, depositor.address, depositor.address);
-      await positionToken.connect(backendOperator).close(entryPrice, 0n, true);
+      await positionToken.connect(backendOperator).close(0n, true);
       await usdg.mint(positionToken.target, amount);
 
       await expect(positionToken.connect(otherAccount).settle(amount)).to.be.revertedWith(
-        "PositionToken: not backend operator"
+        "PositionToken: not operator"
       );
       await expect(positionToken.connect(backendOperator).settle(amount + 1n)).to.be.revertedWith(
         "PositionToken: settlement not funded"
@@ -1037,7 +1075,7 @@ describe("PositionToken", function () {
       });
       const pending = 200n * PRICE_SCALE;
       await positionToken.connect(creator).requestRedeem(pending, creator.address, creator.address);
-      await positionToken.connect(backendOperator).close(entryPrice, 0n, true);
+      await positionToken.connect(backendOperator).close(0n, true);
 
       const recovered = 600n * PRICE_SCALE; // 0.6 per share
       await usdg.mint(positionToken.target, recovered);
@@ -1077,7 +1115,7 @@ describe("PositionToken", function () {
       const deposit = 100n * PRICE_SCALE;
       const pendingNet = deposit - feeOn(deposit);
       await positionToken.connect(depositor).requestDeposit(deposit, depositor.address, depositor.address);
-      await positionToken.connect(backendOperator).close(entryPrice, 0n, true);
+      await positionToken.connect(backendOperator).close(0n, true);
 
       const recovered = 800n * PRICE_SCALE;
       const float = 300n * PRICE_SCALE;
@@ -1085,7 +1123,7 @@ describe("PositionToken", function () {
       await positionToken.connect(backendOperator).settle(recovered);
 
       await expect(positionToken.connect(creator).recoverExcess(creator.address)).to.be.revertedWith(
-        "PositionToken: not backend operator"
+        "PositionToken: not operator"
       );
       const before = await usdg.balanceOf(deployer.address);
       await positionToken.connect(backendOperator).recoverExcess(deployer.address);
@@ -1215,7 +1253,7 @@ describe("PositionToken", function () {
 
     it("setTriggers is rejected once closed", async function () {
       const { positionToken, depositor, backendOperator, entryPrice } = await threeHolderFixture();
-      await positionToken.connect(backendOperator).close(entryPrice, 0n, true);
+      await positionToken.connect(backendOperator).close(0n, true);
       await expect(positionToken.connect(depositor).setTriggers(SL, 0n)).to.be.revertedWith(
         "PositionToken: position closed"
       );
@@ -1232,7 +1270,7 @@ describe("PositionToken", function () {
 
       await expect(
         positionToken.connect(depositor).executeTrigger(depositor.address, 0n, 0n)
-      ).to.be.revertedWith("PositionToken: not backend operator");
+      ).to.be.revertedWith("PositionToken: not operator");
       await expect(
         positionToken.connect(backendOperator).executeTrigger(creator.address, 0n, 0n)
       ).to.be.revertedWith("PositionToken: trigger not hit");
@@ -1361,7 +1399,7 @@ describe("PositionToken", function () {
       const { positionToken, depositor, otherAccount, backendOperator } = await threeHolderFixture();
 
       await expect(positionToken.connect(depositor).retireDefaultTriggers()).to.be.revertedWith(
-        "PositionToken: not backend operator"
+        "PositionToken: not operator"
       );
       await expect(positionToken.connect(backendOperator).retireDefaultTriggers()).to.be.revertedWith(
         "PositionToken: default not hit"

@@ -15,17 +15,19 @@ interface IPositionToken {
         uint256 _entryPrice,
         uint256 _size,
         uint256 _initialDeposit,
-        bytes32 _arcusPositionId,
+        bytes32 _venuePositionId,
         address _asset,
-        address _arcusOperator,
+        address _operator,
+        address _venueReader,
+        uint256 _venueAccountId,
         uint256 _defaultStopLoss,
         uint256 _defaultTakeProfit
     ) external;
 
     // -----------------------------------------------------------------------------------------
     // Valuation -- inherited from the ERC-4626 side of PositionToken. These are the LIVE price of
-    // the position: `convertToAssets` walks totalAssets()/totalSupply(), which tracks markPrice
-    // and funding as the backend reports them. Nothing here is cached by the caller, by design.
+    // the position: `convertToAssets` walks totalAssets()/totalSupply(), which reads the venue's
+    // mark on every call. Nothing here is cached by the caller, by design.
     // -----------------------------------------------------------------------------------------
 
     function convertToAssets(uint256 shares) external view returns (uint256);
@@ -46,25 +48,40 @@ interface IPositionToken {
             bool closed_
         );
 
-    /// @dev Timestamp of the last price/funding report. This is what {LendingPool-freshOracle}
-    /// checks `borrow`/`withdrawCollateral` against -- see there for why `liquidate` and
+    /// @dev What {LendingPool-freshOracle} checks `borrow`/`withdrawCollateral` against: a live,
+    /// recent venue mark and a recent funding report. See there for why `liquidate` and
     /// `healthFactor` deliberately do NOT check it.
+    function isPriceFresh() external view returns (bool);
+
+    /// @dev The live venue mark, or the last synced one with `live == false`.
+    function currentMark() external view returns (uint256 price, bool live);
+
+    /// @dev Venue timestamp of the last synced mark (UI / back-compat).
     function lastReportTimestamp() external view returns (uint256);
 
-    /// @dev True once the underlying Arcus position has been settled; value is then frozen at
+    function lastFundingTimestamp() external view returns (uint256);
+
+    /// @dev True once the underlying venue position has been settled; value is then frozen at
     /// `finalNavValue` rather than tracking a live mark.
     function closed() external view returns (bool);
 
-    /// @dev True once the USDG recovered from Arcus is recorded and holders can {claim}.
+    /// @dev True once the AUSD recovered from the venue is recorded and holders can {claim}.
     function settled() external view returns (bool);
 
     function claim() external returns (uint256 assets);
 
     // -----------------------------------------------------------------------------------------
-    // Price/funding reporting -- the surface the backend's scheduled reporting job calls.
+    // Funding reporting and mark sync -- the surface the backend's scheduled jobs call.
     // -----------------------------------------------------------------------------------------
 
-    function applyReport(uint256 markPrice, int256 funding, uint256 timestamp) external;
+    function applyFunding(int256 funding, uint256 timestamp) external;
+
+    function sync() external returns (uint256 price, bool live);
 
     function getLastReport() external view returns (uint256 markPrice, int256 funding, uint256 timestamp);
+
+    function venueDrift()
+        external
+        view
+        returns (uint256 ourSize, uint256 venueSize, uint256 ourEntry, uint256 venueEntry, bool venueExists);
 }

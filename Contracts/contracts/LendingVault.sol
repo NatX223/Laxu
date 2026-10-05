@@ -10,12 +10,12 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title LendingVault
- * @dev The single shared USDG liquidity pool every {LendingPool} draws from. Lenders deposit here
+ * @dev The single shared AUSD liquidity pool every {LendingPool} draws from. Lenders deposit here
  * and only here -- one deep book instead of one shallow book per position token, which is what
  * makes rates worth having.
  *
  * Plain, SYNCHRONOUS ERC-4626, unlike {PositionToken}. Nothing in this contract waits on Arcus or
- * on an off-chain confirmation: USDG in, shares out, same transaction. The async ERC-7540
+ * on an off-chain confirmation: AUSD in, shares out, same transaction. The async ERC-7540
  * machinery next door exists because a deposit there must be matched by a real margin move on a
  * real exchange; nothing of the sort applies to parking stablecoins in a vault, so none of that
  * complexity is inherited here.
@@ -64,7 +64,7 @@ contract LendingVault is ERC4626, Ownable {
     // ---------------------------------------------------------------------
 
     /**
-     * @dev Overriding this is essential, not cosmetic. USDG lent out to a pool has physically left
+     * @dev Overriding this is essential, not cosmetic. AUSD lent out to a pool has physically left
      * this contract's balance, but it is still backing value the vault is owed. Counting only the
      * idle balance would make the share price appear to crash the moment anybody borrows -- and
      * then appear to spike on repayment -- when in truth nothing about a lender's claim changed.
@@ -75,7 +75,7 @@ contract LendingVault is ERC4626, Ownable {
 
     /**
      * @dev ERC-4626 requires max* to report what would actually succeed. Because `totalAssets()`
-     * counts money that is out on loan, a lender's share of it can exceed the USDG physically
+     * counts money that is out on loan, a lender's share of it can exceed the AUSD physically
      * sitting here; withdrawing that much would revert in the transfer. So cap both max views at
      * the idle balance -- utilization, not ownership, is the binding constraint.
      */

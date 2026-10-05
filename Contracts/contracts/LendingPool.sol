@@ -2,6 +2,8 @@
 pragma solidity ^0.8.27;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -13,7 +15,7 @@ import {IPositionToken} from "./IPositionToken.sol";
 /**
  * @title LendingPool
  * @dev One isolated borrowing market per {PositionToken}: deposit position shares as collateral,
- * borrow USDG against them. Deployed as an EIP-1167 clone by {LendingPoolFactory} -- state is set
+ * borrow AUSD against them. Deployed as an EIP-1167 clone by {LendingPoolFactory} -- state is set
  * once via {initialize}, not a constructor.
  *
  * The isolation is the point. Liquidity is shared (all of it lives in the one {LendingVault}) but
@@ -22,8 +24,8 @@ import {IPositionToken} from "./IPositionToken.sol";
  *
  * Collateral is priced LIVE off the position token on every read -- nothing is cached here, ever.
  * That is what makes "position gains value -> borrower gets more headroom, with no interaction
- * from anybody" fall out for free, and it is also why a stale price/funding report is a real risk
- * rather than a theoretical one: see {freshOracle} for the guard, and {liquidate} for why that
+ * from anybody" fall out for free, and it is also why a stale venue mark or funding report is a
+ * real risk rather than a theoretical one: see {freshOracle} for the guard, and {liquidate} for why that
  * guard deliberately does not cover every function.
  */
 contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
@@ -49,12 +51,12 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     // (75-80% LTV), on purpose. Collateral here is a leveraged perp position -- a 5x position's
     // value swings ~5x faster than its underlying, which alone puts it in the volatile/exotic
     // bracket (40-60% LTV in real risk frameworks). Two things push it lower still, and both get
-    // WORSE as leverage climbs: (1) if the underlying Arcus position is liquidated the token's
+    // WORSE as leverage climbs: (1) if the underlying venue position is liquidated the token's
     // value does not drift down, it steps down in one move as close() locks a much-reduced
     // finalNavValue -- higher leverage means a bigger step for the same underlying move; (2)
-    // markPrice arrives in periodic backend reports, not continuously, and for the same real-world
+    // the venue's mark updates in discrete steps, not continuously, and for the same real-world
     // price move a 20x position's value swings ~4x faster than a 5x position's -- so between two
-    // report intervals, a higher-leverage position has a meaningfully higher chance of gapping
+    // mark updates, a higher-leverage position has a meaningfully higher chance of gapping
     // straight through its liquidation threshold before this pool can react. A flat ratio is
     // leverage-agnostic in value-space and under-protects the high-leverage tier; tiering LTV
     // down and the liquidation bonus up as leverage rises buys more cushion before the trigger
@@ -81,11 +83,9 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
 
     /// @dev Below this remaining collateral value, force full liquidation. A leftover position too
     /// small to be worth a liquidator's gas is a position nobody will ever come back for, so it is
-    /// cleared in one go instead of being left to rot as unrecoverable dust.
-    /// NOTE: denominated in the debt asset's own units, and written assuming a 6-decimal USDG
-    /// ($50). If USDG is deployed with 18 decimals this is effectively zero and the dust rule
-    /// never fires -- harmless, but re-scale it before mainnet.
-    uint256 public constant DUST_THRESHOLD_USD = 50e6;
+    /// cleared in one go instead of being left to rot as unrecoverable dust. $50 in the collateral
+    /// token's asset units, scaled from that asset's decimals in {initialize}.
+    uint256 public DUST_THRESHOLD_USD;
 
     /// @dev Flat borrow rate, deliberately not a utilization curve. A kinked curve prices the
     /// scarcity of liquidity within a single market; here liquidity is shared across every pool,
@@ -94,21 +94,6 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     /// the chosen starting value for volatile collateral.)
     uint256 public constant BORROW_APR_BPS = 1_000; // 10% APR, simple (non-compounding)
 
-    /**
-     * @dev Resolves the report-latency gap risk cited throughout the risk-parameter reasoning
-     * above -- not a duplicate of it. There is a single source for this data (the backend's
-     * `arcusOperator` wallet), so nothing here protects against that source lying (an integrity
-     * problem) -- only against how long ago its last successful report was (a recency problem). A
-     * timestamp check against {IPositionToken-lastReportTimestamp} is the actual fix, applied via
-     * {freshOracle}, paired on the backend side with a deviation+heartbeat write policy rather than
-     * a slow fixed clock (see the reporting job in the backend's `services/reporter.ts`).
-     *
-     * Sized directly off that heartbeat: the backend's reporting job writes at least every 5
-     * minutes, so 7 is that heartbeat plus a buffer for normal execution/confirmation lag, not an
-     * independent guess. Still worth revisiting once the live job's actual lag is observed.
-     */
-    uint256 public constant MAX_REPORT_AGE = 7 minutes;
-
     // ---------------------------------------------------------------------
     // Wiring -- set once at clone time
     // ---------------------------------------------------------------------
@@ -116,7 +101,7 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     /// @dev The single {PositionToken} this market accepts. One pool, one collateral type.
     address public collateralToken;
 
-    /// @dev Shared USDG liquidity source.
+    /// @dev Shared AUSD liquidity source.
     address public lendingVault;
 
     /// @dev The borrowable token, read off the vault at init rather than passed in, so the two can
@@ -190,6 +175,8 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
         liquidationThresholdBps = tier.liquidationThresholdBps;
         liquidationBonusBps = tier.liquidationBonusBps;
 
+        DUST_THRESHOLD_USD = 50 * 10 ** IERC20Metadata(IERC4626(_collateralToken).asset()).decimals();
+
         // The vault pulls repayments from this pool (see {ILendingVault-repayTo}), so it needs a
         // standing allowance. Granted once, to the protocol's own vault, whose address is fixed
         // for this clone's lifetime -- there is no later call that can repoint it elsewhere.
@@ -208,16 +195,13 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
      * for a much bigger one (bad debt accumulating unchecked while liquidation sits frozen);
      * liquidating on last-known data is safer than refusing to liquidate at all.
      *
-     * A closed position's value is final, so staleness no longer applies -- and must not, since
-     * reports stop at close: without the exemption this would fail permanently seven minutes later,
-     * and borrowers could never withdraw their collateral to claim.
+     * Freshness is the token's call ({IPositionToken-isPriceFresh}): a live, valid venue mark no
+     * older than its MARK_MAX_AGE, plus a funding report within FUNDING_MAX_AGE. A closed
+     * position's value is final, so it always counts as fresh -- otherwise borrowers could never
+     * withdraw their collateral to claim. The revert string is matched by the frontend.
      */
     modifier freshOracle() {
-        IPositionToken t = IPositionToken(collateralToken);
-        require(
-            t.closed() || block.timestamp - t.lastReportTimestamp() <= MAX_REPORT_AGE,
-            "LendingPool: stale oracle data"
-        );
+        require(IPositionToken(collateralToken).isPriceFresh(), "LendingPool: stale oracle data");
         _;
     }
 
@@ -311,7 +295,7 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
      * @dev PERMISSIONLESS. No role, no allowlist, nothing to configure -- exactly like Aave's. The
      * backend runs this today, and can run several independent wallets doing it, because nothing
      * here treats "liquidator" as an identity. Those wallets are worth funding separately from
-     * `arcusOperator` and the deployer precisely because they need none of those privileges.
+     * the position token's `operator` and the deployer precisely because they need none of those privileges.
      *
      * Deliberately NOT gated by {freshOracle}, unlike {borrow} and {withdrawCollateral}. Blocking
      * liquidation during a staleness window trades a small risk (acting on a slightly-old price)
@@ -319,7 +303,7 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
      * Liquidating on last-known data is safer than refusing to liquidate at all.
      *
      * Seized collateral is transferred out as SHARES, never redeemed. {PositionToken} redemptions
-     * are async (ERC-7540): they wait on `arcusOperator` confirming a real Arcus margin reduction.
+     * are async (ERC-7540): they wait on the operator confirming a real venue margin reduction.
      * Routing liquidation through redeem() would leave a liquidator having already paid off debt
      * but not yet knowing what they are getting, while the position's real value keeps moving
      * underneath a pending request -- the precise scenario liquidation exists to prevent, walked
@@ -368,7 +352,7 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     /**
      * @dev Ratio of risk-adjusted collateral to debt, in WAD. Below 1e18 the position is seizable.
      *
-     * Trusts `markPrice` however old it is, and deliberately so -- this is a view, called from
+     * Trusts the token's valuation however stale its inputs are, and deliberately so -- this is a view, called from
      * {liquidate} among other places, and {liquidate} must keep working on last-known data during
      * a staleness window (see the rationale on {liquidate}). The staleness guard for the actions
      * that OPEN new risk lives one level up, in {freshOracle} on {borrow} and
@@ -492,9 +476,8 @@ contract LendingPool is ILendingPool, Initializable, ReentrancyGuard {
     function _riskTierFor(uint256 leverage) internal pure returns (RiskTier memory) {
         if (leverage <= 5) return RiskTier(5_000, 6_000, 800); // 1-5x:   50% / 60% / 8%
         if (leverage <= 10) return RiskTier(4_000, 5_000, 1_000); // 6-10x:  40% / 50% / 10%
-        // 11-20x: 25% / 35% / 12%. Positions above 20x are not covered by this table -- the
-        // leverage cap on PositionToken creation currently keeps this branch's real domain at
-        // 11-20x, but nothing here enforces that cap; see README's open items if it ever moves.
+        // 11-20x: 25% / 35% / 12%. {PositionTokenFactory-createPosition} rejects leverage above 20,
+        // so this branch's real domain is 11-20x.
         return RiskTier(2_500, 3_500, 1_200);
     }
 }
