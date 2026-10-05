@@ -3,7 +3,7 @@
 **Make your position capital efficient.**
 Borrow against your open perp trades. Earn when others back them.
 
-**Live app:** ⚠ TODO · **Demo video:** ⚠ TODO · **Pitch deck:** ⚠ TODO · **Litepaper:** [docs/LITEPAPER.md](docs/LITEPAPER.md) · **X:** ⚠ TODO
+**Live app:** [App](https://laxu.vercel.app) · **Demo video:** [Demo](https://www.loom.com/share/9debdffa70c042d0a8f9f573f3c89843) · **Pitch deck:** [Pitch](https://pitch.com/v/laxu-bsyust) · **Litepaper:** [docs/LITEPAPER.md](docs/LITEPAPER.md)
 **Network:** Robinhood Chain testnet (chain ID 46630) · **Built for:** Arbitrum Open House Singapore 2026
 
 > ⚠️ Testnet only, no real funds. Laxu is an independent project built on Arcus,
@@ -145,7 +145,7 @@ flowchart LR
 
 ## Try it yourself (for judges)
 
-1. Open the **live app** (⚠ TODO link) and sign in with email or a wallet.
+1. Open the [live app](https://laxu.vercel.app) and sign in with email or a wallet.
 2. Click **Get test funds**. You receive 1,000 test USDG plus a gas top-up. *(Once per 24 hours.)*
 3. Go to **Trade**, pick **ETH-USD**, long, **3×**, **50 USDG**, and click **Open**. Approve the USDG payment. *(Takes about 1–2 minutes: first the deposit is credited, then the order fills.)*
 4. You land on your position page. The token is in your wallet and the lending pool shows as ready.
