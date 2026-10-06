@@ -11,13 +11,13 @@ export const env = {
   explorerUrl: process.env.NEXT_PUBLIC_EXPLORER_URL ?? "",
   /** Laxu backend base URL. */
   apiUrl: (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000").replace(/\/$/, ""),
-  /** Arcus public market data — candles over REST, live bars over WebSocket. */
-  arcusApiUrl: (process.env.NEXT_PUBLIC_ARCUS_API_URL ?? "https://api.testnet.arcus.xyz").replace(/\/$/, ""),
-  arcusWsUrl: process.env.NEXT_PUBLIC_ARCUS_WS_URL ?? "wss://api.testnet.arcus.xyz/v1/ws",
+  /** Perpl public market data — candles over REST, live bars over WebSocket. */
+  perplApiUrl: (process.env.NEXT_PUBLIC_PERPL_API_URL ?? "https://testnet.perpl.xyz/api").replace(/\/$/, ""),
+  perplWsUrl: process.env.NEXT_PUBLIC_PERPL_WS_URL ?? "wss://testnet.perpl.xyz/v1/ws",
   /** Market logos, used only when the backend is unreachable (it resolves logos itself). */
-  arcusBrandingUrl: (process.env.NEXT_PUBLIC_ARCUS_BRANDING_URL ?? "https://branding.testnet.arcus.xyz").replace(/\/$/, ""),
-  /** USDG, for approvals ahead of buy-ins, repays and lending. */
-  usdgAddress: process.env.NEXT_PUBLIC_USDG_ADDRESS ?? "",
-  /** A public testnet-ETH faucet, linked when ours is too low to send gas. */
-  ethFaucetUrl: process.env.NEXT_PUBLIC_ETH_FAUCET_URL ?? "",
+  perplBrandingUrl: (process.env.NEXT_PUBLIC_PERPL_BRANDING_URL ?? "https://branding.testnet.perpl.xyz").replace(/\/$/, ""),
+  /** Asset address, for approvals ahead of buy-ins, repays and lending. */
+  assetAddress: process.env.NEXT_PUBLIC_ASSET_ADDRESS ?? "",
+  /** A public testnet-MON faucet, linked when ours is too low to send gas. */
+  monFaucetUrl: process.env.NEXT_PUBLIC_MON_FAUCET_URL ?? "",
 };
