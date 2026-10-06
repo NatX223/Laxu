@@ -14,6 +14,7 @@ import { readPositionState } from "../chain/writes";
 import { fromPrice18 } from "../lib/units";
 import { startWorker } from "../lib/async";
 import { createLogger, errorFields } from "../lib/logger";
+import { recordLendingPoolRow } from "../services/lendingPoolRows";
 import { cancelEntry, handleDepositRequested, handleRedeemRequested } from "../services/margin";
 import { executeClose, settleEmptiedPosition } from "../services/closePosition";
 import { findEntryForLog, recordPending } from "../services/ledger";
@@ -954,6 +955,28 @@ async function discoverAddresses(fromBlock: bigint, toBlock: bigint): Promise<Se
   return known;
 }
 
+/// Every position-token event the indexer handles, and the kind it dispatches as.
+const POSITION_TOKEN_EVENTS = [
+  [depositRequestedEvent, "deposit"],
+  [redeemRequestedEvent, "redeem"],
+  [closeRequestedEvent, "close"],
+  [fundingUpdatedEvent, "funding"],
+  [markSyncedEvent, "markSynced"],
+  [positionClosedEvent, "closed"],
+  [listedEvent, "listed"],
+  [depositCancelledEvent, "depositCancelled"],
+  [redeemCancelledEvent, "redeemCancelled"],
+  [transferEvent, "transfer"],
+  [depositFulfilledEvent, "depositFulfilled"],
+  [redeemFulfilledEvent, "redeemFulfilled"],
+  [creatorFeeEvent, "creatorFee"],
+  [settledEvent, "settled"],
+  [claimedEvent, "claimed"],
+  [triggersSetEvent, "triggersSet"],
+  [triggerExecutedEvent, "triggerExecuted"],
+  [defaultTriggersRetiredEvent, "defaultsRetired"],
+] as const;
+
 async function backfillPositionTokenEvents(
   addresses: Address[],
   fromBlock: bigint,
@@ -961,72 +984,26 @@ async function backfillPositionTokenEvents(
 ): Promise<void> {
   if (addresses.length === 0 || fromBlock > toBlock) return;
 
-  const client = publicClient();
-  const [
-    deposits,
-    redeems,
-    closes,
-    fundings,
-    markSyncs,
-    closeds,
-    listeds,
-    depositCancels,
-    redeemCancels,
-    transfers,
-    depositFulfils,
-    redeemFulfils,
-    fees,
-    settleds,
-    claims,
-    triggerSets,
-    triggerExecs,
-    defaultRetires,
-  ] = await Promise.all([
-    client.getLogs({ address: addresses, event: depositRequestedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: redeemRequestedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: closeRequestedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: fundingUpdatedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: markSyncedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: positionClosedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: listedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: depositCancelledEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: redeemCancelledEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: transferEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: depositFulfilledEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: redeemFulfilledEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: creatorFeeEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: settledEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: claimedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: triggersSetEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: triggerExecutedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: defaultTriggersRetiredEvent, fromBlock, toBlock }),
-  ]);
+  // ONE getLogs for every event type (viem decodes each log by its topic), so a
+  // long backfill costs one RPC call per 100-block window, not eighteen --
+  // after a 10 h outage on 2026-10-06 that was ~1,200 calls instead of ~21,000.
+  const kindOf = new Map<string, EventKind>(POSITION_TOKEN_EVENTS.map(([event, kind]) => [event.name, kind]));
+  const logs = await publicClient().getLogs({
+    address: addresses,
+    events: POSITION_TOKEN_EVENTS.map(([event]) => event),
+    fromBlock,
+    toBlock,
+  });
 
   // Process in chain order so, e.g., a deposit and a funding update in the
   // same range land in the order they actually happened.
-  const ordered = [
-    ...deposits.map((entry) => ({ kind: "deposit" as const, entry })),
-    ...redeems.map((entry) => ({ kind: "redeem" as const, entry })),
-    ...closes.map((entry) => ({ kind: "close" as const, entry })),
-    ...fundings.map((entry) => ({ kind: "funding" as const, entry })),
-    ...markSyncs.map((entry) => ({ kind: "markSynced" as const, entry })),
-    ...closeds.map((entry) => ({ kind: "closed" as const, entry })),
-    ...listeds.map((entry) => ({ kind: "listed" as const, entry })),
-    ...depositCancels.map((entry) => ({ kind: "depositCancelled" as const, entry })),
-    ...redeemCancels.map((entry) => ({ kind: "redeemCancelled" as const, entry })),
-    ...transfers.map((entry) => ({ kind: "transfer" as const, entry })),
-    ...depositFulfils.map((entry) => ({ kind: "depositFulfilled" as const, entry })),
-    ...redeemFulfils.map((entry) => ({ kind: "redeemFulfilled" as const, entry })),
-    ...fees.map((entry) => ({ kind: "creatorFee" as const, entry })),
-    ...settleds.map((entry) => ({ kind: "settled" as const, entry })),
-    ...claims.map((entry) => ({ kind: "claimed" as const, entry })),
-    ...triggerSets.map((entry) => ({ kind: "triggersSet" as const, entry })),
-    ...triggerExecs.map((entry) => ({ kind: "triggerExecuted" as const, entry })),
-    ...defaultRetires.map((entry) => ({ kind: "defaultsRetired" as const, entry })),
-  ].sort((a, b) => compareLogOrder(a.entry as AnyLog, b.entry as AnyLog));
+  const ordered = logs
+    .map((entry) => ({ kind: kindOf.get((entry as { eventName: string }).eventName), entry: entry as unknown as AnyLog }))
+    .filter((item): item is { kind: EventKind; entry: AnyLog } => item.kind !== undefined)
+    .sort((a, b) => compareLogOrder(a.entry, b.entry));
 
   for (const item of ordered) {
-    await dispatch(item.kind, item.entry as unknown as AnyLog);
+    await dispatch(item.kind, item.entry);
   }
 
   log.info("backfilled position token events", {
@@ -1037,21 +1014,9 @@ async function backfillPositionTokenEvents(
   });
 }
 
-/**
- * Record a lending pool. The open flow records the same pool in its own
- * transaction and upsert is not atomic, so losing that race (P2002) just means
- * the row is already there.
- */
+/// Record a lending pool (atomic and idempotent -- the open flow writes the same row).
 async function recordPool(pool: Address, positionToken: Address): Promise<void> {
-  try {
-    await db.lendingPool.upsert({
-      where: { poolAddress: pool.toLowerCase() },
-      create: { poolAddress: pool.toLowerCase(), positionTokenAddress: positionToken.toLowerCase() },
-      update: {},
-    });
-  } catch (error) {
-    if (!(error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002")) throw error;
-  }
+  await recordLendingPoolRow(db, pool, positionToken);
 }
 
 /// Same dual-source shape as {discoverAddresses}: factory logs for the
@@ -1083,26 +1048,29 @@ async function discoverPools(fromBlock: bigint, toBlock: bigint): Promise<Set<Ad
   return known;
 }
 
+const POOL_EVENTS = [
+  [collateralDepositedEvent, "collateral"],
+  [collateralWithdrawnEvent, "collateralWithdrawn"],
+  [borrowedEvent, "borrowed"],
+  [repaidEvent, "repaid"],
+  [liquidatedEvent, "liquidated"],
+] as const;
+
 async function backfillPoolEvents(addresses: Address[], fromBlock: bigint, toBlock: bigint): Promise<void> {
   if (addresses.length === 0 || fromBlock > toBlock) return;
 
-  const client = publicClient();
-  const [deposits, withdrawals, borrows, repays, liquidations] = await Promise.all([
-    client.getLogs({ address: addresses, event: collateralDepositedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: collateralWithdrawnEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: borrowedEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: repaidEvent, fromBlock, toBlock }),
-    client.getLogs({ address: addresses, event: liquidatedEvent, fromBlock, toBlock }),
-  ]);
-
-  const tag = (kind: LendingEventKind) => (entry: unknown) => ({ kind, entry: entry as AnyLog });
-  const ordered = [
-    ...deposits.map(tag("collateral")),
-    ...withdrawals.map(tag("collateralWithdrawn")),
-    ...borrows.map(tag("borrowed")),
-    ...repays.map(tag("repaid")),
-    ...liquidations.map(tag("liquidated")),
-  ].sort((a, b) => compareLogOrder(a.entry, b.entry));
+  // One getLogs for all five events, as for position tokens.
+  const kindOf = new Map<string, LendingEventKind>(POOL_EVENTS.map(([event, kind]) => [event.name, kind]));
+  const logs = await publicClient().getLogs({
+    address: addresses,
+    events: POOL_EVENTS.map(([event]) => event),
+    fromBlock,
+    toBlock,
+  });
+  const ordered = logs
+    .map((entry) => ({ kind: kindOf.get((entry as { eventName: string }).eventName), entry: entry as unknown as AnyLog }))
+    .filter((item): item is { kind: LendingEventKind; entry: AnyLog } => item.kind !== undefined)
+    .sort((a, b) => compareLogOrder(a.entry, b.entry));
 
   for (const item of ordered) {
     await dispatchLending(item.kind, item.entry);

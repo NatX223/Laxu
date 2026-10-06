@@ -47,6 +47,7 @@ import { markPriceFor, maxLeverage, requireMarket, requireMarketByName, type Res
 import { requireRegisteredUser } from "./users";
 import { sweepSlot } from "./sweep";
 import { levelError, levelOf } from "./triggerMath";
+import { recordLendingPoolRow } from "./lendingPoolRows";
 import { isUnknownOutcome, MAX_ATTEMPTS, openSide, placeAndResolve, resolveSent, savedRequest } from "./venueOrders";
 
 const log = createLogger("open-position");
@@ -960,13 +961,7 @@ async function mintPositionToken(request: PositionOpenRequest, slot: SlotWithWal
       update: {},
     });
 
-    if (pool) {
-      await tx.lendingPool.upsert({
-        where: { poolAddress: pool.toLowerCase() },
-        create: { poolAddress: pool.toLowerCase(), positionTokenAddress: tokenAddress },
-        update: {},
-      });
-    }
+    if (pool) await recordLendingPoolRow(tx, pool, tokenAddress);
     return row;
   });
 
@@ -1015,11 +1010,11 @@ export async function ensureMissingLendingPools(): Promise<void> {
       const pool = (await ensureLendingPool(position.positionTokenAddress as Address)).toLowerCase();
       await db.$transaction([
         db.position.update({ where: { id: position.id }, data: { lendingPoolAddress: pool } }),
-        db.lendingPool.upsert({
-          where: { poolAddress: pool },
-          create: { poolAddress: pool, positionTokenAddress: position.positionTokenAddress as string },
-          update: {},
-        }),
+        db.$executeRaw`
+          INSERT INTO lending_pools (id, pool_address, position_token_address)
+          VALUES (${randomBytes(16).toString("hex")}, ${pool}, ${(position.positionTokenAddress as string).toLowerCase()})
+          ON CONFLICT (pool_address) DO NOTHING
+        `,
         db.positionOpenRequest.updateMany({
           where: { positionTokenAddress: position.positionTokenAddress },
           data: { lendingPoolAddress: pool, error: null },
