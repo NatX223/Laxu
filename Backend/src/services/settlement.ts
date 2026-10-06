@@ -289,7 +289,12 @@ export async function pushClaims(positionId: string): Promise<void> {
       select: { controller: true },
     }),
   ]);
+  // The creator is always a candidate: their genesis mint can race the DB row
+  // the indexer needs (seen on testnet 2026-10-06 -- the PositionCreated
+  // catch-up ran before the mint's bookkeeping, the mint Transfer was dropped,
+  // and a pass with no holdings "pushed" nothing). The chain decides below.
   const candidates = new Set<string>([
+    position.userWalletAddress.toLowerCase(),
     ...holdings.map((h) => h.address.toLowerCase()),
     ...redeemers.map((r) => (r.controller as string).toLowerCase()),
   ]);

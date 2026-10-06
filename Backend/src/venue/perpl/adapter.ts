@@ -16,6 +16,7 @@ import {
   depositCollateral,
   ensureExchangeApproval,
   getAccountByAddr,
+  getPerpetualInfo,
   getPosition,
   withdrawCollateral,
 } from "./exchange";
@@ -49,6 +50,16 @@ const APPROVED = 2n ** 128n;
 
 /// How long a t:6 waits for the chain to pass its `lb` before reporting unknown.
 const CHAIN_PAST_LB_TIMEOUT_MS = 60_000;
+
+const BUY_SIDES = new Set<OrderSide>(["open_long", "close_short"]);
+
+/// The IOC limit for a "market" order: mark x (1 + bps) rounded up for a buy,
+/// mark x (1 - bps) rounded down for a sell, in Perpl price units.
+export function marketLimitPrice(markPNS: bigint, side: OrderSide, slippageBps: number): bigint {
+  const bps = BigInt(Math.max(0, Math.round(slippageBps)));
+  if (BUY_SIDES.has(side)) return (markPNS * (10_000n + bps) + 9_999n) / 10_000n;
+  return (markPNS * (10_000n - bps)) / 10_000n;
+}
 
 function accountIdOf(slot: SlotWithWallet): bigint {
   if (!slot.perplAccountId) throw new Error(`Slot ${slot.id} has no Perpl account yet (run slots:provision)`);
@@ -146,15 +157,20 @@ export class PerplAdapter implements VenueAdapter {
     const lots = size6ToLots(params.size6, market.sizeDecimals);
     if (lots <= 0n) throw new Error(`order size ${params.size6} (size6) is below one lot on ${market.symbol}`);
     // Close orders (t:3/4) are reduce-only by definition and clamp to the position.
+    const slippageBps = Math.min(config.perplSlippageBps, market.maxSlippageBps);
+    const { markPNS } = await getPerpetualInfo(BigInt(market.perpetualId));
     const spec: OrderSpec = {
       rq: Number(params.requestId),
       mkt: market.venueMarketId,
       acc: Number(accountIdOf(slot)),
       t: ORDER_TYPE[params.side],
-      p: 0,
+      // An explicit limit at the slippage bound, never p:0. On testnet a BTC
+      // buy-side IOC with p:0 was canceled unfilled against a full book while
+      // the same order at mark + 1% filled (docs/e2e-run.md, Phase 6).
+      p: Number(marketLimitPrice(markPNS, params.side, slippageBps)),
       s: Number(lots),
       fl: OrderFlags.ImmediateOrCancel,
-      ms: Math.min(config.perplSlippageBps, market.maxSlippageBps),
+      ms: slippageBps,
       lv: Math.round(params.leverage * 100),
       lb: Number(params.lastExecBlock),
       // `mnp` omitted on purpose: the market default applies (an explicit 0

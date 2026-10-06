@@ -57,3 +57,13 @@ test("t:6: a successful add-margin reports only a late failure, so depositCNS de
   assert.deepEqual(events.map((o) => [o.st, o.sr]), [[7, 32]]);
   assert.equal(settleOrderEvents(events, "instant").order?.st, 7, "the socket alone would call it failed");
 });
+
+test("market orders carry an explicit limit at the slippage bound (never p:0)", async () => {
+  const { marketLimitPrice } = await import("./perpl/adapter");
+  // BTC mark 85577.5 (pd 1) at 100 bps: a buy may pay up to 86433.28 -> rounded UP to 864333.
+  assert.equal(marketLimitPrice(855775n, "close_short", 100), 864333n);
+  assert.equal(marketLimitPrice(855775n, "open_long", 100), 864333n);
+  // A sell accepts down to 84719.72 -> rounded DOWN to 847217.
+  assert.equal(marketLimitPrice(855775n, "close_long", 100), 847217n);
+  assert.equal(marketLimitPrice(855775n, "open_short", 100), 847217n);
+});

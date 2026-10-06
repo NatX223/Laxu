@@ -96,9 +96,13 @@ async function open(creator: W, label: string, market: string, direction: "long"
   return { label, creator, token: done.positionTokenAddress as Address, slotId: done.slotId, payTx };
 }
 
-async function close(p: Pos) {
-  const from = await pc().getBlockNumber();
-  const req = await send(p.creator, { address: p.token, abi: positionTokenAbi, functionName: "requestClose" });
+async function close(p: Pos, sinceBlock?: bigint) {
+  // Already closed (e.g. before a resumed finish): read its events instead.
+  const alreadyClosed = await pc().readContract({ address: p.token, abi: positionTokenAbi, functionName: "closed" } as never) as boolean;
+  const from = alreadyClosed && sinceBlock !== undefined ? sinceBlock : await pc().getBlockNumber();
+  const req = alreadyClosed
+    ? (await events(p.token, "CloseRequested", from))[0]?.transactionHash ?? ""
+    : await send(p.creator, { address: p.token, abi: positionTokenAbi, functionName: "requestClose" });
   const closed = await waitFor(`${p.label} PositionClosed`, 10 * 60_000, async () => (await events(p.token, "PositionClosed", from))[0]);
   const settled = await waitFor(`${p.label} Settled`, 10 * 60_000, async () => (await events(p.token, "Settled", from))[0]);
   const claimed = await waitFor(`${p.label} Claimed`, 10 * 60_000, async () =>
@@ -134,29 +138,39 @@ async function main() {
   console.log("health", JSON.stringify(health));
 
   // Reuse positions already open (e.g. a soak cut short), else open two.
+  // SOAK_TOKENS: the soak's two tokens, whatever their state now (a resumed finish).
+  const pinned = (process.env.SOAK_TOKENS ?? "").split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
   const existing = await db.position.findMany({
-    where: { status: "open", positionTokenAddress: { not: null } },
+    where: pinned.length ? { positionTokenAddress: { in: pinned } } : { status: "open", positionTokenAddress: { not: null } },
     include: { subaccountSlot: true },
     orderBy: { createdAt: "asc" },
   });
   let positions: Pos[];
   if (existing.length >= 2) {
-    positions = existing.slice(0, 2).map((p) => {
+    positions = [];
+    for (const p of existing.slice(0, 2)) {
       const creator = p.userWalletAddress.toLowerCase() === A.account.address.toLowerCase() ? A : B;
-      return { label: creator === A ? "A" : "B", creator, token: p.positionTokenAddress as Address, slotId: p.subaccountSlot!.id, payTx: "" };
-    });
+      // A settled position no longer holds its slot: the open request still names it.
+      const slotId =
+        p.subaccountSlot?.id ??
+        (await db.positionOpenRequest.findFirstOrThrow({ where: { positionTokenAddress: p.positionTokenAddress } })).slotId;
+      positions.push({ label: creator === A ? "A" : "B", creator, token: p.positionTokenAddress as Address, slotId, payTx: "" });
+    }
     console.log(`reusing open positions: ${positions.map((p) => `${p.label} ${p.token}`).join(", ")}`);
   } else {
     positions = [await open(A, "A", "ETH", "long"), await open(B, "B", "BTC", "short")];
   }
 
-  const soakStart = Date.now();
+  // SOAK_START (ISO): finish a soak that already ran from then until now
+  // (cut short) -- no sampling loop; funding ages come from the backend log.
+  const resumedFrom = process.env.SOAK_START ? Date.parse(process.env.SOAK_START) : undefined;
+  const soakStart = resumedFrom ?? Date.now();
   const heartbeatLimit = config.fundingHeartbeatSeconds + config.reporterIntervalMs / 1000;
   const maxAge: Record<string, number> = {};
   const healthFails: string[] = [];
   let samples = 0;
   console.log(`soak started ${now()} for ${MINUTES} min`);
-  while (Date.now() - soakStart < MINUTES * 60_000) {
+  while (resumedFrom === undefined && Date.now() - soakStart < MINUTES * 60_000) {
     await sleep(60_000);
     samples += 1;
     for (const p of positions) {
@@ -182,10 +196,33 @@ async function main() {
   const alerts = lines.filter((l) => l.scope === "alert");
   const unhandled = lines.filter((l) => /unhandled|uncaught/i.test(String(l.message)));
   const errors = lines.filter((l) => l.level === "error" && l.scope !== "alert");
+  // Funding age from the backend's own pushes: the longest gap between the
+  // window's start (or a push) and the next push / the window's end.
+  if (resumedFrom !== undefined) {
+    const all = logLines(0, soakEnd);
+    for (const p of positions) {
+      const posId = (await db.position.findFirstOrThrow({ where: { positionTokenAddress: p.token.toLowerCase() } })).id;
+      const pushes = all.filter((l) => l.message === "funding applied" && l.positionId === posId).map((l) => Date.parse(String(l.ts)));
+      // Funding is only owed while the position is open: measure to its close.
+      const closedAt = all.find((l) => l.message === "position closed on-chain; settling" && l.positionId === posId);
+      const end = closedAt ? Math.min(soakEnd, Date.parse(String(closedAt.ts))) : soakEnd;
+      const before = pushes.filter((t) => t <= soakStart).pop() ?? soakStart;
+      const marks = [before, ...pushes.filter((t) => t > soakStart && t < end), end];
+      let gap = 0;
+      for (let i = 1; i < marks.length; i += 1) gap = Math.max(gap, marks[i] - marks[i - 1]);
+      maxAge[p.label] = Math.round(gap / 1000);
+    }
+    const ready = await fetch(`${URL_}/health/ready`, { signal: AbortSignal.timeout(20_000) }).then((r) => r.status).catch(() => 0);
+    samples = 1;
+    if (ready !== 200) healthFails.push(`${now()} ${ready}`);
+  }
 
   // --- Close both through the normal flow ----------------------------------
   const closed = [];
-  for (const p of positions) closed.push({ p, r: await close(p) });
+  const sinceBlock = resumedFrom !== undefined
+    ? (await pc().getBlockNumber()) - BigInt(Math.ceil(((Date.now() - soakStart) / 1000) * 4)) - 500n
+    : undefined;
+  for (const p of positions) closed.push({ p, r: await close(p, sinceBlock) });
 
   // --- Report ----------------------------------------------------------------
   const hours = (soakEnd - soakStart) / 3_600_000;
@@ -204,9 +241,14 @@ async function main() {
   );
   const body = [
     "",
-    `## Phase 6 — 1-hour soak (2 positions, 2 slots) — ${now()}`,
+    resumedFrom !== undefined
+      ? `## Phase 6 — soak, SHORTENED to ${((soakEnd - soakStart) / 60_000).toFixed(1)} min at the user's request (not the 1-hour soak) — ${now()}`
+      : `## Phase 6 — 1-hour soak (2 positions, 2 slots) — ${now()}`,
     "",
-    `Backend running with every worker on; ${MINUTES} min from ${new Date(soakStart).toISOString()} to ${new Date(soakEnd).toISOString()}.`,
+    `Backend running with every worker on; ${((soakEnd - soakStart) / 60_000).toFixed(1)} min from ${new Date(soakStart).toISOString()} to ${new Date(soakEnd).toISOString()}.` +
+      (resumedFrom !== undefined
+        ? " The hour-based criteria below are evaluated over this shorter window only: a funding heartbeat cycle (30 min) and a full hour of reconnects were NOT observed. Funding age comes from the backend's `funding applied` log; /health/ready was checked once, at the end."
+        : ""),
     "",
     ...positions.map((p) => `- ${p.label === "A" ? "A: ETH long" : "B: BTC short"}, $20 at 2x — token [${p.token.slice(0, 10)}…](https://testnet.monadvision.com/address/${p.token}), slot \`${p.slotId}\`${p.payTx ? `, payment ${tx(p.payTx)}` : " (opened 2026-10-05 20:44–20:47 UTC, reused)"}`),
     "",

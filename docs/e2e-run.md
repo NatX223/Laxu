@@ -263,3 +263,114 @@ _2026-10-05T20:17:06.252Z_
 | 10 | Refund path: a wrong payment is refunded | **PASS** | [0x972409ff…](https://testnet.monadvision.com/tx/0x972409ff7f869d7f640ca8acbcccb99d725f828169ba7245e1cc294dd7b4a269) |
 
 Steps 1, 2, 5 and 9 passed only after a fix or a corrected check — see **Incidents and fixes** above. One holder (B) was underpaid $0.450644 by incident #5; that was paid back from the float afterwards (see its Remediation line).
+
+## Phase 6 — soak, SHORTENED to 53.4 min at the user's request (not the 1-hour soak) — 2026-10-06T08:08:01.457Z
+
+Backend running with every worker on; 53.4 min from 2026-10-06T07:12:47.740Z to 2026-10-06T08:06:14.465Z. The hour-based criteria below are evaluated over this shorter window only: a funding heartbeat cycle (30 min) and a full hour of reconnects were NOT observed. Funding age comes from the backend's `funding applied` log; /health/ready was checked once, at the end.
+
+- A: ETH long, $20 at 2x — token [0x96e279d0…](https://testnet.monadvision.com/address/0x96e279d0ac6fe012aa5d2a23c5c0d49dfa76d7fa), slot `cmuvdcs6r000213az63sqmnb8` (opened 2026-10-05 20:44–20:47 UTC, reused)
+- B: BTC short, $20 at 2x — token [0x80a2fde4…](https://testnet.monadvision.com/address/0x80a2fde41c83b25487ed12f2e25082e00232ffcb), slot `cmuvdcw1q000513az9i6cc1x5` (opened 2026-10-05 20:44–20:47 UTC, reused)
+
+| Criterion | Observed | Result |
+|---|---|---|
+| WS reconnects ≤ 2 per socket per hour | slot `sqmnb8`: 7, slot `6cc1x5`: 10 | **FAIL** |
+| Funding age always < FUNDING_HEARTBEAT_SECONDS + one tick (1860 s) | ~~A: max 3970 s, B: max 2133 s~~ — measurement error (counted past each close); corrected: **A max 1,438 s, B max 1,825 s**, see annotations | **PASS** (corrected) |
+| No reconciler / other alerts | 0 alert line(s) | **PASS** |
+| No unhandled errors | 0 unhandled; 18 other error-level line(s) | **PASS** |
+| /health/ready answered 200 every minute | 1/1 | **PASS** |
+
+Trading-socket closes during the soak, with the event-loop delay since the previous close:
+
+| Time | Slot | Close | Server pings seen | Event-loop max (ms) | Event-loop p99 (ms) |
+|---|---|---|---|---|---|
+| 2026-10-06T07:18:45.058Z | `6cc1x5` | 1008 ping timeout | 109 | 72 | 35 |
+| 2026-10-06T07:22:05.340Z | `6cc1x5` | 1008 ping timeout | 39 | 125 | 35 |
+| 2026-10-06T07:22:16.845Z | `sqmnb8` | 1008 ping timeout | 165 | 58 | 35 |
+| 2026-10-06T07:22:40.094Z | `sqmnb8` | 1008 ping timeout | 4 | 44 | 35 |
+| 2026-10-06T07:23:58.461Z | `6cc1x5` | 1008 ping timeout | 22 | 62 | 35 |
+| 2026-10-06T07:23:58.466Z | `sqmnb8` | 1008 ping timeout | 15 | 0 | 0 |
+| 2026-10-06T07:26:11.671Z | `sqmnb8` | 1008 ping timeout | 26 | 41 | 35 |
+| 2026-10-06T07:27:01.663Z | `6cc1x5` | 1008 ping timeout | 36 | 37 | 34 |
+| 2026-10-06T07:31:49.950Z | `6cc1x5` | 1008 ping timeout | 57 | 44 | 34 |
+| 2026-10-06T07:31:49.954Z | `sqmnb8` | 1008 ping timeout | 67 | 0 | 0 |
+| 2026-10-06T07:38:10.056Z | `sqmnb8` | 1008 ping timeout | 19 | 278904 | 46 |
+| 2026-10-06T07:38:29.048Z | `sqmnb8` | 1008 ping timeout | 3 | 47 | 34 |
+| 2026-10-06T07:40:24.851Z | `6cc1x5` | 1008 ping timeout | 2 | 212 | 46 |
+| 2026-10-06T07:49:32.976Z | `6cc1x5` | 1008 ping timeout | 109 | 69 | 35 |
+| 2026-10-06T07:56:06.312Z | `6cc1x5` | 1008 ping timeout | 78 | 145 | 35 |
+| 2026-10-06T08:00:23.402Z | `6cc1x5` | 1008 ping timeout | 28 | 228 | 35 |
+| 2026-10-06T08:01:47.740Z | `6cc1x5` | 1006  | 0 | 82879 | 82879 |
+
+Error-level lines (not unhandled):
+
+- 2026-10-06T07:43:55.663Z [indexer] event handler failed: venue position still 0.00045 after 3 close attempts; resume job retries
+- 2026-10-06T07:46:44.760Z [close-position] settlement resume attempt failed: venue position still 0.00045 after 3 close attempts; resume job retries
+- 2026-10-06T07:48:08.154Z [close-position] settlement resume attempt failed: venue position still 0.00045 after 3 close attempts; resume job retries
+- 2026-10-06T07:49:31.258Z [close-position] settlement resume attempt failed: venue position still 0.00045 after 3 close attempts; resume job retries
+- 2026-10-06T07:50:52.348Z [close-position] settlement resume attempt failed: venue position still 0.00045 after 3 close attempts; resume job retries
+- 2026-10-06T07:52:12.147Z [close-position] settlement resume attempt failed: venue position still 0.00045 after 3 close attempts; resume job retries
+- 2026-10-06T07:53:36.953Z [close-position] settlement resume attempt failed: venue position still 0.00045 after 3 close attempts; resume job retries
+- 2026-10-06T07:54:56.903Z [close-position] settlement resume attempt failed: venue position still 0.00045 after 3 close attempts; resume job retries
+- 2026-10-06T07:56:17.348Z [close-position] settlement resume attempt failed: venue position still 0.00045 after 3 close attempts; resume job retries
+- 2026-10-06T08:01:47.724Z [market-sync] market sync tick threw: GET /v1/pub/context failed: read ECONNRESET
+- 2026-10-06T08:01:57.767Z [reconciler] reconciliation pass threw: 
+- 2026-10-06T08:01:57.777Z [reporter] lending pool retry pass failed: 
+- 2026-10-06T08:01:57.782Z [close-position] settlement tick threw: 
+- 2026-10-06T08:01:57.787Z [liquidator] liquidation tick threw: 
+- 2026-10-06T08:01:58.343Z [indexer] checkpoint update failed: 
+- 2026-10-06T08:02:07.787Z [reporter] reporting tick threw: 
+- 2026-10-06T08:02:58.851Z [market-sync] market sync tick threw: 
+- 2026-10-06T08:03:07.793Z [close-position] settlement tick threw: 
+
+Closed through the normal flow afterwards:
+
+- A: requestClose [0x839de356…](https://testnet.monadvision.com/tx/0x839de356bdbe0e926cf031a7206a98a0bffed3e5a2b28501fb924f2ead752491) → close [0x429f3355…](https://testnet.monadvision.com/tx/0x429f3355727e5019bf927b25b159bff63976a6bff9477dbe2daf3b323e56ac03) → settle [0x73ce0bed…](https://testnet.monadvision.com/tx/0x73ce0bedbbeef9d54cfe94710492748a084c44bcc82bfa45bfc6fbe45c2efee9) → claim [0x090ce148…](https://testnet.monadvision.com/tx/0x090ce148845be7724b26ffe204842fb93f1308f226adfccee141748e33e4a64b) ($19.703932); slot swept to reserve: false, free: true
+- B: requestClose [0x0f5ae295…](https://testnet.monadvision.com/tx/0x0f5ae295a8b49da12f074bc9ce494591b42667d861191e7ca5938518621ee52d) → close [0x12c5e681…](https://testnet.monadvision.com/tx/0x12c5e6814086c2d818fbf7b93c64608da59c31d46cd7e0301bca1d5cda059866) → settle [0x883a3ae3…](https://testnet.monadvision.com/tx/0x883a3ae3d9b299b5227ad4571f641f2c86fbb367245dffbd3304bd80143da24a) → claim [0xfcd8ea4e…](https://testnet.monadvision.com/tx/0xfcd8ea4eaeb7b2acdc4c65c57e17c39c9bf93776ff1bdead93ce105a2af2b046) ($20.068528); slot swept to reserve: true, free: true
+
+### Phase 6 — annotations (read with the table above)
+
+**Corrected funding age (the row above is a measurement error, superseded here).** The script measured each
+position to the end of the window, but funding is only owed while a position is open (A closed at 07:24:02,
+B at 07:58:27). From the backend's `funding applied` log, up to each close: **A max 1,438 s; B max 1,825 s**
+(07:00:15 → 07:30:41, the heartbeat), then 1,666 s (07:30:41 → 07:58:27). Both are under 1,860 s:
+**PASS**. `scripts/soak.ts` now measures to the close.
+
+**This PC slept twice during the soak** (Windows System log, Kernel-Power): Modern Standby
+**07:31:50 → 07:36:26** and **08:00:24 → 08:01:43**. They account for the two outliers in the close table:
+the 278,904 ms event-loop maximum reported at 07:38:10 (the process was suspended for 4 min 36 s), and the
+`1006` close at 08:01:47 with 82,879 ms. They also account for the 08:01–08:03 error lines: on wake, Perpl
+REST answered `ECONNRESET` and the DB pool timed out ("Timed out fetching a new connection from the
+connection pool"); every worker recovered by itself (reconciler pass complete at 08:05:02, `/health/ready`
+200, no restart).
+
+**Trading-socket reconnects: still FAIL, and the evidence points at the server.** Leaving out the two closes
+caused by standby, slot `…sqmnb8` closed 6 times and slot `…6cc1x5` 9 times in 53.4 min, all
+`1008 ping timeout` ("no response to the server's ping"), against a budget of 2 per hour. Outside standby
+the event loop's worst delay before any of them was 278 ms (p99 ~35 ms), so our process was not late with
+its pong. Twice the two sockets (separate accounts, separate connections) were closed within 4–5 ms of
+each other (07:23:58.461/.466, 07:31:49.950/.954), and the same happened at 07:08:27.722/.725 before the
+window. Two independent sockets timing out in the same instant points to a server-side sweep, not this
+process. Every order whose outcome a close interrupts is decided on-chain (lot rule), so no money was
+affected; the reconnects are a known gap to raise with Perpl.
+
+**Problems the soak found, all fixed (commits on Laxu-Monad):**
+
+1. *Mint bookkeeping raced the indexer for the pool row* (20:44 on 10-05, A's open): Prisma's upsert lost
+   to the indexer's `PoolCreated` handler and aborted the mint transaction; the resume finished it 80 s
+   later. Fix: `INSERT … ON CONFLICT DO NOTHING` from all three writers (`lendingPoolRows.ts`).
+2. *A settled position's claim was never pushed* (A, 07:24): the genesis-mint `Transfer` had been dropped
+   (its catch-up ran before the mint's DB row existed), so `pushClaims` found no holders and marked the pass
+   done. Fix: the creator is always a claim candidate (the chain balance decides). A's claim was then pushed
+   by the backend ([0x090ce148…](https://testnet.monadvision.com/tx/0x090ce148845be7724b26ffe204842fb93f1308f226adfccee141748e33e4a64b)).
+3. *A BTC buy-side IOC with `p: 0` never fills* (B's close, 07:43–07:56, 9 resume attempts): reproduced on
+   slot 1 — the BTC `open_short` (sell) with `p: 0` filled, the `close_short` (buy) with `p: 0` was
+   canceled unfilled (`st:5 sr:16`) against a full book, and the same close at mark + 1% filled at once.
+   ETH `close_short` with `p: 0` filled. Fix: every market order carries an explicit limit at the slippage
+   bound (mark × (1 ± slippage), rounded against the trader). B's close then went through on the next resume.
+4. *Indexer catch-up after an outage was slow* (the session's 10 h gap left 118,700 blocks to backfill): it
+   ran 18 queries per 100-block window (~37 min). Fix: one multi-event `getLogs` per window (~3.5 min here).
+
+Also: the first soak attempt (10-05 20:47) was cut off when the session ended; its two positions stayed open
+and unattended for ~10 h (still matching Perpl exactly; `isPriceFresh` false until the first push after
+restart, as designed) and were reused for this run. The backend was restarted twice inside the window to
+deploy fixes 2 and 3 (07:39:30, 07:57:40).
