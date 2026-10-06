@@ -1,7 +1,7 @@
 "use client";
 
 import { PrivyProvider } from "@privy-io/react-auth";
-import { robinhoodTestnet } from "@/lib/chain";
+import { monadTestnet } from "@/lib/chain";
 import { env } from "@/lib/env";
 import TriggerNotifier from "@/components/TriggerNotifier";
 import { FaucetProvider } from "@/lib/faucet";
@@ -17,8 +17,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
       config={{
         loginMethods: ["email", "wallet", "google"],
         embeddedWallets: { ethereum: { createOnLogin: "users-without-wallets" } },
-        defaultChain: robinhoodTestnet,
-        supportedChains: [robinhoodTestnet],
+        defaultChain: monadTestnet,
+        supportedChains: [monadTestnet],
       }}
     >
       <SessionProvider>

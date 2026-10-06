@@ -1,6 +1,6 @@
 import { createWalletClient, custom } from "viem";
 import type { ConnectedWallet } from "@privy-io/react-auth";
-import { robinhoodTestnet } from "./chain";
+import { monadTestnet } from "./chain";
 
 /**
  * A viem wallet client over the Privy wallet's provider — external or
@@ -9,11 +9,11 @@ import { robinhoodTestnet } from "./chain";
  * address, which is what the backend and contracts check against.
  */
 export async function getWalletClient(wallet: ConnectedWallet) {
-  await wallet.switchChain(robinhoodTestnet.id);
+  await wallet.switchChain(monadTestnet.id);
   const provider = await wallet.getEthereumProvider();
   return createWalletClient({
     account: wallet.address as `0x${string}`,
-    chain: robinhoodTestnet,
+    chain: monadTestnet,
     transport: custom(provider),
   });
 }
