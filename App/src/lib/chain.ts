@@ -1,11 +1,11 @@
 import { createPublicClient, defineChain, http, type PublicClient } from "viem";
 import { env } from "./env";
 
-/** Robinhood Chain isn't in `viem/chains`, so it is defined from env. */
-export const robinhoodTestnet = defineChain({
+/** Monad Testnet isn't in `viem/chains`, so it is defined from env. */
+export const monadTestnet = defineChain({
   id: env.chainId,
-  name: "Robinhood Chain Testnet",
-  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  name: "Monad Testnet",
+  nativeCurrency: { name: "Monad", symbol: "MON", decimals: 18 },
   rpcUrls: {
     default: {
       http: [env.rpcUrl],
@@ -25,7 +25,7 @@ let client: PublicClient | undefined;
 export function publicClient(): PublicClient {
   if (!client) {
     if (!env.rpcUrl) throw new Error("NEXT_PUBLIC_RPC_URL is not set");
-    client = createPublicClient({ chain: robinhoodTestnet, transport: http(env.rpcUrl) }) as PublicClient;
+    client = createPublicClient({ chain: monadTestnet, transport: http(env.rpcUrl) }) as PublicClient;
   }
   return client;
 }
