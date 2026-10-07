@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { formatUnits, type Address } from "viem";
 import {
   clearTriggers,
+  readCurrentMark,
   readHolderState,
   resetTriggersToDefault,
   setTriggers,
@@ -79,6 +80,8 @@ export default function TriggersPanel({
 
   const [triggers, setTriggerState] = useState<HolderTriggers | null>(null);
   const [holder, setHolder] = useState<HolderState | null>(null);
+  /** The token's on-chain read of Perpl's mark: what the contract checks a level against. */
+  const [chainMark, setChainMark] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [sl, setSl] = useState("");
   const [tp, setTp] = useState("");
@@ -86,19 +89,25 @@ export default function TriggersPanel({
 
   const load = useCallback(async () => {
     if (!account) return;
-    const [next, state] = await Promise.all([getHolderTriggers(token, account), readHolderState(token, account, pool)]);
+    const [next, state, mark] = await Promise.all([
+      getHolderTriggers(token, account),
+      readHolderState(token, account, pool),
+      readCurrentMark(token),
+    ]);
     setTriggerState(next);
     setHolder(state);
+    setChainMark(mark.price);
   }, [token, account, pool]);
 
   useEffect(() => {
     if (!account) return;
     let cancelled = false;
-    Promise.all([getHolderTriggers(token, account), readHolderState(token, account, pool)])
-      .then(([next, state]) => {
+    Promise.all([getHolderTriggers(token, account), readHolderState(token, account, pool), readCurrentMark(token)])
+      .then(([next, state, mark]) => {
         if (cancelled) return;
         setTriggerState(next);
         setHolder(state);
+        setChainMark(mark.price);
       })
       .catch((error) => console.error("could not load SL/TP", error));
     return () => {
@@ -132,7 +141,7 @@ export default function TriggersPanel({
   const hasLevels = triggers.stopLoss !== null || triggers.takeProfit !== null;
   const badge = triggers.usingDefault ? (hasLevels ? "DEFAULT" : "NONE") : "CUSTOM";
   const canReset = !triggers.usingDefault && triggers.defaultsActive;
-  const mark = triggers.markPrice === null ? null : Number(triggers.markPrice);
+  const mark = chainMark;
   const problem = editing ? levelProblem(side, sl.trim(), tp.trim(), mark) : null;
   const liqWarning = editing && pastLiquidation(side, sl.trim(), triggers.estLiquidationPrice);
   const fmtShares = (shares: bigint) => Number(formatUnits(shares, holder.decimals)).toLocaleString();

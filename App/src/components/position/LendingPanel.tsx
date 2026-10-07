@@ -15,6 +15,7 @@ import {
   type LendingState,
 } from "@/lib/actions";
 import type { PublicPosition } from "@/lib/api";
+import { useAsset } from "@/lib/asset";
 import { publicClient } from "@/lib/chain";
 import { useFaucet } from "@/lib/faucet";
 import { useSession } from "@/lib/session";
@@ -23,7 +24,7 @@ import { Action, Note } from "./HolderActions";
 import { CELL_BG, HAIRLINE, MONO, Panel, PanelHead } from "./shared";
 
 /**
- * Borrow USDG against this position's tokens, through its LendingPool:
+ * Borrow the asset against this position's tokens, through its LendingPool:
  * post tokens as collateral, borrow up to the LTV cap, repay, withdraw.
  * Borrow counts tokens still in the wallet too: when the amount needs them it
  * posts them first (approve → deposit → borrow), showing each step.
@@ -99,6 +100,7 @@ export default function LendingPanel({
 }) {
   const { wallet } = useSession();
   const refreshFaucet = useFaucet().refresh;
+  const { symbol } = useAsset();
   const account = wallet?.address as Address | undefined;
   const token = live.positionTokenAddress as Address;
   const pool = live.lendingPoolAddress as Address | null;
@@ -184,7 +186,7 @@ export default function LendingPanel({
   // Per mode: the cap for "max", what a valid amount must stay under, and why not.
   const repayAll = (() => {
     const withBuffer = state.debt + (state.debt * REPAY_BUFFER_BPS) / BPS;
-    return withBuffer <= state.walletUsdg ? withBuffer : state.walletUsdg;
+    return withBuffer <= state.walletAsset ? withBuffer : state.walletAsset;
   })();
   const max: Record<Mode, bigint> = {
     deposit: state.walletShares,
@@ -206,7 +208,7 @@ export default function LendingPanel({
     else if (mode === "borrow" && closed) problem = "The position is closed; borrowing is off";
     else if (mode === "borrow" && parsed > state.borrowCapacity) problem = "More than you can borrow";
     else if (mode === "repay" && state.debt === BigInt(0)) problem = "Nothing to repay";
-    else if (mode === "repay" && parsed > state.walletUsdg) problem = "More USDG than your wallet holds";
+    else if (mode === "repay" && parsed > state.walletAsset) problem = `More ${symbol} than your wallet holds`;
     else if (mode === "withdraw" && parsed > state.collateralShares) problem = "More than you have posted";
     else if (mode === "withdraw") {
       const after = healthAfterWithdraw(state, parsed);
@@ -235,7 +237,7 @@ export default function LendingPanel({
       else await withdrawCollateral(client, pool, parsed);
       const done: Record<Mode, string> = {
         deposit: "Collateral posted",
-        borrow: `Borrowed ${fmt(parsed, decimals)} USDG`,
+        borrow: `Borrowed ${fmt(parsed, decimals)} ${symbol}`,
         repay: "Repaid",
         withdraw: "Collateral withdrawn to your wallet",
       };
@@ -336,7 +338,7 @@ export default function LendingPanel({
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <label htmlFor="laxu-lend-amount" style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#a79bd0" }}>
-              {mode === "deposit" || mode === "withdraw" ? "TOKENS" : "USDG"}
+              {mode === "deposit" || mode === "withdraw" ? "TOKENS" : symbol}
             </label>
             <button
               type="button"
@@ -395,7 +397,7 @@ export default function LendingPanel({
           <Note>Posts the {fmt(sharesToPost, decimals, 4)} tokens in your wallet as collateral first, then borrows.</Note>
         )}
 
-        {flow && <BorrowSteps flow={flow} decimals={decimals} />}
+        {flow && <BorrowSteps flow={flow} decimals={decimals} symbol={symbol} />}
 
         <Action
           label={
@@ -431,12 +433,12 @@ type Flow = { shares: bigint; amount: bigint; step: BorrowStep; failed: boolean 
 const STEP_ORDER: BorrowStep[] = ["approve", "deposit", "borrow"];
 
 /** approve → deposit → borrow, one row each. A skipped approval shows as done once the deposit starts. */
-function BorrowSteps({ flow, decimals }: { flow: Flow; decimals: number }) {
+function BorrowSteps({ flow, decimals, symbol }: { flow: Flow; decimals: number; symbol: string }) {
   const current = STEP_ORDER.indexOf(flow.step);
   const labels: Record<BorrowStep, string> = {
     approve: "Approve the pool to take your tokens",
     deposit: `Deposit ${fmt(flow.shares, decimals, 4)} tokens as collateral`,
-    borrow: `Borrow ${fmt(flow.amount, decimals)} USDG`,
+    borrow: `Borrow ${fmt(flow.amount, decimals)} ${symbol}`,
   };
   return (
     <ol aria-label="Borrow steps" style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>

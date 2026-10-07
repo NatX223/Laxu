@@ -1,5 +1,6 @@
 "use client";
 
+import { useAsset } from "@/lib/asset";
 import { cat, money } from "./data";
 import AccountMenu from "../auth/AccountMenu";
 import FaucetButton from "../faucet/FaucetButton";
@@ -7,12 +8,13 @@ import MarketMenu from "./MarketMenu";
 import type { TradeEngine } from "./engine";
 import { Disc, MONO, SERIF } from "./shared";
 
-/** Wordmark, market switcher, info toggle, wallet USDG readout and account menu. */
+/** Wordmark, market switcher, info toggle, wallet balance readout and account menu. */
 export default function TopBar({ engine }: { engine: TradeEngine }) {
   const { st, set, infoShown, balances } = engine;
 
-  // The wallet's live USDG: what a new trade can draw on.
-  const equity = balances.usdg === null ? "—" : money(balances.usdg, 2);
+  // The wallet's live balance of the asset: what a new trade can draw on.
+  const { symbol } = useAsset();
+  const equity = balances.asset === null ? "—" : money(balances.asset, 2);
 
   return (
     <div
@@ -125,7 +127,7 @@ export default function TopBar({ engine }: { engine: TradeEngine }) {
 
       <div className="laxu-topbar-right" style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1, padding: "0 6px" }}>
-          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.14em", color: "#a79bd0" }}>USDG</div>
+          <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.14em", color: "#a79bd0" }}>{symbol}</div>
           <div style={{ fontFamily: MONO, fontSize: 14, fontWeight: 600, color: "#fdfbf7" }}>{equity}</div>
         </div>
         <FaucetButton tone="amber" />

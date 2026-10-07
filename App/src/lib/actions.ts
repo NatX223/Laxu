@@ -7,6 +7,7 @@ import {
   type Address,
   type Hash,
 } from "viem";
+import { lendingPoolAbi, lendingVaultAbi, positionTokenAbi } from "./abi.generated";
 import { apiFetch } from "./api";
 import { publicClient } from "./chain";
 import { env } from "./env";
@@ -18,102 +19,14 @@ import type { LaxuWalletClient } from "./walletClient";
  *
  * Each helper waits for its receipt before resolving. For the async ones
  * (`requestDeposit` / `requestRedeem` / `requestClose`) a receipt only means
- * *requested* — the UI shows "Settling on Arcus…" until the backend fulfils
- * it. The fulfil mints the tokens (buy-in) or pays the USDG (redeem) straight
+ * *requested* — the UI shows "Settling on Perpl…" until the backend fulfils
+ * it. The fulfil mints the tokens (buy-in) or pays the asset (redeem) straight
  * to the wallet that asked. The one claim step is after a position closes and
  * settles: the backend pushes each holder's payout, and `claim()` is the
  * fallback for anyone it didn't reach.
  */
 
-// --- ABIs: only what's called here ------------------------------------------
-
-const positionTokenAbi = [
-  {
-    type: "function",
-    name: "requestDeposit",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "assets", type: "uint256" },
-      { name: "controller", type: "address" },
-      { name: "owner", type: "address" },
-    ],
-    outputs: [{ name: "requestId", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "requestRedeem",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "shares", type: "uint256" },
-      { name: "controller", type: "address" },
-      { name: "owner", type: "address" },
-    ],
-    outputs: [{ name: "requestId", type: "uint256" }],
-  },
-  /** Creator only, holding 100% of supply, no deposit pending — the contract enforces it. */
-  { type: "function", name: "requestClose", stateMutability: "nonpayable", inputs: [], outputs: [] },
-  /** After settlement: burns the caller's shares (and any redeem caught pending at close) for their USDG. */
-  { type: "function", name: "claim", stateMutability: "nonpayable", inputs: [], outputs: [{ name: "assets", type: "uint256" }] },
-  { type: "function", name: "settled", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
-  { type: "function", name: "settlementAssets", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "claimedAssets", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
-  /** One-way: opens the position to buy-ins and sets the nickname (≤ 32 bytes, "" for none). */
-  {
-    type: "function",
-    name: "list",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "_nickname", type: "string" }],
-    outputs: [],
-  },
-  { type: "function", name: "cancelDepositRequest", stateMutability: "nonpayable", inputs: [], outputs: [{ name: "assets", type: "uint256" }] },
-  { type: "function", name: "cancelRedeemRequest", stateMutability: "nonpayable", inputs: [], outputs: [{ name: "shares", type: "uint256" }] },
-  {
-    type: "function",
-    name: "pendingDepositRequest",
-    stateMutability: "view",
-    inputs: [
-      { name: "requestId", type: "uint256" },
-      { name: "controller", type: "address" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "pendingRedeemRequest",
-    stateMutability: "view",
-    inputs: [
-      { name: "requestId", type: "uint256" },
-      { name: "controller", type: "address" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  { type: "function", name: "lastDepositRequestAt", stateMutability: "view", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "lastRedeemRequestAt", stateMutability: "view", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "totalSupply", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "listed", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
-  { type: "function", name: "closed", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
-  { type: "function", name: "closeRequested", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "bool" }] },
-  { type: "function", name: "convertToAssets", stateMutability: "view", inputs: [{ name: "shares", type: "uint256" }], outputs: [{ name: "", type: "uint256" }] },
-  /** Unix seconds of the operator's last mark-price report; LendingPool refuses risk-adding calls once it is too old. */
-  { type: "function", name: "lastReportTimestamp", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  /** Personal SL/TP for the caller's own wallet balance; 0 = none for that side. Prices at 1e18. */
-  {
-    type: "function",
-    name: "setTriggers",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "stopLoss", type: "uint256" },
-      { name: "takeProfit", type: "uint256" },
-    ],
-    outputs: [],
-  },
-  /** Explicitly no triggers — the creator's defaults stop applying to the caller. */
-  { type: "function", name: "clearTriggers", stateMutability: "nonpayable", inputs: [], outputs: [] },
-  /** Back to the creator's defaults. */
-  { type: "function", name: "useDefaultTriggers", stateMutability: "nonpayable", inputs: [], outputs: [] },
-] as const;
+// --- ABIs: generated from the compiled contracts (npm run abi:gen) ----------
 
 /** PositionToken.REQUEST_CANCEL_TIMEOUT: an unfulfilled request can be taken back after this. */
 export const REQUEST_CANCEL_TIMEOUT_S = 20 * 60;
@@ -122,65 +35,19 @@ export const MAX_NICKNAME_BYTES = 32;
 /** PositionToken.BUY_IN_FEE_BPS — 2%, paid to the creator; the creator pays none on their own position. */
 export const BUY_IN_FEE_BPS = 200;
 
-const lendingPoolAbi = [
-  { type: "function", name: "depositCollateral", stateMutability: "nonpayable", inputs: [{ name: "shares", type: "uint256" }], outputs: [] },
-  { type: "function", name: "withdrawCollateral", stateMutability: "nonpayable", inputs: [{ name: "shares", type: "uint256" }], outputs: [] },
-  { type: "function", name: "collateralBalance", stateMutability: "view", inputs: [{ name: "", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "borrow", stateMutability: "nonpayable", inputs: [{ name: "amount", type: "uint256" }], outputs: [] },
-  {
-    type: "function",
-    name: "repay",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "amount", type: "uint256" }],
-    outputs: [{ name: "repaid", type: "uint256" }],
-  },
-  /** WAD (1e18). type(uint256).max with no debt; below 1e18 the borrower can be liquidated. */
-  { type: "function", name: "healthFactor", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-  /** USDG base units: principal + interest, including interest accrued since the last write. */
-  { type: "function", name: "currentDebt", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-  /** USDG base units still borrowable at the LTV cap. */
-  { type: "function", name: "availableToBorrow", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-  /** USDG base units: the posted shares' live convertToAssets value. */
-  { type: "function", name: "collateralValue", stateMutability: "view", inputs: [{ name: "user", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
-  /** Resolved once, from the position's leverage tier. */
-  { type: "function", name: "ltvBps", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "liquidationThresholdBps", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-] as const;
-
-/** LendingVault is a plain synchronous ERC-4626. */
-const vaultAbi = [
-  {
-    type: "function",
-    name: "deposit",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "assets", type: "uint256" },
-      { name: "receiver", type: "address" },
-    ],
-    outputs: [{ name: "shares", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "withdraw",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "assets", type: "uint256" },
-      { name: "receiver", type: "address" },
-      { name: "owner", type: "address" },
-    ],
-    outputs: [{ name: "shares", type: "uint256" }],
-  },
-] as const;
-
 // --- plumbing ---------------------------------------------------------------
 
-function usdg(): Address {
-  if (!env.usdgAddress) throw new Error("NEXT_PUBLIC_USDG_ADDRESS is not set");
-  return env.usdgAddress as Address;
+function assetAddr(): Address {
+  if (!env.assetAddress) throw new Error("NEXT_PUBLIC_ASSET_ADDRESS is not set");
+  return env.assetAddress as Address;
 }
 
-/** Shown in place of LendingPool's "stale oracle data" revert. */
-export const STALE_ORACLE_MESSAGE = "Prices updating, try again shortly.";
+/**
+ * Shown in place of LendingPool's "stale oracle data" revert. The pool prices
+ * its collateral off the position token, which reads Perpl's mark on-chain; it
+ * refuses risk-adding calls when that mark or the funding update is stale.
+ */
+export const STALE_ORACLE_MESSAGE = "Borrowing is paused: the Perpl price or funding update is stale. Try again shortly.";
 
 /**
  * One line for the user from whatever a write threw: a wallet rejection, the
@@ -248,10 +115,11 @@ export async function approveIfNeeded(
 
 export type OpenReservation = {
   openRequestId: string;
-  /** The reserved slot's internal Arcus wallet — where the USDG goes. */
+  /** The reserved slot's wallet — where the collateral asset goes. */
   payTo: string;
-  usdg: string;
-  /** USDG base units. */
+  /** The asset's address; checked against the one this app was built for before anything is sent. */
+  asset: string;
+  /** Asset base units. */
   amount: string;
   expiresAt: string;
 };
@@ -274,7 +142,7 @@ export type OpenRequest = {
   leverage: number;
   amount: string;
   creditedAmount: string | null;
-  /** The Arcus fill, human decimals; set from `order_filled` on. */
+  /** The Perpl fill, human decimals; set from `order_filled` on. */
   entryPrice: string | null;
   filledSize: string | null;
   paymentTxHash: string | null;
@@ -285,9 +153,9 @@ export type OpenRequest = {
 };
 
 /**
- * Open a position: reserve an internal Arcus subaccount, pay its wallet with a
- * plain USDG transfer, then report the transaction. The backend deposits it on
- * Arcus, trades, and mints the token; poll {getOpenRequest} until `minted`
+ * Open a position: reserve a Perpl account slot, pay its wallet with a plain
+ * asset transfer, then report the transaction. The backend deposits it on
+ * Perpl, trades, and mints the token; poll {getOpenRequest} until `minted`
  * (then go to the position page) or `refunded`.
  *
  * `wallet` must be the wallet the backend knows as this user — the payment is
@@ -304,7 +172,7 @@ export async function openPosition(
     market: string;
     direction: "long" | "short";
     leverage: number;
-    /** human USDG, e.g. "500" */
+    /** human amount of the asset, e.g. "500" */
     amount: string;
     /** The creator's SL/TP as human prices ("1900") — the default for everyone who buys in. */
     stopLoss?: string;
@@ -323,16 +191,16 @@ export async function openPosition(
   hooks.onReserved?.(reservation);
 
   // Never pay a lapsed reservation (the slot may be someone else's by now) or
-  // one asking for a token other than the USDG this app was built against.
+  // one asking for a token other than the asset this app was built against.
   if (Date.parse(reservation.expiresAt) <= Date.now()) {
     throw new ReservationRejected("The trading slot reservation expired before payment. Try again.");
   }
-  if (reservation.usdg.toLowerCase() !== usdg().toLowerCase()) {
+  if (reservation.asset.toLowerCase() !== assetAddr().toLowerCase()) {
     throw new ReservationRejected("The backend asked for payment in an unexpected token, so nothing was sent.");
   }
 
   const hash = await wallet.writeContract({
-    address: reservation.usdg as Address,
+    address: reservation.asset as Address,
     abi: erc20Abi,
     functionName: "transfer",
     args: [reservation.payTo as Address, BigInt(reservation.amount)],
@@ -343,7 +211,7 @@ export async function openPosition(
   return { reservation, hash };
 }
 
-/** Thrown before any USDG moves: the reservation can't safely be paid. */
+/** Thrown before any funds move: the reservation can't safely be paid. */
 export class ReservationRejected extends Error {
   constructor(message: string) {
     super(message);
@@ -351,7 +219,7 @@ export class ReservationRejected extends Error {
   }
 }
 
-/** Tell the backend the USDG transfer for `openRequestId` landed. Idempotent for the same hash. */
+/** Tell the backend the asset transfer for `openRequestId` landed. Idempotent for the same hash. */
 export const reportOpenPayment = (openRequestId: string, txHash: Hash) =>
   apiFetch<OpenRequest>(`/positions/open/${openRequestId}/paid`, {
     auth: true,
@@ -365,13 +233,13 @@ export const getOpenRequest = (openRequestId: string) =>
 // --- position token ---------------------------------------------------------
 
 /**
- * Buy in / add margin: approve USDG to the token, then queue the deposit.
+ * Buy in / add margin: approve the asset to the token, then queue the deposit.
  * Others can only buy into a listed position (2% of the amount goes to the
  * creator); the creator can top up their own position any time, fee-free.
  */
 export async function buyIn(wallet: LaxuWalletClient, positionToken: Address, assets: bigint): Promise<Hash> {
   const me = wallet.account.address;
-  await approveIfNeeded(wallet, usdg(), positionToken, assets);
+  await approveIfNeeded(wallet, assetAddr(), positionToken, assets);
   return confirm(
     await wallet.writeContract({
       address: positionToken,
@@ -477,18 +345,33 @@ export async function claimSettlement(wallet: LaxuWalletClient, positionToken: A
   );
 }
 
+/**
+ * The token's own read of Perpl's mark price, on-chain (`currentMark()`).
+ * `price` is human USD; `live` is false when Perpl could not be read and
+ * `price` is the last known one. This is also the price the contract checks a
+ * stop loss / take profit against.
+ */
+export async function readCurrentMark(positionToken: Address): Promise<{ price: number; live: boolean }> {
+  const [price, live] = await publicClient().readContract({
+    address: positionToken,
+    abi: positionTokenAbi,
+    functionName: "currentMark",
+  });
+  return { price: Number(price) / 1e18, live };
+}
+
 export type HolderState = {
   listed: boolean;
   closed: boolean;
   closeRequested: boolean;
   settled: boolean;
-  /** USDG base units `claim()` would pay now: (balance + pendingRedeem) × what's left ÷ supply. 0 unless settled. */
+  /** Asset base units `claim()` would pay now: (balance + pendingRedeem) × what's left ÷ supply. 0 unless settled. */
   claimable: bigint;
   /** Shares this wallet has posted as collateral in the position's LendingPool. */
   inCollateral: bigint;
   /** What those collateral shares would claim once withdrawn. 0 unless settled. */
   collateralClaimable: bigint;
-  /** The token's decimals, which are USDG's: shares and payouts format with the same. */
+  /** The token's decimals, which are the asset's: shares and payouts format with the same. */
   decimals: number;
   balance: bigint;
   totalSupply: bigint;
@@ -577,7 +460,7 @@ export async function readHolderState(
 export type LendingState = {
   /** Position-token shares this wallet has posted. */
   collateralShares: bigint;
-  /** Their live value, USDG base units. */
+  /** Their live value, asset base units. */
   collateralValue: bigint;
   debt: bigint;
   /** What the pool will lend right now, against posted collateral only. */
@@ -588,8 +471,8 @@ export type LendingState = {
    */
   borrowCapacity: bigint;
   /**
-   * The last price report is older than LendingPool.MAX_REPORT_AGE, so borrow
-   * and withdraw would revert. Never true once the position is closed.
+   * `!isPriceFresh()` on the token: its Perpl mark or funding update is too
+   * old, so borrow and withdraw would revert. Never true once the position is closed.
    */
   oracleStale: boolean;
   /** WAD; null with no debt (the contract returns uint256 max). */
@@ -598,18 +481,16 @@ export type LendingState = {
   liquidationThresholdBps: bigint;
   /** Position tokens still in the wallet. */
   walletShares: bigint;
-  /** Their live value, USDG base units. */
+  /** Their live value, asset base units. */
   walletValue: bigint;
-  /** The wallet's USDG, for repays. */
-  walletUsdg: bigint;
-  /** The position token's decimals, which are USDG's: shares and dollars format alike. */
+  /** The wallet's balance of the asset, for repays. */
+  walletAsset: bigint;
+  /** The position token's decimals, which are the asset's: shares and dollars format alike. */
   decimals: number;
 };
 
 /** LendingPool.WAD */
 export const WAD = BigInt(10) ** BigInt(18);
-/** LendingPool.MAX_REPORT_AGE, in seconds. */
-export const MAX_REPORT_AGE_S = 7 * 60;
 const BPS = BigInt(10_000);
 const MAX_UINT256 = (BigInt(1) << BigInt(256)) - BigInt(1);
 
@@ -629,11 +510,10 @@ export async function readLendingState(pool: Address, positionToken: Address, ac
     ltvBps,
     liquidationThresholdBps,
     walletShares,
-    walletUsdg,
+    walletAsset,
     decimals,
     closed,
-    lastReport,
-    block,
+    priceFresh,
   ] = await Promise.all([
       read<bigint>("collateralBalance", [account]),
       read<bigint>("collateralValue", [account]),
@@ -643,12 +523,11 @@ export async function readLendingState(pool: Address, positionToken: Address, ac
       read<bigint>("ltvBps"),
       read<bigint>("liquidationThresholdBps"),
       client.readContract({ address: positionToken, abi: erc20Abi, functionName: "balanceOf", args: [account] }),
-      client.readContract({ address: usdg(), abi: erc20Abi, functionName: "balanceOf", args: [account] }),
+      client.readContract({ address: assetAddr(), abi: erc20Abi, functionName: "balanceOf", args: [account] }),
       client.readContract({ address: positionToken, abi: erc20Abi, functionName: "decimals" }),
       readToken<boolean>("closed"),
-      readToken<bigint>("lastReportTimestamp"),
-      // The chain's clock, not the browser's: the pool compares against block.timestamp.
-      client.getBlock({ blockTag: "latest" }),
+      // The token's own freshness rule (mark and funding age against the chain's clock).
+      readToken<boolean>("isPriceFresh"),
     ]);
   const [combinedValue, walletValue] =
     walletShares === BigInt(0)
@@ -664,13 +543,13 @@ export async function readLendingState(pool: Address, positionToken: Address, ac
     debt,
     available,
     borrowCapacity: cap > debt ? cap - debt : BigInt(0),
-    oracleStale: !closed && block.timestamp - lastReport > BigInt(MAX_REPORT_AGE_S),
+    oracleStale: !closed && !priceFresh,
     healthFactor: debt === BigInt(0) || healthFactor === MAX_UINT256 ? null : healthFactor,
     ltvBps,
     liquidationThresholdBps,
     walletShares,
     walletValue,
-    walletUsdg,
+    walletAsset,
     decimals,
   };
 }
@@ -761,7 +640,7 @@ export async function borrow(wallet: LaxuWalletClient, pool: Address, amount: bi
 
 /** Over-payment is trimmed on-chain to what's owed, so "repay all" can carry a small buffer. */
 export async function repay(wallet: LaxuWalletClient, pool: Address, amount: bigint): Promise<Hash> {
-  await approveIfNeeded(wallet, usdg(), pool, amount);
+  await approveIfNeeded(wallet, assetAddr(), pool, amount);
   await simulatePool(wallet, pool, "repay", amount);
   return confirm(await wallet.writeContract({ address: pool, abi: lendingPoolAbi, functionName: "repay", args: [amount] }));
 }
@@ -769,11 +648,11 @@ export async function repay(wallet: LaxuWalletClient, pool: Address, amount: big
 // --- lending vault ----------------------------------------------------------
 
 export async function lend(wallet: LaxuWalletClient, vault: Address, assets: bigint): Promise<Hash> {
-  await approveIfNeeded(wallet, usdg(), vault, assets);
+  await approveIfNeeded(wallet, assetAddr(), vault, assets);
   return confirm(
     await wallet.writeContract({
       address: vault,
-      abi: vaultAbi,
+      abi: lendingVaultAbi,
       functionName: "deposit",
       args: [assets, wallet.account.address],
     }),
@@ -783,6 +662,6 @@ export async function lend(wallet: LaxuWalletClient, vault: Address, assets: big
 export async function withdrawLend(wallet: LaxuWalletClient, vault: Address, assets: bigint): Promise<Hash> {
   const me = wallet.account.address;
   return confirm(
-    await wallet.writeContract({ address: vault, abi: vaultAbi, functionName: "withdraw", args: [assets, me, me] }),
+    await wallet.writeContract({ address: vault, abi: lendingVaultAbi, functionName: "withdraw", args: [assets, me, me] }),
   );
 }

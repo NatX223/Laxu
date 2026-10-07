@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatUnits } from "viem";
-import { MIN_GAS_ETH } from "../faucet/FaucetButton";
+import { MIN_GAS_MON } from "../faucet/FaucetButton";
 import { getHealth, getMyPositions, type MyPosition, type SlotStats } from "@/lib/api";
+import { useAsset } from "@/lib/asset";
 import { useWalletBalances } from "@/lib/balances";
 import { useMarketRefresh, useMarkets } from "@/lib/markets";
 import { useSession } from "@/lib/session";
@@ -208,11 +209,11 @@ const MARKS_POLL_MS = 5_000;
  */
 const STREAM_FRESH_MS = 15_000;
 const HEALTH_POLL_MS = 15_000;
-/** The backend's MIN_OPEN_AMOUNT: Arcus won't withdraw under $1, which is how a refund travels. */
-export const MIN_TRADE_USDG = 1;
+/** Smallest ticket the UI offers; the backend's own minimum (Perpl's posting amount) is enforced when the slot is reserved. */
+export const MIN_TRADE_AMOUNT = 1;
 
-/** A USDG amount as the decimal string the backend wants ("50", "12.5"), never exponent notation. */
-export const usdgString = (n: number) => n.toFixed(6).replace(/\.?0+$/, "");
+/** An asset amount as the decimal string the backend wants ("50", "12.5"), never exponent notation. */
+export const amountString = (n: number) => n.toFixed(6).replace(/\.?0+$/, "");
 
 /**
  * The contract's rule for the creator's SL/TP, checked against the entry
@@ -372,6 +373,7 @@ export function useTradeEngine(liveTicks = true) {
   const { authenticated, wallet, user, login } = useSession();
   const owner = user?.walletAddress ?? null;
   const balances = useWalletBalances(owner);
+  const { symbol } = useAsset();
 
   // The user's real positions; dropped on sign-out or account switch.
   const loadPositions = useCallback(() => {
@@ -427,15 +429,15 @@ export function useTradeEngine(liveTicks = true) {
   const blocker = useMemo((): { reason: string; nudge?: boolean; signIn?: boolean } | null => {
     if (!authenticated) return { reason: "Sign in to trade", signIn: true };
     if (!wallet || !owner) return { reason: "Loading your wallet\u2026" };
-    if (!(st.size >= MIN_TRADE_USDG)) return { reason: `Minimum trade is ${MIN_TRADE_USDG} USDG` };
-    if (balances.usdg === null || balances.eth === null) return { reason: "Checking your balances\u2026" };
-    if (balances.usdg < st.size) return { reason: "Not enough USDG for this trade", nudge: true };
-    if (balances.eth <= MIN_GAS_ETH) return { reason: "Not enough ETH for gas", nudge: true };
+    if (!(st.size >= MIN_TRADE_AMOUNT)) return { reason: `Minimum trade is ${MIN_TRADE_AMOUNT} ${symbol}` };
+    if (balances.asset === null || balances.mon === null) return { reason: "Checking your balances\u2026" };
+    if (balances.asset < st.size) return { reason: `Not enough ${symbol} for this trade`, nudge: true };
+    if (balances.mon <= MIN_GAS_MON) return { reason: "Not enough MON for gas", nudge: true };
     if (slots && slots.free <= 0) return { reason: BUSY_MESSAGE };
     if (triggerProblem(st.side, st.sl, st.tp, st.px[st.market])) return { reason: "Fix the stop loss / take profit" };
     if (open.phase.kind !== "idle" && open.phase.kind !== "error") return { reason: "Opening your position\u2026" };
     return null;
-  }, [authenticated, wallet, owner, st.size, st.side, st.sl, st.tp, st.px, st.market, balances.usdg, balances.eth, slots, open.phase.kind]);
+  }, [authenticated, wallet, owner, st.size, st.side, st.sl, st.tp, st.px, st.market, balances.asset, balances.mon, symbol, slots, open.phase.kind]);
 
   const startOpen = open.start;
   const placeOrder = useCallback(() => {
@@ -448,7 +450,7 @@ export function useTradeEngine(liveTicks = true) {
       market: cat(st.market).live?.displaySymbol ?? st.market,
       direction: st.side,
       leverage: lev,
-      amount: usdgString(st.size),
+      amount: amountString(st.size),
       stopLoss: st.sl || undefined,
       takeProfit: st.tp || undefined,
     });

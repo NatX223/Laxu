@@ -2,39 +2,41 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { erc20Abi, formatEther, formatUnits, type Address } from "viem";
+import { getAsset } from "./asset";
 import { publicClient } from "./chain";
 import { env } from "./env";
 import { useFaucet } from "./faucet";
 
-/** USDG's decimals on every Arcus testnet deployment. */
-const USDG_DECIMALS = 6;
 const POLL_MS = 20_000;
 
 export type WalletBalances = {
-  /** Human decimals; null until the first read lands. */
-  usdg: number | null;
-  eth: number | null;
+  /** The collateral token, human decimals; null until the first read lands. */
+  asset: number | null;
+  /** Native MON (gas), human decimals; null until the first read lands. */
+  mon: number | null;
   refresh: () => void;
 };
 
 /**
- * The wallet's live USDG and ETH, straight from the chain — the trade ticket's
- * pre-checks can't depend on the faucet (which may be switched off). Re-reads
- * every 20s, when a faucet claim reports back, and on `refresh()`.
+ * The wallet's live collateral-token and MON balances, straight from the chain
+ * — the trade ticket's pre-checks can't depend on the faucet (which may be
+ * switched off). Re-reads every 20s, when a faucet claim reports back, and on
+ * `refresh()`.
  */
 export function useWalletBalances(address: string | null | undefined): WalletBalances {
-  const [loaded, setLoaded] = useState<{ address: string; usdg: number; eth: number } | null>(null);
+  const [loaded, setLoaded] = useState<{ address: string; asset: number; mon: number } | null>(null);
   const faucetStatus = useFaucet().status;
 
   const refresh = useCallback(() => {
-    if (!address || !env.usdgAddress || !env.rpcUrl) return;
+    if (!address || !env.assetAddress || !env.rpcUrl) return;
     const owner = address as Address;
     Promise.all([
-      publicClient().readContract({ address: env.usdgAddress as Address, abi: erc20Abi, functionName: "balanceOf", args: [owner] }),
+      getAsset(),
+      publicClient().readContract({ address: env.assetAddress as Address, abi: erc20Abi, functionName: "balanceOf", args: [owner] }),
       publicClient().getBalance({ address: owner }),
     ])
-      .then(([usdg, eth]) =>
-        setLoaded({ address, usdg: Number(formatUnits(usdg, USDG_DECIMALS)), eth: Number(formatEther(eth)) }),
+      .then(([asset, held, mon]) =>
+        setLoaded({ address, asset: Number(formatUnits(held, asset.decimals)), mon: Number(formatEther(mon)) }),
       )
       .catch((error) => console.error("could not read wallet balances", error));
   }, [address]);
@@ -51,5 +53,5 @@ export function useWalletBalances(address: string | null | undefined): WalletBal
   }, [address, refresh]);
 
   const current = address && loaded?.address === address ? loaded : null;
-  return { usdg: current?.usdg ?? null, eth: current?.eth ?? null, refresh };
+  return { asset: current?.asset ?? null, mon: current?.mon ?? null, refresh };
 }

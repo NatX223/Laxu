@@ -176,7 +176,7 @@ export function derive(series: Series, s: ViewState, cfg: PositionConfig) {
     navChg: (up ? "+" : "") + navPct.toFixed(2) + "%",
     navChgAbs: (up ? "+" : "−") + compact(Math.abs(last.nav - DEPOSIT)),
     pnlColor,
-    lastReport: "3m 12s ago",
+    fundingUpdated: "3m ago",
 
     stats: [
       { k: "ENTRY", v: usd(ENTRY), c: "#fdfbf7" },

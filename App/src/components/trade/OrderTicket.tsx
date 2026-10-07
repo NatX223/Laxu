@@ -1,10 +1,11 @@
 "use client";
 
+import { useAsset } from "@/lib/asset";
 import { hoursHint } from "@/lib/markets";
 import { FaucetNudge } from "../faucet/FaucetButton";
 import { SIZE_CHIPS, cat, money } from "./data";
 import type { MarketView } from "./derive";
-import { liqOf, triggerProblem, usdgString, type TradeEngine } from "./engine";
+import { liqOf, triggerProblem, amountString, type TradeEngine } from "./engine";
 import { MONO } from "./shared";
 
 const LABEL: React.CSSProperties = { fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#a79bd0" };
@@ -24,6 +25,7 @@ const INPUT: React.CSSProperties = {
 export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt: MarketView }) {
   const { st, set, lev, balances, blocker, open, actions } = engine;
   const { mark, dp } = mkt;
+  const { symbol } = useAsset();
 
   const market = cat(st.market);
   const levMax = market.lev;
@@ -36,7 +38,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
   // An open is in flight: the progress modal is up and the ticket waits.
   const filling = open.phase.kind === "reserving" || open.phase.kind === "paying" || open.phase.kind === "tracking";
   const blocked = Boolean(blocker && !blocker.signIn);
-  const walletUsdg = balances.usdg;
+  const walletAsset = balances.asset;
   const slTpProblem = triggerProblem(st.side, st.sl, st.tp, mark ?? undefined);
   // A stop past the liquidation price never gets to fire.
   const slPastLiq =
@@ -127,9 +129,9 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
 
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={LABEL}>SIZE (USDG)</div>
+            <div style={LABEL}>SIZE ({symbol})</div>
             <div style={{ fontFamily: MONO, fontSize: 10.5, color: "#998dbd" }}>
-              wallet {walletUsdg === null ? "\u2014" : money(walletUsdg, 2)}
+              wallet {walletAsset === null ? "\u2014" : money(walletAsset, 2)}
             </div>
           </div>
           <input
@@ -144,7 +146,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
                 onClick={() => {
                   // MAX: the whole wallet balance, floored to the cent.
                   if (v === "max") {
-                    if (walletUsdg !== null) set("size", Number(usdgString(Math.floor(walletUsdg * 100) / 100)));
+                    if (walletAsset !== null) set("size", Number(amountString(Math.floor(walletAsset * 100) / 100)));
                   } else set("size", v);
                 }}
                 className="laxu-size-chip"
@@ -248,7 +250,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
           ))}
         </div>
 
-        <FaucetNudge tradeUsdg={st.size} />
+        <FaucetNudge tradeAmount={st.size} />
 
         <button
           type="button"

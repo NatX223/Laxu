@@ -12,7 +12,7 @@ export default function StateGrid({ vals }: { vals: PositionVals }) {
   return (
     <Panel>
       <PanelHead label="POSITION STATE">
-        <div style={{ fontSize: 11, fontWeight: 600, color: "#a79bd0" }}>last oracle report {vals.lastReport}</div>
+        <div style={{ fontSize: 11, fontWeight: 600, color: "#a79bd0" }}>funding updated {vals.fundingUpdated}</div>
       </PanelHead>
       <div className={vals.stats.length % 4 ? "laxu-state-grid laxu-state-grid--3" : "laxu-state-grid"} style={{ display: "grid", gap: 1, background: HAIRLINE }}>
         {vals.stats.map((c) => (

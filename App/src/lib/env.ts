@@ -3,21 +3,38 @@
  * is written out literally because Next inlines them at build time by exact
  * name — a computed `process.env[name]` would come back undefined in the browser.
  */
+const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000").replace(/\/$/, "");
+
 export const env = {
   privyAppId: process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "",
-  chainId: Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 0),
+  /** Monad testnet. */
+  chainId: Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 10143),
   rpcUrl: process.env.NEXT_PUBLIC_RPC_URL ?? "",
   rpcWsUrl: process.env.NEXT_PUBLIC_RPC_WS_URL ?? "",
-  explorerUrl: process.env.NEXT_PUBLIC_EXPLORER_URL ?? "",
+  explorerUrl: (process.env.NEXT_PUBLIC_EXPLORER_URL || "https://testnet.monadvision.com").replace(/\/$/, ""),
   /** Laxu backend base URL. */
-  apiUrl: (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000").replace(/\/$/, ""),
-  /** Perpl public market data — candles over REST, live bars over WebSocket. */
+  apiUrl,
+  /**
+   * Perpl's public REST. Perpl answers it with CORS headers for its own origin
+   * only, so the browser reads it through `marketDataBase` instead; this is
+   * the upstream the backend proxies, and the base a deployment that Perpl
+   * allow-lists could point `marketDataBase` at.
+   */
   perplApiUrl: (process.env.NEXT_PUBLIC_PERPL_API_URL ?? "https://testnet.perpl.xyz/api").replace(/\/$/, ""),
-  perplWsUrl: process.env.NEXT_PUBLIC_PERPL_WS_URL ?? "wss://testnet.perpl.xyz/v1/ws",
+  /** Perpl's market-data WebSocket host. Refused for browser origins, so unused by default (see lib/perplMarketData.ts). */
+  perplWsUrl: (process.env.NEXT_PUBLIC_PERPL_WS_URL ?? "wss://testnet.perpl.xyz").replace(/\/$/, ""),
+  /** Perpl's trading app, for "view on Perpl" links. */
+  perplAppUrl: (process.env.NEXT_PUBLIC_PERPL_APP_URL ?? "https://testnet.perpl.xyz").replace(/\/$/, ""),
+  /**
+   * Where the candle, book, ticker and context reads go. Defaults to the Laxu
+   * backend's cached proxy (`GET /market-data/v1/...`, same paths as Perpl's
+   * REST). Point it at `perplApiUrl` to call Perpl directly.
+   */
+  marketDataBase: (process.env.NEXT_PUBLIC_MARKET_DATA_BASE || `${apiUrl}/market-data`).replace(/\/$/, ""),
   /** Market logos, used only when the backend is unreachable (it resolves logos itself). */
   perplBrandingUrl: (process.env.NEXT_PUBLIC_PERPL_BRANDING_URL ?? "https://branding.testnet.perpl.xyz").replace(/\/$/, ""),
-  /** Asset address, for approvals ahead of buy-ins, repays and lending. */
+  /** The collateral token's address, for approvals ahead of buy-ins, repays and lending. */
   assetAddress: process.env.NEXT_PUBLIC_ASSET_ADDRESS ?? "",
   /** A public testnet-MON faucet, linked when ours is too low to send gas. */
-  monFaucetUrl: process.env.NEXT_PUBLIC_MON_FAUCET_URL ?? "",
+  monFaucetUrl: process.env.NEXT_PUBLIC_MON_FAUCET_URL || process.env.NEXT_PUBLIC_ETH_FAUCET_URL || "",
 };

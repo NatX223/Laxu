@@ -47,7 +47,7 @@ export type LaxuUser = { walletAddress: string; tag: string; createdAt: string }
 export type NavPoint = { time: number; navPerToken: string };
 export type NavHistory = { entry: NavPoint; points: NavPoint[]; closed: boolean };
 
-/** Open → Closing (unwinding on Arcus) → Settling (returning funds) → Settled (holders claim). */
+/** Open → Closing (unwinding on Perpl) → Settling (returning funds) → Settled (holders claim). */
 export type Lifecycle = "open" | "closing" | "settling" | "settled";
 
 export type PublicPosition = {
@@ -55,9 +55,11 @@ export type PublicPosition = {
   status: "open" | "closed" | "settled";
   lifecycle: Lifecycle;
   symbol: string | null;
-  /** Arcus market name, e.g. "ETH-USD". */
-  arcusMarket: string | null;
-  /** Null when Arcus has no logo — MarketIcon draws a letter avatar. */
+  /** Perpl market name, e.g. "ETH-USD". */
+  venueMarket: string | null;
+  /** Perpl's API market id — what its candles, book and trades endpoints take. */
+  venueMarketId: number | null;
+  /** Null when Perpl has no logo — MarketIcon draws a letter avatar. */
   logoUrl: string | null;
   fullAssetName: string | null;
   direction: "long" | "short";
@@ -106,7 +108,7 @@ export type DiscoveryCard = {
   isAtRisk: boolean;
   isCollateralized: boolean;
   holderCount: number;
-  /** All-time USDG bought in, 2dp. */
+  /** All-time collateral bought in, 2dp. */
   buyInVolume: string;
   buyInFeePct: string;
   hasDefaultTriggers: boolean;
@@ -136,9 +138,9 @@ export type PortfolioHolding = {
   position: DiscoveryCard;
   /** Token units, human decimal. */
   shares: string;
-  /** shares × NAV, USDG 2dp. */
+  /** shares × NAV, 2dp. */
   value: string;
-  /** Bought in (fees included) minus redeemed, USDG 2dp. Tokens received by transfer carry no cost basis. */
+  /** Bought in (fees included) minus redeemed, 2dp. Tokens received by transfer carry no cost basis. */
   netDeposited: string;
   pnl: string;
   /** Of `shares`, how many sit in a LendingPool. */
@@ -147,12 +149,12 @@ export type PortfolioHolding = {
   repayToClaim: boolean;
 };
 
-/** A buy-in or redeem request still settling on Arcus. */
+/** A buy-in or redeem request still settling on Perpl. */
 export type PortfolioPending = {
   /** Position token address. */
   position: string;
   type: "buy_in" | "redeem";
-  /** USDG for a buy-in, token units for a redeem. */
+  /** The collateral asset for a buy-in, token units for a redeem. */
   amount: string;
   requestedAt: string;
   cancellableAt: string;
@@ -179,7 +181,7 @@ export type HolderTriggers = {
   defaultTakeProfit: string | null;
   /** The token's stored mark — a level already crossed here is rejected on-chain. */
   markPrice: string | null;
-  /** Estimate only: Arcus publishes no liquidation price. */
+  /** Estimate only: Perpl publishes no per-position liquidation price. */
   estLiquidationPrice: string | null;
 };
 
@@ -191,7 +193,7 @@ export type TriggerExit = {
   id: string;
   position: { address: string; name: string; nickname: string };
   kind: "stop_loss" | "take_profit";
-  /** USDG paid, 2dp. */
+  /** Collateral paid out, 2dp. */
   assets: string;
   shares: string;
   txHash: string;
@@ -202,34 +204,41 @@ export type TriggerExit = {
 export const getTriggerExits = (address: string) =>
   apiFetch<{ triggerExits: TriggerExit[] }>(`/users/${address}/trigger-exits`);
 
-/** USDG already paid to `holder` out of a settled position, human decimal. */
+/** The asset already paid to `holder` out of a settled position, human decimal. */
 export const getClaimed = (token: string, holder: string) =>
   apiFetch<{ assets: string }>(`/positions/token/${token}/claims/${holder}`);
 
 // --- test funds faucet (testnet only) ---------------------------------------
 
-/** Public: whether to offer test funds at all, even to a signed-out visitor. */
-export type FaucetConfig = { enabled: boolean; usdgAmount: string | null };
+/**
+ * Public: whether to offer test funds at all, even to a signed-out visitor.
+ * `assetAmount` is what a claim is expected to pay. The backend's external
+ * faucet and its fallback transfer pay different amounts, so the UI never
+ * quotes it as a promise; it reports what actually arrived.
+ */
+export type FaucetConfig = { enabled: boolean; assetAmount: string | null };
 
 export type FaucetStatus = {
   enabled: true;
   canClaim: boolean;
   /** ISO time the cooldown (or the per-IP limit) ends; null when `canClaim`. */
   nextClaimAt: string | null;
-  /** Human USDG per claim, e.g. "1000". */
-  usdgAmount: string;
+  /** Human amount a claim is expected to pay, e.g. "1000". */
+  assetAmount: string;
   /** The user's live on-chain balances, human decimals. */
-  balances: { usdg: string; eth: string };
-  /** The faucet itself is below its ETH reserve — claims send USDG only. */
+  balances: { asset: string; native: string };
+  /** The faucet itself is below its gas reserve: claims send the asset only. */
   faucetLow: boolean;
 };
 
 export type FaucetClaimResult = {
-  usdgTxHash: string;
-  ethTxHash: string | null;
-  /** The faucet was too low on ETH to top the user up; USDG still went out. */
-  ethSkipped: boolean;
+  assetTxHash: string;
+  nativeTxHash: string | null;
+  /** The faucet was too low on MON to top the user up; the asset still went out. */
+  nativeSkipped: boolean;
   nextClaimAt: string;
+  /** Not sent by the backend today. If it ever is, it is what the toast shows. */
+  assetAmount?: string;
 };
 
 export const getFaucetConfig = () => apiFetch<FaucetConfig>("/faucet/config");
@@ -260,7 +269,7 @@ export type MyPosition = {
   positionTokenAddress: string | null;
   /** Null while createPool is still being retried. */
   lendingPoolAddress: string | null;
-  /** USDG base units (6 dp). */
+  /** Collateral base units. */
   requestedAmount: string;
   depositedAmount: string | null;
   /** 1e18 fixed point. */

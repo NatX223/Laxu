@@ -128,7 +128,7 @@ export default function LeverageView({
     [],
   );
 
-  const market = live?.arcusMarket ?? "ETH-USD";
+  const market = live?.venueMarket ?? "ETH-USD";
   const base = live?.symbol ?? market.split("-")[0];
   const side = live?.direction ?? previewSide;
 

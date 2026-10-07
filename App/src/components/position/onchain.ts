@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import type { Address } from "viem";
+import { positionTokenAbi } from "@/lib/abi.generated";
 import type { PublicPosition } from "@/lib/api";
+import { useAsset } from "@/lib/asset";
 import { publicClient } from "@/lib/chain";
 import { compact, usd } from "./data";
 import type { Stat } from "./derive";
@@ -10,77 +12,119 @@ import type { Stat } from "./derive";
 /**
  * The position token's own figures, read straight off the contract — what the
  * header and the state grid show for a minted position instead of the
- * prototype's sample numbers.
+ * prototype's sample numbers. The mark is the token's own on-chain read of
+ * Perpl's price (`currentMark()`): Laxu's backend cannot set it.
  */
 
 const POLL_MS = 15_000;
 const PRICE_SCALE = 1e18;
-/** `size` is the base asset at 6 dp; capital, funding and totalAssets are USDG base units. */
+/** `size` is the base asset at 6 dp, whatever the market's own lot size. */
 const SIZE_SCALE = 1e6;
-const USDG_SCALE = 1e6;
+/** PositionToken.ENTRY_TOLERANCE_BPS: the entry may differ from Perpl's by this much. */
+const ENTRY_TOLERANCE_BPS = 50;
 
-const tokenAbi = [
-  { type: "function", name: "symbol", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "string" }] },
-  { type: "function", name: "entryPrice", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "markPrice", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "size", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "fundingAccrued", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "int256" }] },
-  { type: "function", name: "lastReportTimestamp", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "totalAssets", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "totalSupply", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-  { type: "function", name: "navPerShare", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
-] as const;
+/** Our position next to Perpl's, from `venueDrift()`. Sizes in the base asset, entries in USD. */
+export type VenueDrift = {
+  ourSize: number;
+  venueSize: number;
+  ourEntry: number;
+  venueEntry: number;
+  /** False when Perpl has no open position for the slot's account. */
+  venueExists: boolean;
+  /** Size matches exactly and the entry is within 0.5%: what the token itself enforces at every fill. */
+  verified: boolean;
+};
 
-/** Human numbers: prices and NAV in USD, size in the base asset, funding in USDG (positive = received). */
+/** Human numbers: prices and NAV in USD, size in the base asset, funding in the asset (positive = received). */
 export type TokenState = {
   ticker: string;
   entry: number;
+  /** Perpl's mark, read on-chain; the last known one when `markLive` is false. */
   mark: number;
+  /** False when Perpl could not be read on-chain: `mark` is the last known value. */
+  markLive: boolean;
+  /** `isPriceFresh()`: a live mark and a funding update inside the token's age limits. */
+  priceFresh: boolean;
   size: number;
   funding: number;
-  /** unix seconds; 0 before the first report */
-  lastReport: number;
+  /** unix seconds of the last funding update; 0 before the first */
+  lastFunding: number;
   totalAssets: number;
   supply: number;
   navPerToken: number;
+  /** NAV against its genesis 1.0, in percent (`currentPnLBps() / 100`). */
+  pnlPct: number;
+  closed: boolean;
+  /** Null when the venue could not be read, or the position is closed. */
+  drift: VenueDrift | null;
 };
 
-async function readTokenState(token: Address): Promise<TokenState> {
-  const read = <T>(functionName: (typeof tokenAbi)[number]["name"]) =>
-    publicClient().readContract({ address: token, abi: tokenAbi, functionName } as never) as Promise<T>;
-  const [ticker, entry, mark, size, funding, lastReport, totalAssets, supply, nav] = await Promise.all([
-    read<string>("symbol"),
-    read<bigint>("entryPrice"),
-    read<bigint>("markPrice"),
-    read<bigint>("size"),
-    read<bigint>("fundingAccrued"),
-    read<bigint>("lastReportTimestamp"),
-    read<bigint>("totalAssets"),
-    read<bigint>("totalSupply"),
-    read<bigint>("navPerShare"),
-  ]);
+async function readTokenState(token: Address, decimals: number): Promise<TokenState> {
+  const read = <T>(functionName: string) =>
+    publicClient().readContract({ address: token, abi: positionTokenAbi, functionName } as never) as Promise<T>;
+  const [ticker, entry, [mark, markLive], priceFresh, size, funding, lastFunding, totalAssets, supply, nav, pnlBps, closed, drift] =
+    await Promise.all([
+      read<string>("symbol"),
+      read<bigint>("entryPrice"),
+      read<readonly [bigint, boolean]>("currentMark"),
+      read<boolean>("isPriceFresh"),
+      read<bigint>("size"),
+      read<bigint>("fundingAccrued"),
+      read<bigint>("lastFundingTimestamp"),
+      read<bigint>("totalAssets"),
+      read<bigint>("totalSupply"),
+      read<bigint>("navPerShare"),
+      read<bigint>("currentPnLBps"),
+      read<boolean>("closed"),
+      // A venue read can fail on its own; the rest of the page must not.
+      read<readonly [bigint, bigint, bigint, bigint, boolean]>("venueDrift").catch(() => null),
+    ]);
+  const unit = 10 ** decimals;
+  const entryNum = Number(entry) / PRICE_SCALE;
+  let venue: VenueDrift | null = null;
+  if (drift && !closed) {
+    const [ourSize, venueSize, ourEntry, venueEntry, venueExists] = drift;
+    const entryGap = ourEntry > BigInt(0) ? (ourEntry > venueEntry ? ourEntry - venueEntry : venueEntry - ourEntry) : BigInt(0);
+    venue = {
+      ourSize: Number(ourSize) / SIZE_SCALE,
+      venueSize: Number(venueSize) / SIZE_SCALE,
+      ourEntry: Number(ourEntry) / PRICE_SCALE,
+      venueEntry: Number(venueEntry) / PRICE_SCALE,
+      venueExists,
+      verified:
+        venueExists &&
+        ourSize === venueSize &&
+        entryGap * BigInt(10_000) <= ourEntry * BigInt(ENTRY_TOLERANCE_BPS),
+    };
+  }
   return {
     ticker,
-    entry: Number(entry) / PRICE_SCALE,
+    entry: entryNum,
     mark: Number(mark) / PRICE_SCALE,
+    markLive,
+    priceFresh,
     size: Number(size) / SIZE_SCALE,
-    funding: Number(funding) / USDG_SCALE,
-    lastReport: Number(lastReport),
-    totalAssets: Number(totalAssets) / USDG_SCALE,
-    // the token's decimals are USDG's
-    supply: Number(supply) / USDG_SCALE,
+    funding: Number(funding) / unit,
+    lastFunding: Number(lastFunding),
+    totalAssets: Number(totalAssets) / unit,
+    // the token's decimals are the asset's
+    supply: Number(supply) / unit,
     navPerToken: Number(nav) / PRICE_SCALE,
+    pnlPct: Number(pnlBps) / 100,
+    closed,
+    drift: venue,
   };
 }
 
-/** Polled, so the mark, funding and NAV follow the operator's reports. */
+/** Polled, so the mark, funding and NAV follow the chain: Perpl's mark is read live, funding as it is reported. */
 export function useTokenState(token: string | undefined): TokenState | null {
   const [state, setState] = useState<{ token: string; value: TokenState } | null>(null);
+  const { decimals } = useAsset();
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     const load = () =>
-      readTokenState(token as Address)
+      readTokenState(token as Address, decimals)
         .then((value) => {
           if (!cancelled) setState({ token, value });
         })
@@ -91,7 +135,7 @@ export function useTokenState(token: string | undefined): TokenState | null {
       cancelled = true;
       clearInterval(id);
     };
-  }, [token]);
+  }, [token, decimals]);
   return state && state.token === token ? state.value : null;
 }
 
@@ -118,12 +162,13 @@ const signedPct = (n: number) => (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
  */
 export function liveVals(live: PublicPosition, chain: TokenState | null, viewer: string | undefined) {
   const isCreator = Boolean(viewer) && viewer!.toLowerCase() === live.creator.toLowerCase();
-  const base = live.symbol ?? live.arcusMarket?.split("-")[0] ?? "";
+  const base = live.symbol ?? live.venueMarket?.split("-")[0] ?? "";
   const side = live.direction === "long" ? "Long" : "Short";
   const dash = "—";
 
   // NAV starts at 1.0 per token; the whole position's P&L is the move times the supply.
-  const navPct = chain ? (chain.navPerToken - 1) * 100 : 0;
+  // The percentage is the token's own `currentPnLBps()`, so funding and fees are in it.
+  const navPct = chain ? chain.pnlPct : 0;
   const pnlAbs = chain ? (chain.navPerToken - 1) * chain.supply : 0;
   const up = navPct >= 0;
   const pnlColor = up ? "#5fe3a8" : "#ff7d92";
@@ -173,7 +218,8 @@ export function liveVals(live: PublicPosition, chain: TokenState | null, viewer:
     navChg: chain ? signedPct(navPct) : "",
     navChgAbs: chain ? signedUsd(pnlAbs) : "",
     pnlColor,
-    lastReport: chain?.lastReport ? `${ago(chain.lastReport)} ago` : dash,
+    /** "funding updated 12m ago" -- when the backend last reported funding to the token. */
+    fundingUpdated: chain?.lastFunding ? `${ago(chain.lastFunding)} ago` : dash,
     stats,
     isCreator,
   };

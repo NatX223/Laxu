@@ -61,7 +61,7 @@ export async function fetchRawCandles(
     to: String(Date.now() * 1000),
     countback: String(Math.min(countback, 1500)),
   });
-  const res = await fetch(`${env.arcusApiUrl}/v1/candles?${params}`, { signal });
+  const res = await fetch(`${env.perplApiUrl}/v1/candles?${params}`, { signal });
   if (!res.ok) throw new Error(`Arcus candles ${res.status}`);
   const body = (await res.json()) as { candles: ArcusCandle[] };
   const sorted = [...body.candles].sort((a, b) => a.openTime - b.openTime);
@@ -104,7 +104,7 @@ export function subscribeRawCandles(
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const connect = () => {
-    socket = new WebSocket(env.arcusWsUrl);
+    socket = new WebSocket(env.perplWsUrl);
     socket.onopen = () => {
       retry = 0;
       socket?.send(JSON.stringify({ type: "subscribe", channel: "candles", id, snapshot: false }));

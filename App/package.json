@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "abi:gen": "node scripts/genAbi.mjs"
   },
   "dependencies": {
     "@privy-io/react-auth": "^3.45.0",

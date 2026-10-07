@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useAsset } from "@/lib/asset";
 import { env } from "@/lib/env";
 import { useFaucet, type FaucetPhase } from "@/lib/faucet";
 import { useSession } from "@/lib/session";
 
 /**
  * "Get test funds" — testnet only. The faucet pays for everything: a new
- * embedded wallet holds no ETH, so it couldn't even mint USDG itself.
+ * embedded wallet holds no MON, so it couldn't even pay gas to open a trade.
  *
  * `header` sits next to the account menu (its result shows in a small panel
  * under it); `inline` is the full-width block the trade ticket's nudge uses.
@@ -15,14 +16,14 @@ import { useSession } from "@/lib/session";
 
 const DISCLAIMER = "Testnet only, no real value";
 /** Below this the wallet can't pay gas for a trade. */
-export const MIN_GAS_ETH = 0.0001;
+export const MIN_GAS_MON = 0.0001;
 
 const TONES = {
   frost: { color: "#fdfbf7", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)" },
   amber: { color: "#ffb765", background: "rgba(255,183,101,0.1)", border: "1px solid rgba(255,183,101,0.45)" },
 } satisfies Record<string, React.CSSProperties>;
 
-const fmtAmount = (usdg: string | null) => (usdg ? Number(usdg).toLocaleString("en-US") : "");
+const fmtAmount = (amount: string) => Number(amount).toLocaleString("en-US", { maximumFractionDigits: 2 });
 
 /** "14h 20m", "20m", "<1m". */
 function countdown(ms: number): string {
@@ -59,12 +60,17 @@ function Check() {
   );
 }
 
-/** What the result panel (header) or line (inline) says after a claim. */
-function ResultMessage({ phase, amount }: { phase: FaucetPhase; amount: string }) {
-  if (phase.kind === "sent" && !phase.ethSkipped) {
+/**
+ * What the result panel (header) or line (inline) says after a claim. The
+ * amount is what actually arrived, measured from the wallet — never a number
+ * the app assumed, since the external faucet and the fallback pay differently.
+ */
+function ResultMessage({ phase, symbol }: { phase: FaucetPhase; symbol: string }) {
+  const got = phase.kind === "sent" && phase.received ? `${fmtAmount(phase.received)} ${symbol}` : symbol;
+  if (phase.kind === "sent" && !phase.nativeSkipped) {
     return (
       <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "#5fe3a8" }}>
-        <Check /> {amount} USDG and gas sent.
+        <Check /> {phase.received ? `Received ${got} and gas.` : `${symbol} and gas sent.`}
       </span>
     );
   }
@@ -72,12 +78,12 @@ function ResultMessage({ phase, amount }: { phase: FaucetPhase; amount: string }
     return (
       <span style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "#5fe3a8" }}>
-          <Check /> USDG sent.
+          <Check /> {phase.received ? `Received ${got}.` : `${symbol} sent.`}
         </span>
         <span style={{ color: "#ffb765" }}>
-          Gas faucet is low. You may need testnet ETH from{" "}
-          {env.ethFaucetUrl ? (
-            <a href={env.ethFaucetUrl} target="_blank" rel="noreferrer" style={{ color: "#ffd29c", textDecoration: "underline" }}>
+          Gas faucet is low. You may need testnet MON from{" "}
+          {env.monFaucetUrl ? (
+            <a href={env.monFaucetUrl} target="_blank" rel="noreferrer" style={{ color: "#ffd29c", textDecoration: "underline" }}>
               a public faucet
             </a>
           ) : (
@@ -106,7 +112,8 @@ export default function FaucetButton({
   tone?: keyof typeof TONES;
 }) {
   const { ready, authenticated, user, login } = useSession();
-  const { enabled, usdgAmount, status, phase, claim, dismiss, refresh } = useFaucet();
+  const { enabled, status, phase, claim, dismiss, refresh } = useFaucet();
+  const { symbol } = useAsset();
   const now = useNow(30_000);
 
   const nextAt = status && !status.canClaim && status.nextClaimAt ? Date.parse(status.nextClaimAt) : null;
@@ -118,7 +125,6 @@ export default function FaucetButton({
 
   if (enabled !== true || !ready) return null;
 
-  const amount = fmtAmount(usdgAmount);
   const inline = variant === "inline";
   const base: React.CSSProperties = {
     display: "inline-flex",
@@ -170,7 +176,7 @@ export default function FaucetButton({
       <>
         Get test funds
         <span style={{ fontWeight: 600, opacity: 0.75 }}>
-          <span className={inline ? undefined : "laxu-faucet-long"}>: {amount} USDG + gas</span>
+          <span className={inline ? undefined : "laxu-faucet-long"}>: {symbol} + MON</span>
         </span>
       </>
     );
@@ -198,7 +204,7 @@ export default function FaucetButton({
         {button}
         {showResult && (
           <div role="status" style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.45 }}>
-            <ResultMessage phase={phase} amount={amount} />
+            <ResultMessage phase={phase} symbol={symbol} />
           </div>
         )}
         <div style={{ fontSize: 10.5, color: "#998dbd" }}>{DISCLAIMER}.</div>
@@ -238,7 +244,7 @@ export default function FaucetButton({
           }}
         >
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
-            <ResultMessage phase={phase} amount={amount} />
+            <ResultMessage phase={phase} symbol={symbol} />
             <button
               type="button"
               onClick={dismiss}
@@ -257,18 +263,18 @@ export default function FaucetButton({
 }
 
 /**
- * Trade-ticket nudge: shown while the wallet can't cover `tradeUsdg` or the
+ * Trade-ticket nudge: shown while the wallet can't cover `tradeAmount` or the
  * gas for it — or signed out, when we can't tell — and while a claim it
  * started is still reporting back.
  */
-export function FaucetNudge({ tradeUsdg }: { tradeUsdg: number }) {
+export function FaucetNudge({ tradeAmount }: { tradeAmount: number }) {
   const { ready, authenticated } = useSession();
   const { enabled, status, phase } = useFaucet();
   if (enabled !== true || !ready) return null;
 
   if (authenticated) {
     if (!status) return null;
-    const low = Number(status.balances.usdg) < tradeUsdg || Number(status.balances.eth) < MIN_GAS_ETH;
+    const low = Number(status.balances.asset) < tradeAmount || Number(status.balances.native) < MIN_GAS_MON;
     if (!low && phase.kind === "idle") return null;
   }
 

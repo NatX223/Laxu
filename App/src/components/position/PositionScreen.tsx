@@ -1,11 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { erc20Abi, parseUnits, type Address } from "viem";
+import { parseUnits, type Address } from "viem";
 import { buyIn } from "@/lib/actions";
 import { getPublicPosition, type PublicPosition } from "@/lib/api";
-import { publicClient } from "@/lib/chain";
-import { env } from "@/lib/env";
+import { getAsset } from "@/lib/asset";
 import { useSession } from "@/lib/session";
 import { getWalletClient } from "@/lib/walletClient";
 import { Grain } from "../landing/shared";
@@ -204,9 +203,9 @@ function usePublicPosition(positionTokenAddress: string | undefined): PublicPosi
 }
 
 /**
- * The ticket's real buy-in: approve USDG (exact amount, skipped when the
+ * The ticket's real buy-in: approve the asset (exact amount, skipped when the
  * allowance covers it), then `requestDeposit`. The receipt only means
- * *requested*; the backend settles it on Arcus and the tokens arrive with no
+ * *requested*; the backend settles it on Perpl and the tokens arrive with no
  * claim step.
  */
 function useBuyIn(live: PublicPosition | null, onRequested: () => void) {
@@ -218,15 +217,11 @@ function useBuyIn(live: PublicPosition | null, onRequested: () => void) {
         login();
         return "Log in to buy in";
       }
-      const decimals = await publicClient().readContract({
-        address: env.usdgAddress as Address,
-        abi: erc20Abi,
-        functionName: "decimals",
-      });
+      const { decimals } = await getAsset();
       const client = await getWalletClient(wallet);
       await buyIn(client, live.positionTokenAddress as Address, parseUnits(String(amountUsd), decimals));
       onRequested();
-      return "Buy-in requested \u2014 settling on Arcus\u2026";
+      return "Buy-in requested \u2014 settling on Perpl\u2026";
     },
     [live, authenticated, wallet, login, onRequested],
   );

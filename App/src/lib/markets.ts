@@ -89,7 +89,7 @@ type ArcusMarket = {
 };
 
 async function getArcusMarkets(): Promise<LaxuMarket[]> {
-  const res = await fetch(`${env.arcusApiUrl}/v1/markets`);
+  const res = await fetch(`${env.perplApiUrl}/v1/markets`);
   if (!res.ok) throw new Error(`Arcus markets ${res.status}`);
   const { markets: list } = (await res.json()) as { markets: ArcusMarket[] };
   return list
@@ -106,7 +106,7 @@ async function getArcusMarkets(): Promise<LaxuMarket[]> {
         assetClass: m.category ?? "OTHER",
         status: m.status,
         // No HEAD check here: MarketIcon's onError falls back to the letter avatar.
-        logoUrl: `${env.arcusBrandingUrl}/markets/branding/${m.baseAsset}.png`,
+        logoUrl: `${env.perplBrandingUrl}/markets/branding/${m.baseAsset}.png`,
         markPrice: m.markPrice && m.markPrice !== "0" ? m.markPrice : (m.oraclePrice ?? "0"),
         priceChange24h: m.priceChange24h ?? "0",
         maxLeverage: m.isOutsideRth ? offHours : inHours,
