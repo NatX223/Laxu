@@ -4,7 +4,7 @@ import { useState, type CSSProperties } from "react";
 import { colorFromString } from "@/lib/markets";
 
 /**
- * The one market icon, used everywhere a market appears: the Arcus logo when
+ * The one market icon, used everywhere a market appears: the Perpl logo when
  * there is one, otherwise a letter avatar whose colour is derived from the
  * symbol so it is the same every time. `onError` also catches logos that are
  * listed but broken, not just null ones.

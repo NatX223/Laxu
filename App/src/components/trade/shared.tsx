@@ -8,7 +8,7 @@ export const MONO = "var(--font-ibm-plex-mono), monospace";
 
 /**
  * The market disc, at whatever size the design calls for — the shared
- * MarketIcon: Arcus's logo, or a letter avatar when there is none.
+ * MarketIcon: Perpl's logo, or a letter avatar when there is none.
  */
 export function Disc({ sym, size, font, style }: { sym: string; size: number; font: number; style?: CSSProperties }) {
   return <MarketIcon logoUrl={cat(sym).logo} baseAsset={sym} size={size} font={font} style={style} />;

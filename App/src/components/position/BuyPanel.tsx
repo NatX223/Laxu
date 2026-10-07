@@ -1,11 +1,35 @@
 "use client";
 
+import { useAsset } from "@/lib/asset";
 import { CELL_BG, HAIRLINE, MONO, Panel, SERIF } from "./shared";
+import type { QuickAmount, Row } from "./derive";
 import type { PositionEngine } from "./engine";
 
+/**
+ * What a minted position supplies in place of the prototype's sample figures:
+ * the wallet's real balance, quick amounts, the quote worked from the token's
+ * own NAV, and the smallest buy-in Perpl can fill.
+ */
+export type LiveBuy = {
+  balance: string;
+  quick: QuickAmount[];
+  quote: Row[];
+  /** In the asset; null while the position's size or value is unknown. */
+  minBuyIn: number | null;
+};
+
 /** The buy-in ticket: amount, the quote it produces, and the mint button. */
-export default function BuyPanel({ engine }: { engine: PositionEngine }) {
+export default function BuyPanel({ engine, liveBuy }: { engine: PositionEngine; liveBuy?: LiveBuy }) {
   const { vals, setAmount, buy } = engine;
+  const { symbol } = useAsset();
+  const balance = liveBuy?.balance ?? vals.balance;
+  const quick = liveBuy?.quick ?? vals.quickAmounts;
+  const quote = liveBuy?.quote ?? vals.quote;
+  const amt = parseFloat(String(vals.amount).replace(/[^0-9.]/g, "")) || 0;
+  // A buy-in that adds less than one lot can't be filled, so it never gets sent.
+  const min = liveBuy?.minBuyIn ?? null;
+  const tooSmall = min !== null && amt > 0 && amt < min;
+  const disabled = vals.buyDisabled || tooSmall;
 
   return (
     <Panel
@@ -26,7 +50,10 @@ export default function BuyPanel({ engine }: { engine: PositionEngine }) {
         <div style={{ fontFamily: SERIF, fontSize: 22, lineHeight: 1.1, color: "#fdfbf7" }}>
           Buy into this position
         </div>
-        <div style={{ fontSize: 11.5, fontWeight: 500, color: "#d5c6ff", paddingTop: 3 }}>{vals.buyinHint}</div>
+        <div style={{ fontSize: 11.5, fontWeight: 500, color: "#d5c6ff", paddingTop: 3 }}>
+          {vals.buyinHint}
+          {!vals.isClosed && ` · settles in ${symbol}`}
+        </div>
       </div>
 
       <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 13 }}>
@@ -38,7 +65,7 @@ export default function BuyPanel({ engine }: { engine: PositionEngine }) {
             >
               AMOUNT
             </label>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "#8f85bd" }}>balance {vals.balance}</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#8f85bd" }}>balance {balance}</div>
           </div>
 
           <div
@@ -70,11 +97,17 @@ export default function BuyPanel({ engine }: { engine: PositionEngine }) {
                 fontWeight: 600,
               }}
             />
-            <span style={{ fontSize: 11.5, fontWeight: 700, color: "#a79bd0" }}>USDG</span>
+            <span style={{ fontSize: 11.5, fontWeight: 700, color: "#a79bd0" }}>{symbol}</span>
           </div>
 
+          {min !== null && (
+            <div style={{ fontSize: 11, fontWeight: 600, color: tooSmall ? "#ffb765" : "#8f85bd" }}>
+              Minimum buy-in: {min.toLocaleString("en-US", { maximumFractionDigits: 2 })} {symbol}
+            </div>
+          )}
+
           <div style={{ display: "flex", gap: 6 }}>
-            {vals.quickAmounts.map((q) => (
+            {quick.map((q) => (
               <button
                 key={q.label}
                 type="button"
@@ -110,7 +143,7 @@ export default function BuyPanel({ engine }: { engine: PositionEngine }) {
             background: HAIRLINE,
           }}
         >
-          {vals.quote.map((q) => (
+          {quote.map((q) => (
             <div
               key={q.k}
               style={{
@@ -132,7 +165,7 @@ export default function BuyPanel({ engine }: { engine: PositionEngine }) {
           type="button"
           className="laxu-buy"
           onClick={buy}
-          disabled={vals.buyDisabled}
+          disabled={disabled}
           style={{
             textAlign: "center",
             fontFamily: "inherit",
@@ -141,13 +174,13 @@ export default function BuyPanel({ engine }: { engine: PositionEngine }) {
             padding: 13,
             border: "none",
             borderRadius: 99,
-            cursor: vals.buyDisabled ? "default" : "pointer",
-            color: vals.buyInk,
-            background: vals.buyBg,
+            cursor: disabled ? "default" : "pointer",
+            color: tooSmall ? "#8f85bd" : vals.buyInk,
+            background: tooSmall ? "rgba(255,255,255,0.08)" : vals.buyBg,
             boxShadow: "0 10px 26px rgba(150,112,255,0.36)",
           }}
         >
-          {vals.buyLabel}
+          {tooSmall ? `Minimum buy-in is ${min.toLocaleString("en-US", { maximumFractionDigits: 2 })} ${symbol}` : vals.buyLabel}
         </button>
 
         <div style={{ fontSize: 10.5, fontWeight: 500, lineHeight: 1.5, color: "#8f85bd", textWrap: "pretty" }}>

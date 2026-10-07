@@ -2,15 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { parseUnits, type Address } from "viem";
-import { buyIn } from "@/lib/actions";
+import { BUY_IN_FEE_BPS, buyIn } from "@/lib/actions";
 import { getPublicPosition, type PublicPosition } from "@/lib/api";
-import { getAsset } from "@/lib/asset";
+import { getAsset, useAsset } from "@/lib/asset";
+import { useWalletBalances } from "@/lib/balances";
+import { marketFor, useMarkets } from "@/lib/markets";
 import { useSession } from "@/lib/session";
 import { getWalletClient } from "@/lib/walletClient";
 import { Grain } from "../landing/shared";
 import TradingViewCredit from "../charts/TradingViewCredit";
 import TopNav from "../community/TopNav";
-import BuyPanel from "./BuyPanel";
+import BuyPanel, { type LiveBuy } from "./BuyPanel";
 import HolderActions from "./HolderActions";
 import HolderBase from "./HolderBase";
 import LendingPanel from "./LendingPanel";
@@ -19,8 +21,10 @@ import PositionHeader from "./PositionHeader";
 import Reactions from "./Reactions";
 import StateGrid from "./StateGrid";
 import TriggersPanel from "./TriggersPanel";
+import VerifiedCard from "./VerifiedCard";
+import { usd } from "./data";
 import { usePositionEngine, type PositionProps } from "./engine";
-import { liveVals, useTokenState } from "./onchain";
+import { liveVals, minBuyIn, useTokenState } from "./onchain";
 
 /** The listed page's cells the contract can't answer yet; they keep the prototype's figures. */
 const LISTED_ONLY = ["HOLDERS", "BUY-IN VOLUME", "CREATOR FEE"];
@@ -50,12 +54,19 @@ export default function PositionScreen({
   // Bumped after a buy-in so HolderActions re-reads the pending request at once.
   const [refreshKey, setRefreshKey] = useState(0);
   const bumpRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
-  const onBuy = useBuyIn(live, bumpRefresh);
   // Keys the wallet's own panels: a sign-out or account switch remounts them,
   // so nothing read for the previous wallet stays on screen.
   const viewer = useSession().wallet?.address;
   const account = viewer ?? "signed-out";
   const chain = useTokenState(live?.positionTokenAddress);
+  // The smallest buy-in Perpl can fill: it must add at least one lot of the underlying.
+  useMarkets();
+  const { symbol } = useAsset();
+  const walletBalances = useWalletBalances(viewer);
+  const buyerIsCreator = Boolean(viewer && live && viewer.toLowerCase() === live.creator.toLowerCase());
+  const feeFraction = buyerIsCreator ? 0 : BUY_IN_FEE_BPS / 10_000;
+  const minBuy = live ? minBuyIn(chain, marketFor(live.symbol)?.sizeDecimals, feeFraction) : null;
+  const onBuy = useBuyIn(live, bumpRefresh, minBuy, symbol);
   const unlisted = live !== null && !live.listed;
   // The header's "Collateralized" chip: only when this wallet has tokens posted.
   const [collateral, setCollateral] = useState<{ account: string; posted: boolean } | null>(null);
@@ -75,6 +86,31 @@ export default function PositionScreen({
     }),
   });
   const { st } = engine;
+
+  // The buy-in ticket for a minted position: the wallet's real balance and a quote worked from the token's own NAV.
+  const liveBuy: LiveBuy | undefined = (() => {
+    if (!live || !chain) return undefined;
+    const amount = parseFloat(String(engine.vals.amount).replace(/[^0-9.]/g, "")) || 0;
+    const fee = amount * feeFraction;
+    const net = amount - fee;
+    const tokens = chain.navPerToken > 0 ? net / chain.navPerToken : 0;
+    const share = chain.supply + tokens > 0 ? (tokens / (chain.supply + tokens)) * 100 : 0;
+    const max = walletBalances.asset === null ? null : Math.floor(walletBalances.asset * 100) / 100;
+    return {
+      balance: walletBalances.asset === null ? "—" : usd(walletBalances.asset),
+      quick: [
+        ...[25, 50, 100].map((n) => ({ label: "$" + n, value: String(n) })),
+        { label: "MAX", value: max === null ? "" : String(max) },
+      ],
+      quote: [
+        { k: `Creator fee (${(feeFraction * 100).toFixed(2)}%)`, v: "−" + usd(fee), c: "#ffb765" },
+        { k: "Net into position", v: usd(net), c: "#fdfbf7" },
+        { k: "Your share of position", v: share.toFixed(2) + "%", c: "#5fe3a8" },
+        { k: "Tokens received (est.)", v: tokens.toFixed(2) + " " + chain.ticker, c: "#d5c6ff" },
+      ],
+      minBuyIn: minBuy,
+    };
+  })();
 
   const vals = (() => {
     if (!live) return engine.vals;
@@ -119,6 +155,7 @@ export default function PositionScreen({
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 20, minWidth: 0 }}>
           <StateGrid vals={vals} />
+          {live && <VerifiedCard live={live} chain={chain} />}
           <LeverageView
             engine={engine}
             live={live}
@@ -142,7 +179,7 @@ export default function PositionScreen({
           )}
           {live && <TriggersPanel key={`triggers-${account}`} live={live} refreshKey={refreshKey} onDone={engine.flash} />}
           {/* Buy-ins open only once the creator lists the position, and close with it. */}
-          {(!live || (live.listed && live.lifecycle === "open")) && <BuyPanel engine={engine} />}
+          {(!live || (live.listed && live.lifecycle === "open")) && <BuyPanel engine={engine} liveBuy={liveBuy} />}
           {!unlisted && <HolderBase holders={vals.holdersList} />}
         </div>
       </div>
@@ -208,7 +245,7 @@ function usePublicPosition(positionTokenAddress: string | undefined): PublicPosi
  * *requested*; the backend settles it on Perpl and the tokens arrive with no
  * claim step.
  */
-function useBuyIn(live: PublicPosition | null, onRequested: () => void) {
+function useBuyIn(live: PublicPosition | null, onRequested: () => void, minBuy: number | null, symbol: string) {
   const { authenticated, wallet, login } = useSession();
   return useCallback(
     async (amountUsd: number) => {
@@ -217,12 +254,16 @@ function useBuyIn(live: PublicPosition | null, onRequested: () => void) {
         login();
         return "Log in to buy in";
       }
+      if (minBuy !== null && amountUsd < minBuy) {
+        // Perpl can't fill less than one lot, so a smaller buy-in would only sit pending until it's reclaimed.
+        return `Minimum buy-in is ${minBuy.toLocaleString("en-US", { maximumFractionDigits: 2 })} ${symbol}`;
+      }
       const { decimals } = await getAsset();
       const client = await getWalletClient(wallet);
       await buyIn(client, live.positionTokenAddress as Address, parseUnits(String(amountUsd), decimals));
       onRequested();
       return "Buy-in requested \u2014 settling on Perpl\u2026";
     },
-    [live, authenticated, wallet, login, onRequested],
+    [live, authenticated, wallet, login, onRequested, minBuy, symbol],
   );
 }

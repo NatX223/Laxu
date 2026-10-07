@@ -16,6 +16,7 @@ import {
   type HolderState,
 } from "@/lib/actions";
 import { getClaimed, type PublicPosition } from "@/lib/api";
+import { useAsset } from "@/lib/asset";
 import { useSession } from "@/lib/session";
 import { getWalletClient } from "@/lib/walletClient";
 import { MONO, Panel, PanelHead } from "./shared";
@@ -24,6 +25,14 @@ import { MONO, Panel, PanelHead } from "./shared";
 const POLL_MS = 4000;
 
 const nicknameBytes = (value: string) => new TextEncoder().encode(value).length;
+
+/** A buy-in still pending this long was not filled: the backend cancels one it can't fill at the position's leverage. */
+const UNFILLED_AFTER_S = 2 * 60;
+
+const mmss = (seconds: number) => {
+  const s = Math.max(0, Math.ceil(seconds));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
 
 const usd = (amount: bigint, decimals: number) =>
   `$${Number(formatUnits(amount, decimals)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -44,8 +53,10 @@ function phaseOf(state: HolderState, live: PublicPosition): Phase {
  *   - creator, unlisted: List for buy-ins (optional nickname, terms shown first)
  *   - creator holding 100% with no buy-in pending (listed or not): Close
  *   - anyone else holding tokens: Redeem
- *   - a request not yet fulfilled: "Settling on Arcus…", and after 20 minutes
- *     "Cancel and get refund"
+ *   - a buy-in not yet fulfilled: "Settling on Perpl…" with a countdown; one
+ *     that isn't filled is cancelled rather than fulfilled (that keeps the
+ *     leverage constant), and its deposit can be reclaimed by the buyer after
+ *     the 20-minute timeout
  *
  * A fulfilled buy-in mints straight to the wallet and a fulfilled redeem pays
  * straight to it. Once the position closes it runs Closing → Settling →
@@ -63,6 +74,7 @@ export default function HolderActions({
   onDone: (message: string) => void;
 }) {
   const { wallet } = useSession();
+  const { symbol } = useAsset();
   const token = live.positionTokenAddress as Address;
   const account = wallet?.address as Address | undefined;
   const isCreator = Boolean(account && account.toLowerCase() === live.creator.toLowerCase());
@@ -72,7 +84,7 @@ export default function HolderActions({
   const [nickname, setNickname] = useState("");
   const [confirmingList, setConfirmingList] = useState(false);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
-  /** USDG already paid to this wallet out of the settlement (the push, or its own claim). */
+  /** The asset already paid to this wallet out of the settlement (the push, or its own claim). */
   const [received, setReceived] = useState<string | null>(null);
   const pool = live.lendingPoolAddress as Address | null;
 
@@ -118,6 +130,13 @@ export default function HolderActions({
   // Closing and settling move on their own; keep re-reading until settled.
   const moving = pending || phase === "closing" || phase === "settling";
 
+  // The reclaim countdown ticks every second while a request is pending.
+  useEffect(() => {
+    if (!pending) return;
+    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [pending]);
+
   // Poll only while something is settling.
   useEffect(() => {
     if (!moving) return;
@@ -146,7 +165,7 @@ export default function HolderActions({
   );
 
   if (!wallet || !state) return null;
-  if (phase !== "open") return <ClosedActions state={state} phase={phase} received={received} busy={busy} run={run} wallet={wallet} token={token} />;
+  if (phase !== "open") return <ClosedActions symbol={symbol} state={state} phase={phase} received={received} busy={busy} run={run} wallet={wallet} token={token} />;
 
   const holdsAll = state.totalSupply > BigInt(0) && state.balance === state.totalSupply;
   const canList = isCreator && !state.listed;
@@ -167,28 +186,39 @@ export default function HolderActions({
     <Panel>
       <PanelHead label="YOUR POSITION" />
       <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-        {pending && (
+        {state.pendingDeposit > BigInt(0) && (
           <Note>
-            Settling on Arcus… {state.pendingDeposit > BigInt(0) ? "Your buy-in" : "Your redeem"} completes
-            automatically — no claim needed.
-            {!canCancelDeposit && !canCancelRedeem && " If it isn't done in 20 minutes you can cancel it for a refund."}
+            <b style={{ color: "#fdfbf7" }}>
+              {now - state.lastDepositRequestAt >= UNFILLED_AFTER_S ? "Buy-in couldn’t be filled" : "Buy-in settling on Perpl"}
+            </b>
+            <br />
+            {now - state.lastDepositRequestAt >= UNFILLED_AFTER_S
+              ? "Perpl couldn’t fill it at this position’s leverage, so it is cancelled rather than changing the leverage. Your deposit stays yours."
+              : "It completes automatically, no claim needed."}
+            {!canCancelDeposit && <> Reclaim available in {mmss(depositCancelAt - now)}.</>}
+          </Note>
+        )}
+        {state.pendingRedeem > BigInt(0) && (
+          <Note>
+            Redeem settling on Perpl… it completes automatically, no claim needed.
+            {!canCancelRedeem && <> Reclaim available in {mmss(redeemCancelAt - now)}.</>}
           </Note>
         )}
         {canCancelDeposit && (
           <Action
-            label="Cancel and get refund"
+            label="Reclaim"
             disabled={busy}
             onClick={() =>
-              run(() => getWalletClient(wallet).then((c) => cancelDepositRequest(c, token)), "Buy-in cancelled — USDG refunded")
+              run(() => getWalletClient(wallet).then((c) => cancelDepositRequest(c, token)), `Buy-in reclaimed, ${symbol} returned to your wallet`)
             }
           />
         )}
         {canCancelRedeem && (
           <Action
-            label="Cancel and get refund"
+            label="Reclaim"
             disabled={busy}
             onClick={() =>
-              run(() => getWalletClient(wallet).then((c) => cancelRedeemRequest(c, token)), "Redeem cancelled — tokens returned")
+              run(() => getWalletClient(wallet).then((c) => cancelRedeemRequest(c, token)), "Redeem reclaimed, tokens returned")
             }
           />
         )}
@@ -246,7 +276,7 @@ export default function HolderActions({
             subtle
             disabled={busy}
             onClick={() =>
-              run(() => getWalletClient(wallet).then((c) => closePosition(c, token)), "Close requested — settling on Arcus")
+              run(() => getWalletClient(wallet).then((c) => closePosition(c, token)), "Close requested — settling on Perpl")
             }
           />
         )}
@@ -259,7 +289,7 @@ export default function HolderActions({
             onClick={() =>
               run(
                 () => getWalletClient(wallet).then((c) => exitStake(c, token, state.balance)),
-                "Redeem requested — settling on Arcus",
+                "Redeem requested — settling on Perpl",
               )
             }
           />
@@ -270,11 +300,12 @@ export default function HolderActions({
 }
 
 /**
- * After close: Closing on Arcus… → Returning funds… → Settled. A buy-in caught
+ * After close: Closing on Perpl… → Returning funds… → Settled. A buy-in caught
  * by the close is refundable at once (no 20-minute wait); a redeem caught by it
  * is paid out of the settlement with everyone else.
  */
 function ClosedActions({
+  symbol,
   state,
   phase,
   received,
@@ -283,6 +314,7 @@ function ClosedActions({
   wallet,
   token,
 }: {
+  symbol: string;
   state: HolderState;
   phase: Exclude<Phase, "open">;
   received: string | null;
@@ -301,15 +333,15 @@ function ClosedActions({
     <Panel>
       <PanelHead label="YOUR POSITION" />
       <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
-        {phase === "closing" && <Note>Closing on Arcus…</Note>}
+        {phase === "closing" && <Note>Closing on Perpl…</Note>}
         {phase === "settling" && <Note>Returning funds… Your share is paid out automatically once they arrive.</Note>}
 
         {refundable && (
           <Action
-            label="Cancel and get refund"
+            label="Reclaim"
             disabled={busy}
             onClick={() =>
-              run(() => getWalletClient(wallet).then((c) => cancelDepositRequest(c, token)), "Buy-in cancelled — USDG refunded")
+              run(() => getWalletClient(wallet).then((c) => cancelDepositRequest(c, token)), `Buy-in reclaimed, ${symbol} returned to your wallet`)
             }
           />
         )}
@@ -329,7 +361,7 @@ function ClosedActions({
             label={`Claim ${usd(state.claimable, decimals)}`}
             disabled={busy}
             onClick={() =>
-              run(() => getWalletClient(wallet).then((c) => claimSettlement(c, token)), "Claimed — USDG sent to your wallet")
+              run(() => getWalletClient(wallet).then((c) => claimSettlement(c, token)), `Claimed, ${symbol} sent to your wallet`)
             }
           />
         )}

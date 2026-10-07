@@ -111,7 +111,7 @@ export default function NavRail({ engine }: { engine: TradeEngine }) {
           padding: "10px 0",
         }}
       >
-        ARCUS
+        PERPL
       </div>
     </div>
   );

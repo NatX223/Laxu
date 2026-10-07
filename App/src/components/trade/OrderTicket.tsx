@@ -47,7 +47,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
   const facts = [
     { k: "Notional", v: money(notional, 0), c: "#fdfbf7" },
     { k: "Entry (est.)", v: mark === null ? "—" : money(mark, dp), c: "#fdfbf7" },
-    { k: "Liquidation", v: liq === null ? "—" : money(liq, dp), c: "#ffb765" },
+    { k: "Liquidation (≈ entry ∓ 1/lev)", v: liq === null ? "—" : money(liq, dp), c: "#ffb765" },
     { k: "Fees (taker)", v: market.live ? money(notional * market.live.takerFee, 2) : "—", c: "#e3ddf4" },
   ];
 

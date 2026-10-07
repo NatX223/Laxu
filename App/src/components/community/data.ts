@@ -36,11 +36,11 @@ export type Token = {
   logo: string;
   long: boolean;
   lev: number;
-  /** NAV per token, USDG. */
+  /** NAV per token, in the collateral asset. */
   price: number;
   /** PnL since entry, percent. */
   chg: number;
-  /** All-time buy-in volume, USDG. */
+  /** All-time buy-in volume, in the collateral asset. */
   vol: number;
   holders: number;
   /** size × mark, USD; 0 until the first report. */

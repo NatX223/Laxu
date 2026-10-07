@@ -8,7 +8,7 @@ import MarketIcon from "../MarketIcon";
 import { money } from "./data";
 import { MONO, SERIF } from "./shared";
 
-/** Holdings move on the reporter's cadence; a buy-in settling on Arcus is what this mostly waits on. */
+/** Holdings move on the reporter's cadence; a buy-in settling on Perpl is what this mostly waits on. */
 const PORTFOLIO_POLL_MS = 20_000;
 
 type Load = "loading" | "ready" | "error";
@@ -27,7 +27,7 @@ const tokenUnits = (s: string) =>
  * Portfolio: every position token the signed-in wallet holds, whether it
  * minted the position or bought into someone else's, from
  * `GET /users/:address/portfolio`. Shares posted as loan collateral count as
- * held. Buy-ins still settling on Arcus are listed above the holdings.
+ * held. Buy-ins still settling on Perpl are listed above the holdings.
  */
 export default function PortfolioView() {
   const { authenticated, user, userFailed, login } = useSession();
@@ -117,7 +117,7 @@ export default function PortfolioView() {
         >
           {pendingBuyIns.map((p) => (
             <Link key={p.position + p.requestedAt} href={`/position/${p.position}`} style={{ fontSize: 12.5, fontWeight: 600, color: "#ffd9a0" }}>
-              Buy-in of {money(num(p.amount), 2)} settling on Arcus · {p.position.slice(0, 6)}…{p.position.slice(-4)} →
+              Buy-in of {money(num(p.amount), 2)} settling on Perpl · {p.position.slice(0, 6)}…{p.position.slice(-4)} →
             </Link>
           ))}
         </div>

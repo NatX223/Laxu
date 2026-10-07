@@ -55,14 +55,56 @@ export type TokenState = {
   /** NAV against its genesis 1.0, in percent (`currentPnLBps() / 100`). */
   pnlPct: number;
   closed: boolean;
+  /** The slot's Perpl account id this position trades from. */
+  venueAccountId: string;
   /** Null when the venue could not be read, or the position is closed. */
   drift: VenueDrift | null;
 };
 
+/** What the header says about where the mark came from, and why it can be trusted (or not right now). */
+export type PriceSource = { label: string; tone: "good" | "warn"; tip: string };
+
+const PRICE_TIP =
+  "This position values itself by reading Perpl's mark price on-chain. Laxu's backend cannot set it.";
+
+/** Live and fresh: green. Perpl unreachable: amber, last known mark. Live but the funding update lapsed: amber. */
+export function priceSourceOf(chain: TokenState): PriceSource | null {
+  if (chain.closed) return null;
+  if (!chain.markLive) {
+    return {
+      label: "Mark: last known · Perpl unreachable",
+      tone: "warn",
+      tip: `${PRICE_TIP} Right now Perpl could not be read, so the last known mark is shown and borrowing is paused.`,
+    };
+  }
+  if (!chain.priceFresh) {
+    return {
+      label: "Funding update overdue",
+      tone: "warn",
+      tip: `${PRICE_TIP} The mark is live, but the funding update is overdue, so borrowing is paused until it lands.`,
+    };
+  }
+  return { label: "Mark: Perpl on-chain · live", tone: "good", tip: PRICE_TIP };
+}
+
+/**
+ * The smallest buy-in that adds at least one lot: the added size is the
+ * position's size times the net amount over its total value, and Perpl won't
+ * trade less than `10^-sizeDecimals` of the base asset. Grossed up for the
+ * buy-in fee (none for the creator) with a 5% buffer, rounded up to the cent.
+ * Null when the position's value or size isn't known yet.
+ */
+export function minBuyIn(chain: TokenState | null, sizeDecimals: number | undefined, feeFraction: number): number | null {
+  if (!chain || sizeDecimals === undefined || !(chain.size > 0) || !(chain.totalAssets > 0)) return null;
+  const lot = 10 ** -sizeDecimals;
+  const net = (lot * chain.totalAssets) / chain.size;
+  return Math.ceil(((net / (1 - feeFraction)) * 1.05) * 100) / 100;
+}
+
 async function readTokenState(token: Address, decimals: number): Promise<TokenState> {
   const read = <T>(functionName: string) =>
     publicClient().readContract({ address: token, abi: positionTokenAbi, functionName } as never) as Promise<T>;
-  const [ticker, entry, [mark, markLive], priceFresh, size, funding, lastFunding, totalAssets, supply, nav, pnlBps, closed, drift] =
+  const [ticker, entry, [mark, markLive], priceFresh, size, funding, lastFunding, totalAssets, supply, nav, pnlBps, closed, accountId, drift] =
     await Promise.all([
       read<string>("symbol"),
       read<bigint>("entryPrice"),
@@ -76,6 +118,7 @@ async function readTokenState(token: Address, decimals: number): Promise<TokenSt
       read<bigint>("navPerShare"),
       read<bigint>("currentPnLBps"),
       read<boolean>("closed"),
+      read<bigint>("venueAccountId"),
       // A venue read can fail on its own; the rest of the page must not.
       read<readonly [bigint, bigint, bigint, bigint, boolean]>("venueDrift").catch(() => null),
     ]);
@@ -112,6 +155,7 @@ async function readTokenState(token: Address, decimals: number): Promise<TokenSt
     navPerToken: Number(nav) / PRICE_SCALE,
     pnlPct: Number(pnlBps) / 100,
     closed,
+    venueAccountId: accountId.toString(),
     drift: venue,
   };
 }
@@ -218,6 +262,8 @@ export function liveVals(live: PublicPosition, chain: TokenState | null, viewer:
     navChg: chain ? signedPct(navPct) : "",
     navChgAbs: chain ? signedUsd(pnlAbs) : "",
     pnlColor,
+    /** Where the mark came from, and whether it is fresh; null while loading or once closed. */
+    priceSource: chain ? priceSourceOf(chain) : null,
     /** "funding updated 12m ago" -- when the backend last reported funding to the token. */
     fundingUpdated: chain?.lastFunding ? `${ago(chain.lastFunding)} ago` : dash,
     stats,

@@ -3391,19 +3391,6 @@ export const positionTokenFactoryAbi = [
   },
   {
     "inputs": [],
-    "name": "usdg",
-    "outputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
     "name": "venueReader",
     "outputs": [
       {

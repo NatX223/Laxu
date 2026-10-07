@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Disc } from "../community/shared";
 import { Badge, MONO, SERIF } from "./shared";
 import type { PositionVals } from "./derive";
+import type { PriceSource } from "./onchain";
 
 /**
  * The gradient band: back link, the position's identity, and NAV per token.
@@ -12,7 +13,7 @@ export default function PositionHeader({
   vals,
   back = { href: "/community", label: "Community tokens" },
 }: {
-  vals: PositionVals;
+  vals: PositionVals & { priceSource?: PriceSource | null };
   back?: { href: string; label: string };
 }) {
   return (
@@ -148,6 +149,26 @@ export default function PositionHeader({
                   {vals.levLabel}
                 </Badge>
 
+                {vals.priceSource && (
+                  // the tooltip says why the mark can be trusted: it is read on-chain, not reported
+                  <span title={vals.priceSource.tip} style={{ display: "inline-flex", cursor: "help" }}>
+                    <Badge
+                      bg={vals.priceSource.tone === "good" ? "rgba(95,227,168,0.16)" : "rgba(255,183,101,0.18)"}
+                      ink={vals.priceSource.tone === "good" ? "#5fe3a8" : "#ffb765"}
+                    >
+                      <span
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: "50%",
+                          background: "currentColor",
+                        }}
+                      />
+                      {vals.priceSource.label}
+                    </Badge>
+                  </span>
+                )}
+
                 {vals.collateralized && (
                   <Badge
                     href="#"
@@ -207,6 +228,7 @@ export default function PositionHeader({
             <div style={{ fontFamily: MONO, fontSize: 15, fontWeight: 600, color: vals.pnlColor }}>
               {vals.navChg} &middot; {vals.navChgAbs}
             </div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#8f85bd" }}>funding updated {vals.fundingUpdated}</div>
           </div>
         </div>
       </div>

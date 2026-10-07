@@ -96,8 +96,8 @@ const signed = (n: number, digits: number) => (n >= 0 ? "+" : "") + n.toFixed(di
 /**
  * The underlying beside the position's own NAV — the whole point of the
  * screen, since the second is the first run through the leverage. With a
- * minted token behind the page (`live`), both are real: Arcus candles and the
- * indexer's per-report NAV. Without one, the candles are still live Arcus ETH
+ * minted token behind the page (`live`), both are real: Perpl candles and the
+ * indexer's per-report NAV. Without one, the candles are still live Perpl ETH
  * and the NAV line replays the prototype's reports.
  */
 export default function LeverageView({

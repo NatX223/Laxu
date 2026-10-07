@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { OpenRequestStatus } from "@/lib/actions";
+import { useAsset } from "@/lib/asset";
 import { env } from "@/lib/env";
 import { money } from "./data";
 import type { OpenTrade } from "./openTrade";
@@ -28,18 +29,25 @@ const RANK: Record<OpenRequestStatus, number> = {
   failed: -1,
 };
 
-function stepLabel(step: StepKey, entry: string | null): string {
+/**
+ * One row per backend status; the row for the status the request has reached is
+ * the work in progress: payment_received is the deposit going to Perpl,
+ * deposited the order being placed, order_filled the token being minted.
+ */
+function stepLabel(step: StepKey, symbol: string, entry: string | null, poolReady: boolean): string {
   switch (step) {
     case "awaiting_payment":
-      return "Confirm the USDG payment in your wallet";
+      return `Confirm the ${symbol} payment in your wallet`;
     case "payment_received":
-      return "Payment received";
+      return "Depositing to Perpl";
     case "deposited":
-      return "Funding your trade on Arcus";
+      return "Placing order on Perpl";
     case "order_filled":
-      return entry ? `Trade filled at ${money(Number(entry), Number(entry) >= 10 ? 2 : 4)}` : "Placing your trade";
+      return entry
+        ? `Minting your position token on Monad (filled at ${money(Number(entry), Number(entry) >= 10 ? 2 : 4)})`
+        : "Minting your position token on Monad";
     case "minted":
-      return "Position token minted";
+      return poolReady ? "Position token and lending pool ready" : "Creating lending pool";
   }
 }
 
@@ -47,6 +55,7 @@ const txLink = (hash: string) => (env.explorerUrl ? `${env.explorerUrl.replace(/
 
 export default function OpenProgress({ open }: { open: OpenTrade }) {
   const { phase, dismiss, abandon } = open;
+  const { symbol, decimals } = useAsset();
   if (phase.kind === "idle") return null;
 
   const request = phase.kind === "tracking" ? phase.request : null;
@@ -112,7 +121,7 @@ export default function OpenProgress({ open }: { open: OpenTrade }) {
           {request && (
             <div style={{ fontSize: 11.5, fontWeight: 500, color: "#d5c6ff" }}>
               {request.symbol ?? "Position"} {request.direction}, {request.leverage}&times; &middot;{" "}
-              {money(Number(request.amount) / 1e6, 2)} USDG
+              {money(Number(request.amount) / 10 ** decimals, 2)} {symbol}
             </div>
           )}
         </div>
@@ -121,7 +130,7 @@ export default function OpenProgress({ open }: { open: OpenTrade }) {
           {phase.kind === "error" ? (
             <div role="alert" style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.5, color: "#ffb4a8" }}>
               {phase.message}
-              <div style={{ fontSize: 11.5, fontWeight: 500, color: "#c2b6e4", paddingTop: 6 }}>No USDG was taken.</div>
+              <div style={{ fontSize: 11.5, fontWeight: 500, color: "#c2b6e4", paddingTop: 6 }}>No {symbol} was taken.</div>
             </div>
           ) : phase.kind === "reserving" ? (
             <Row state="active" label="Reserving a trading slot" />
@@ -130,11 +139,14 @@ export default function OpenProgress({ open }: { open: OpenTrade }) {
               {STEPS.map((step, i) => {
                 // In "paying" the transfer is mid-flight: step 0 is the live one.
                 const rank = phase.kind === "paying" ? 0 : current;
-                const state = i < rank || (i === rank && step === "minted") ? "done" : i === rank ? "active" : "todo";
+                // The last row stays live until the lending pool address shows up.
+                const poolReady = Boolean(request?.lendingPoolAddress);
+                const state =
+                  i < rank || (i === rank && step === "minted" && poolReady) ? "done" : i === rank ? "active" : "todo";
                 const label =
                   step === "awaiting_payment" && phase.kind === "paying" && phase.sent
                     ? "Payment sent, waiting for confirmation"
-                    : stepLabel(step, request?.entryPrice ?? null);
+                    : stepLabel(step, symbol, request?.entryPrice ?? null, poolReady);
                 return <Row key={step} state={state} label={label} />;
               })}
             </ol>
@@ -144,15 +156,15 @@ export default function OpenProgress({ open }: { open: OpenTrade }) {
                 <>
                   <div style={{ fontWeight: 600, color: "#ffb4a8" }}>Something went wrong{request?.error ? `: ${request.error}` : "."}</div>
                   {request?.paymentTxHash && (
-                    <div style={{ color: "#c2b6e4" }}>Your USDG will be refunded to your wallet.</div>
+                    <div style={{ color: "#c2b6e4" }}>Your {symbol} will be returned to your wallet automatically.</div>
                   )}
                 </>
               ) : (
                 <>
                   <div style={{ fontWeight: 600, color: "#ffd9a0" }}>
                     {status === "refunding"
-                      ? "Trade couldn’t be opened. Refunding your USDG…"
-                      : "Trade couldn’t be opened, so your USDG was refunded."}
+                      ? `Trade couldn’t be opened. Returning your ${symbol} to your wallet…`
+                      : `Trade couldn’t be opened, so your ${symbol} went back to your wallet automatically.`}
                   </div>
                   {request?.error && <div style={{ color: "#c2b6e4" }}>Reason: {request.error}</div>}
                   {request?.refundTxHash && (

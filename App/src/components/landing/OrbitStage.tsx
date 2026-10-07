@@ -195,8 +195,8 @@ function Headline({ titleSize, style }: { titleSize: number | string; style?: Re
           textWrap: "pretty",
         }}
       >
-        Tokenize a trade. From there it lends, trades and splits like any other token on
-        Robinhood Chain.
+        Trade on Perpl, get a token on Monad, borrow against it. The token reads its price from
+        Perpl on-chain.
       </div>
     </div>
   );

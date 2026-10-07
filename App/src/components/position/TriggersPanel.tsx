@@ -177,7 +177,7 @@ export default function TriggersPanel({
             {problem && <div style={{ fontSize: 11, fontWeight: 600, color: "#ff8a8a" }}>{problem}</div>}
             {liqWarning && (
               <div style={{ fontSize: 11, fontWeight: 600, color: "#ffb765" }}>
-                Arcus would liquidate before your stop triggers (est. {shownPrice(triggers.estLiquidationPrice)}).
+                Perpl would liquidate before your stop triggers (est. {shownPrice(triggers.estLiquidationPrice)}).
               </div>
             )}
             <div style={{ display: "flex", gap: 8 }}>

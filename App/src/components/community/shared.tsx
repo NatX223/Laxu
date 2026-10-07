@@ -8,7 +8,7 @@ export { SERIF } from "../landing/shared";
 export const MONO = "var(--font-ibm-plex-mono), monospace";
 
 /**
- * The token disc — the shared MarketIcon. The live Arcus logo for `base` wins
+ * The token disc — the shared MarketIcon. The live Perpl logo for `base` wins
  * when the market list has it; otherwise the disc's own logo, otherwise a
  * letter avatar.
  */

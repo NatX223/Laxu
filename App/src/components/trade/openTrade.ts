@@ -19,7 +19,7 @@ import { getWalletClient } from "@/lib/walletClient";
 /**
  * Opening a real position from the trade ticket, start to finish:
  *
- *   reserve a slot → the user signs the USDG transfer → report it → poll
+ *   reserve a slot → the user signs the asset transfer → report it → poll
  *   `GET /positions/open/:id` every 3s until `minted` (then go to the position
  *   page) or `refunded` / `failed`.
  *
@@ -29,13 +29,13 @@ import { getWalletClient } from "@/lib/walletClient";
  */
 
 export const OPEN_POLL_MS = 3000;
-export const BUSY_MESSAGE = "All trading slots are busy. Try again shortly.";
+export const BUSY_MESSAGE = "Slots busy, try again in a minute.";
 
 export type OpenParams = {
   market: string;
   direction: "long" | "short";
   leverage: number;
-  /** Human USDG as a decimal string. */
+  /** Human amount of the asset as a decimal string. */
   amount: string;
   stopLoss?: string;
   takeProfit?: string;
@@ -189,7 +189,7 @@ export function useOpenTrade(onSettled?: () => void) {
       } catch (error) {
         const { id, sent } = progress;
         if (id && sent) {
-          // The USDG left the wallet: never drop the request. Polling reports
+          // The asset left the wallet: never drop the request. Polling reports
           // the payment again if that step is what failed.
           setPhase({ kind: "tracking", id, request: null, reconnecting: true });
           return;

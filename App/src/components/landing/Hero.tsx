@@ -175,7 +175,7 @@ export default function Hero() {
               textTransform: "uppercase",
             }}
           >
-            Built on Robinhood Chain · powered by Arcus
+            Built on Monad · powered by Perpl
           </div>
         )}
       </div>

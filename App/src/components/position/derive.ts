@@ -243,7 +243,7 @@ export function derive(series: Series, s: ViewState, cfg: PositionConfig) {
 
     buyinHint: isClosed
       ? "This position is closed — buy-ins are settled."
-      : "Creator fee " + (feeBps / 100).toFixed(2) + "% · settles in USDG",
+      : "Creator fee " + (feeBps / 100).toFixed(2) + "%",
     balance: compact(18420),
     amount: s.amount,
     quickAmounts: [500, 2500, 10000, 18420].map((n, i) => ({

@@ -6,8 +6,8 @@
 export default function TestnetBanner() {
   return (
     <div role="note" className="laxu-testnet-banner">
-      <strong>Testnet only. No real funds.</strong> Laxu is an independent project built on Arcus, not affiliated with or
-      endorsed by Arcus.
+      <strong>Testnet only, no real funds.</strong> Independent project built on Perpl and Monad; not affiliated with
+      either.
     </div>
   );
 }

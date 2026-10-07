@@ -79,7 +79,7 @@ export default function SiteFooter() {
                   borderRadius: 99,
                 }}
               >
-                ROBINHOOD CHAIN
+                MONAD
               </div>
               <div
                 style={{
@@ -92,7 +92,7 @@ export default function SiteFooter() {
                   borderRadius: 99,
                 }}
               >
-                POWERED BY ARCUS
+                POWERED BY PERPL
               </div>
             </div>
           </div>
@@ -186,7 +186,8 @@ export default function SiteFooter() {
         >
           Leveraged positions can be liquidated in full. Position tokens carry the market risk of
           the underlying trade plus smart-contract risk, and are not deposits, securities, or
-          insured instruments. Nothing here is financial advice.
+          insured instruments. Nothing here is financial advice. Testnet only, no real funds.
+          Independent project built on Perpl and Monad; not affiliated with either.
           <TradingViewCredit style={{ marginTop: 10 }} />
         </div>
 

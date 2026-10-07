@@ -90,7 +90,7 @@ export default function CtaFaq() {
               textWrap: "pretty",
             }}
           >
-            Open a trade on Arcus, wrap it with Laxu, and it becomes something you can borrow
+            Open a trade on Perpl, wrap it with Laxu, and it becomes something you can borrow
             against, sell outright, or open up to other traders.
           </p>
           <div

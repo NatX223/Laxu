@@ -68,7 +68,7 @@ export default function AssetsSection() {
               textWrap: "pretty",
             }}
           >
-            Anything Arcus can open, Laxu can wrap. Same tokenization, same lending and buy-in
+            Anything Perpl can open, Laxu can wrap. Same tokenization, same lending and buy-in
             rails, whatever the underlying is.
           </p>
         </div>
