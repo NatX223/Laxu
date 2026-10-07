@@ -11,7 +11,9 @@ import {
   type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { fetchRawCandles, subscribeRawCandles, toBar, type ArcusCandle, type ArcusTimeframe } from "@/lib/arcus";
+import { useAsset } from "@/lib/asset";
+import type { LaxuMarket } from "@/lib/markets";
+import { fetchCandles, watchLiveCandles, type Bar, type Timeframe } from "@/lib/perplMarketData";
 import { applyWindow, baseChartOptions } from "./theme";
 
 /** The trade screen's own candle colours, from the design. */
@@ -20,18 +22,15 @@ const DOWN = "#e8543a";
 const UP_VOL = "rgba(76,175,80,0.45)";
 const DOWN_VOL = "rgba(232,84,58,0.45)";
 
-/** Arcus caps a single history request at 1500 bars. */
-const COUNTBACK = 1500;
-
 export type ScaleMode = "normal" | "log" | "percent";
 
-/** `market` is the one the bar came from, so a late bar from the previous market can be told apart. */
-export type LiveBar = { market: string; o: number; h: number; l: number; c: number; v: number; ref: number };
+/** `market` is Perpl's id for the one the bar came from, so a late bar from the previous market can be told apart. */
+export type LiveBar = { market: number; o: number; h: number; l: number; c: number; v: number; ref: number };
 
 export type TradeChartProps = {
-  /** Arcus market name, e.g. "TSLA-USD". */
-  market: string;
-  timeframe: ArcusTimeframe;
+  /** The market to draw; undefined until the live list has loaded. */
+  market: LaxuMarket | undefined;
+  timeframe: Timeframe;
   /** trailing seconds to show; null shows everything loaded */
   windowSec: number | null;
   scaleMode: ScaleMode;
@@ -40,10 +39,10 @@ export type TradeChartProps = {
   onBar?: (bar: LiveBar) => void;
 };
 
-const volumeOf = (c: ArcusCandle): HistogramData<UTCTimestamp> => ({
-  time: Math.floor(c.openTime / 1_000_000) as UTCTimestamp,
-  value: Number(c.volume) || 0,
-  color: Number(c.close) >= Number(c.open) ? UP_VOL : DOWN_VOL,
+const volumeOf = (b: Bar): HistogramData<UTCTimestamp> => ({
+  time: b.time,
+  value: b.volume || 0,
+  color: b.close >= b.open ? UP_VOL : DOWN_VOL,
 });
 
 const MODE: Record<ScaleMode, PriceScaleMode> = {
@@ -53,9 +52,10 @@ const MODE: Record<ScaleMode, PriceScaleMode> = {
 };
 
 /**
- * The trade screen's main chart: Arcus candles with a volume pane underneath,
- * history over REST then the in-progress bar over WebSocket. TradingView's
- * attribution logo stays on — the Lightweight Charts licence requires it.
+ * The trade screen's main chart: Perpl candles with a volume pane underneath,
+ * history first, then the in-progress bar re-read every few seconds.
+ * TradingView's attribution logo stays on — the Lightweight Charts licence
+ * requires it.
  */
 export default function TradeChart({ market, timeframe, windowSec, scaleMode, autoScale, onBar }: TradeChartProps) {
   const el = useRef<HTMLDivElement>(null);
@@ -63,6 +63,7 @@ export default function TradeChart({ market, timeframe, windowSec, scaleMode, au
   const candles = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volume = useRef<ISeriesApi<"Histogram"> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { decimals: assetDecimals } = useAsset();
   /** first loaded bar, unix seconds -- bounds the range pills */
   const earliest = useRef<number | undefined>(undefined);
   const onBarRef = useRef(onBar);
@@ -108,61 +109,71 @@ export default function TradeChart({ market, timeframe, windowSec, scaleMode, au
     };
   }, []);
 
+  const marketId = market?.venueMarketId;
+  const priceDecimals = market?.priceDecimals;
+  const sizeDecimals = market?.sizeDecimals;
+
   useEffect(() => {
     const cs = candles.current;
     const vs = volume.current;
-    if (!cs || !vs) return;
+    if (!cs || !vs || marketId === undefined || priceDecimals === undefined || sizeDecimals === undefined) return;
+    const scale = { venueMarketId: marketId, priceDecimals, sizeDecimals };
     const abort = new AbortController();
     let unsubscribe: (() => void) | null = null;
-    let history: ArcusCandle[] = [];
+    let history: Bar[] = [];
     setError(null);
+    // a $0.026 market needs its own precision, not the default two decimals
+    cs.applyOptions({ priceFormat: { type: "price", precision: priceDecimals, minMove: 10 ** -priceDecimals } });
 
     const report = () => {
       const last = history[history.length - 1];
       if (!last) return;
       // reference: the close ~24h before the last bar, else the first loaded
-      const dayAgo = last.openTime - 86_400 * 1_000_000;
-      const ref = [...history].reverse().find((c) => c.openTime <= dayAgo) ?? history[0];
+      const dayAgo = last.time - 86_400;
+      const ref = [...history].reverse().find((c) => c.time <= dayAgo) ?? history[0];
       onBarRef.current?.({
-        market,
-        o: Number(last.open),
-        h: Number(last.high),
-        l: Number(last.low),
-        c: Number(last.close),
-        v: Number(last.volume) || 0,
-        ref: Number(ref.close),
+        market: marketId,
+        o: last.open,
+        h: last.high,
+        l: last.low,
+        c: last.close,
+        v: last.volume || 0,
+        ref: ref.close,
       });
     };
 
-    fetchRawCandles(market, timeframe, COUNTBACK, abort.signal)
-      .then((raw) => {
+    fetchCandles(scale, timeframe, assetDecimals, undefined, abort.signal)
+      .then((bars) => {
         if (abort.signal.aborted) return;
-        history = raw;
-        cs.setData(raw.map(toBar));
-        vs.setData(raw.map(volumeOf));
-        earliest.current = raw.length ? Math.floor(raw[0].openTime / 1_000_000) : undefined;
+        history = bars;
+        cs.setData(bars);
+        vs.setData(bars.map(volumeOf));
+        earliest.current = bars.length ? (bars[0].time as number) : undefined;
         if (chart.current) applyWindow(chart.current, windowRef.current, earliest.current);
         report();
+        if (bars.length === 0) setError("No candles for this market yet");
 
-        unsubscribe = subscribeRawCandles(market, timeframe, (candle) => {
-          const last = history[history.length - 1];
-          if (last && candle.openTime < last.openTime) return; // stale; update() would throw
-          cs.update(toBar(candle));
-          vs.update(volumeOf(candle));
-          if (last && candle.openTime === last.openTime) history[history.length - 1] = candle;
-          else history = [...history, candle];
+        unsubscribe = watchLiveCandles(scale, timeframe, assetDecimals, (fresh) => {
+          for (const bar of fresh) {
+            const last = history[history.length - 1];
+            if (last && bar.time < last.time) continue; // stale; update() would throw
+            cs.update(bar);
+            vs.update(volumeOf(bar));
+            if (last && bar.time === last.time) history[history.length - 1] = bar;
+            else history = [...history, bar];
+          }
           report();
         });
       })
       .catch((e: unknown) => {
-        if (!abort.signal.aborted) setError(e instanceof Error ? e.message : "Could not load candles");
+        if (!abort.signal.aborted) setError(e instanceof Error ? "Perpl candles are unavailable right now" : "Could not load candles");
       });
 
     return () => {
       abort.abort();
       unsubscribe?.();
     };
-  }, [market, timeframe]);
+  }, [marketId, priceDecimals, sizeDecimals, timeframe, assetDecimals]);
 
   useEffect(() => {
     if (chart.current) applyWindow(chart.current, windowSec, earliest.current);

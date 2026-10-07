@@ -1,27 +1,41 @@
+import { useAsset } from "@/lib/asset";
+import type { MarketState } from "@/lib/perplMarketData";
+import { useRawMarketStates } from "@/lib/perplMarketData";
+import { useTokenCounts } from "@/lib/tokenCounts";
 import { cat } from "./data";
-import type { Candle, TradeState } from "./engine";
+import { statsFor, type MarketStats } from "./stats";
 
 export type MarketView = {
   sym: string;
-  list: Candle[];
-  /** Arcus's mark; null until Arcus has answered for this market. */
+  /** Perpl's mark; null until Perpl (or the backend's last sync) has one for this market. */
   mark: number | null;
-  /** The 24h reference price: the chart's close a day back, else implied by Arcus's 24h change. */
+  /** Perpl's 24h reference price (`prv`); null when it hasn't said. */
   open: number | null;
   chg: number;
   chgColor: string;
-  /** The prototype pins the active market's price precision to 2 decimals. */
+  /** The market's own price precision (Perpl's `priceDecimals`). */
   dp: number;
+  state: MarketState | null;
+  stats: MarketStats;
 };
 
-/** The handful of numbers the stats bar, chart, book and ticket all read. */
-export function deriveMarket(st: TradeState): MarketView {
-  const sym = st.market;
-  const mark = st.px[sym] ?? null;
-  const list = st.candles[sym] || [];
-  const change24h = Number(cat(sym).live?.priceChange24h);
-  const open =
-    st.pxRef[sym] ?? (mark !== null && Number.isFinite(change24h) ? mark / (1 + change24h) : null);
-  const chg = mark !== null && open ? ((mark - open) / open) * 100 : 0;
-  return { sym, list, mark, open, chg, chgColor: chg >= 0 ? "#2fd18c" : "#ff6b57", dp: 2 };
+/** The handful of numbers the stats bar, chart, book and ticket all read, for the market on screen. */
+export function useMarketView(sym: string): MarketView {
+  const raw = useRawMarketStates();
+  const { decimals } = useAsset();
+  const counts = useTokenCounts();
+  const live = cat(sym).live;
+  // no clock here: the funding countdown lives in StatsBar, so the whole screen never ticks each second
+  const stats = statsFor(live, { raw, decimals, counts }, 0);
+  const chg = stats.changePct ?? 0;
+  return {
+    sym,
+    mark: stats.mark,
+    open: stats.mark !== null && stats.changeAbs !== null ? stats.mark - stats.changeAbs : null,
+    chg,
+    chgColor: chg >= 0 ? "#2fd18c" : "#ff6b57",
+    dp: live?.priceDecimals ?? 2,
+    state: stats.state,
+    stats,
+  };
 }

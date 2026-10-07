@@ -1,17 +1,27 @@
 "use client";
 
+import { useAsset } from "@/lib/asset";
+import { useRawMarketStates } from "@/lib/perplMarketData";
+import { useTokenCounts } from "@/lib/tokenCounts";
 import { cat, money } from "./data";
 import type { MarketView } from "./derive";
 import type { TradeEngine } from "./engine";
 import { MONO } from "./shared";
+import { countdownLabel, statsFor, useNow } from "./stats";
 
-/** Mark price plus the six market stats, split by a hairline rule. */
+/** Mark price plus the six market stats, split by a hairline rule. Every figure is Perpl's, or a dash. */
 export default function StatsBar({ engine, mkt }: { engine: TradeEngine; mkt: MarketView }) {
   const { st } = engine;
-  const m = cat(st.market);
   const { mark, open, chg, chgColor, dp } = mkt;
+  // The countdown ticks here, not in the screen: only this bar re-renders each second.
+  const now = useNow(1000);
+  const raw = useRawMarketStates();
+  const { decimals } = useAsset();
+  const counts = useTokenCounts();
+  const stats = statsFor(cat(st.market).live, { raw, decimals, counts }, now);
 
   const known = mark !== null && open !== null;
+  const fundingColor = stats.fundingPositive === null ? "#e3ddf4" : stats.fundingPositive ? "#2fd18c" : "#ff8f7d";
 
   const cells = [
     {
@@ -19,11 +29,11 @@ export default function StatsBar({ engine, mkt }: { engine: TradeEngine; mkt: Ma
       v: known ? (chg >= 0 ? "+" : "−") + money(Math.abs(mark - open), dp) : "—",
       c: known ? chgColor : "#e3ddf4",
     },
-    { k: "FUNDING / 1H", v: "+0.0091%", c: "#2fd18c" },
-    { k: "NEXT FUNDING", v: "00:" + String(38 - (st.tick % 38)).padStart(2, "0"), c: "#e3ddf4" },
-    { k: "OPEN INTEREST", v: m.oi, c: "#e3ddf4" },
-    { k: "24H VOLUME", v: m.vol, c: "#e3ddf4" },
-    { k: "LAXU TOKENS", v: m.tok, c: "#ffb765" },
+    { k: `FUNDING / ${stats.fundingInterval}`, v: stats.funding, c: fundingColor },
+    { k: "NEXT FUNDING", v: countdownLabel(stats.nextFundingIn), c: "#e3ddf4" },
+    { k: "OPEN INTEREST", v: stats.openInterest, c: "#e3ddf4" },
+    { k: "24H VOLUME", v: stats.volume, c: "#e3ddf4" },
+    { k: "LAXU TOKENS", v: stats.tokens, c: "#ffb765" },
   ];
 
   return (

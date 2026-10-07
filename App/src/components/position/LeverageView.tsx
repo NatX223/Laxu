@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
 import type { NavHistory, PublicPosition } from "@/lib/api";
+import { marketFor, useMarkets } from "@/lib/markets";
 import { CELL_BG, HAIRLINE, MONO, Panel } from "./shared";
 import { SUPPLY, usd, type RangeKey, type Series, type Side } from "./data";
 import type { PositionEngine } from "./engine";
@@ -128,7 +129,10 @@ export default function LeverageView({
     [],
   );
 
-  const market = live?.venueMarket ?? "ETH-USD";
+  // The underlying's Perpl market: the position's own, or ETH for the design preview. Undefined until the list loads.
+  useMarkets();
+  const perpl = marketFor(live?.symbol ?? live?.venueMarket ?? "ETH");
+  const market = perpl?.displaySymbol ?? live?.venueMarket ?? "ETH-USD";
   const base = live?.symbol ?? market.split("-")[0];
   const side = live?.direction ?? previewSide;
 
@@ -197,16 +201,16 @@ export default function LeverageView({
         <div style={CARD}>
           <ChartHead
             title={`${base} · underlying`}
-            source={`SOURCE · ARCUS MARKET DATA API · ${market}`}
+            source={`SOURCE · PERPL MARKET DATA · ${market}`}
             last={asset ? usd(asset.last) : "—"}
             chg={asset ? `${signed(assetPct, 2)} vs entry` : ""}
             chgColor={assetPct >= 0 ? GREEN : ROSE}
           />
-          {awaitingLive ? (
+          {awaitingLive || !perpl ? (
             <Loading />
           ) : (
             <AssetChart
-              market={market}
+              market={perpl}
               side={side}
               entryPrice={live?.entryPrice ? Number(live.entryPrice) : null}
               entryTime={live ? live.openedAt : demo?.entryTime}
@@ -249,7 +253,7 @@ export default function LeverageView({
         NAV is the contract&rsquo;s own <span style={{ fontFamily: MONO, color: "#c2b6e4" }}>totalAssets()</span> /{" "}
         <span style={{ fontFamily: MONO, color: "#c2b6e4" }}>totalSupply()</span>, read at every report &mdash;
         stepped, because the flat stretches are what the contract actually saw.
-        {!live && !awaitingLive && " Preview: candles are live Arcus ETH; the NAV line replays sample reports."}
+        {!live && !awaitingLive && " Preview: candles are live Perpl ETH; the NAV line replays sample reports."}
       </div>
     </Panel>
   );

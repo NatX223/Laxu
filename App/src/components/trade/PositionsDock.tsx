@@ -11,10 +11,12 @@ import {
   txErrorMessage,
   withdrawCollateral,
 } from "@/lib/actions";
+import { useAsset } from "@/lib/asset";
 import { useSession } from "@/lib/session";
 import { getWalletClient } from "@/lib/walletClient";
 import { money, type Position } from "./data";
-import { liqOf, posPnl, type TradeEngine } from "./engine";
+import { liqOf, type TradeEngine } from "./engine";
+import { usePositionNavs } from "./navs";
 import { Disc, MONO } from "./shared";
 
 const COLS = "minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.05fr) minmax(0, 1.5fr)";
@@ -39,13 +41,14 @@ const CONFIRM_MS = 4000;
  * Exit from the dock. Tokens posted as loan collateral are withdrawn from the
  * pool first (only possible with no debt), then, reading the chain afresh:
  *   - the creator holding the whole supply: `requestClose()` -- the backend
- *     closes the Arcus trade and settles the actual proceeds back.
+ *     closes the Perpl trade and settles the actual proceeds back.
  *   - otherwise: `requestRedeem` of the wallet balance -- the backend reduces
- *     Arcus by that fraction and pays the USDG straight to the wallet.
+ *     Perpl by that fraction and pays the asset straight to the wallet.
  */
 function CloseButton({ position, engine }: { position: Position; engine: TradeEngine }) {
   const { wallet } = useSession();
   const { flash, reloadPositions } = engine.actions;
+  const { symbol } = useAsset();
   const [phase, setPhase] = useState<"idle" | "confirm" | "busy" | "withdrawing" | "closing" | "redeeming">("idle");
 
   useEffect(() => {
@@ -63,7 +66,7 @@ function CloseButton({ position, engine }: { position: Position; engine: TradeEn
     try {
       let s = await readHolderState(token, account, pool);
       if (s.closed || s.closeRequested) throw new Error("This position is already closing");
-      if (s.pendingRedeem > BigInt(0)) throw new Error("A redeem is already settling on Arcus");
+      if (s.pendingRedeem > BigInt(0)) throw new Error("A redeem is already settling on Perpl");
       const client = await getWalletClient(wallet);
 
       // Bring posted collateral home first, so the whole stake exits in one go.
@@ -80,11 +83,11 @@ function CloseButton({ position, engine }: { position: Position; engine: TradeEn
       if (s.balance === s.totalSupply) {
         if (s.pendingDeposit > BigInt(0)) throw new Error("A buy-in is still settling; try again in a minute");
         await closePosition(client, token);
-        flash("Close requested — closing the trade on Arcus");
+        flash("Close requested — closing the trade on Perpl");
         setPhase("closing");
       } else {
         await exitStake(client, token, s.balance);
-        flash("Redeem requested — USDG lands in your wallet once Arcus fills");
+        flash(`Redeem requested — ${symbol} lands in your wallet once Perpl fills`);
         setPhase("redeeming");
       }
       reloadPositions();
@@ -138,6 +141,8 @@ function CloseButton({ position, engine }: { position: Position; engine: TradeEn
 /** The lit panel under the workspace: the user's minted positions, each linking to its page. */
 export default function PositionsDock({ engine }: { engine: TradeEngine }) {
   const { st } = engine;
+  // PnL is the token's own NAV (currentPnLBps), so funding and fees are in it.
+  const navs = usePositionNavs(st.positions);
 
   return (
     <div style={{ padding: "0 8px 8px 8px" }}>
@@ -187,10 +192,11 @@ export default function PositionsDock({ engine }: { engine: TradeEngine }) {
         </div>
 
         {st.positions.map((x) => {
-          // Arcus's mark; until it has answered, mark and PnL read as dashes.
-          const mark = st.px[x.sym] ?? null;
-          const pnl = mark === null ? null : posPnl(x, mark);
-          const pct = pnl !== null && x.margin > 0 ? (pnl / x.margin) * 100 : 0;
+          // Perpl's mark, and the token's NAV for PnL; until each has answered, the cell reads as a dash.
+          const mark = engine.markOf(x.sym);
+          const nav = navs[x.addr.toLowerCase()];
+          const pnl = nav ? nav.pnlAbs : null;
+          const pct = nav ? nav.pnlPct : 0;
           const pnlColor = pnl === null ? "#e3ddf4" : pnl >= 0 ? "#2fd18c" : "#ff6b57";
           const closing = x.status !== "open";
 

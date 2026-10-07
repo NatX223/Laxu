@@ -1,20 +1,20 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useMarketRefresh } from "@/lib/markets";
+import { useMarketRefresh, useMarkets } from "@/lib/markets";
 import {
-  MARKET_CATS,
   MARKET_TABS,
+  categoriesOf,
   cat,
-  dpOf,
   money,
   syms,
 } from "./data";
 import type { TradeEngine } from "./engine";
 import { Disc, MONO } from "./shared";
+import { statsFor, useStatsInputs } from "./stats";
 
 const COLS = "minmax(150px,1.35fr) minmax(0,1fr) minmax(0,1.75fr) minmax(0,0.8fr) minmax(0,0.8fr) minmax(0,0.85fr) minmax(0,0.9fr)";
-const HEADS = ["Name", "Mark Price", "24h Change", "24h Laxu Vol.", "1h Funding", "Market Cap", "Open Interest"];
+const HEADS = ["Name", "Mark Price", "24h Change", "24h Volume", "Funding", "Open Interest", "Laxu Tokens"];
 
 function Star({ filled, color }: { filled: boolean; color: string }) {
   return (
@@ -35,13 +35,15 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
 
   // The menu only mounts while open: refetch on open, then every 60s.
   useMarketRefresh(60_000);
+  const inputs = useStatsInputs();
+  // Only the categories that have markets get a tab (Perpl lists crypto only).
+  const categories = categoriesOf(useMarkets());
 
   const q = st.mq.trim().toLowerCase();
   const rows = syms().filter((sym) => {
     const c = cat(sym);
-    // "nvidia", "NVDA" and "nvda-usd" all find NVDA
+    // "ethereum", "ETH" and "eth-usd" all find ETH
     if (q && ![sym, c.displaySymbol, c.name].some((field) => field.toLowerCase().includes(q))) return false;
-    if (st.mktTab === "Spot" && c.cat !== "Crypto" && c.cat !== "Equities") return false;
     if (st.mktCat === "★") return st.favs.includes(sym);
     if (st.mktCat !== "All") return c.cat === st.mktCat;
     return true;
@@ -160,7 +162,7 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
               <polygon points="12 3 14.9 9 21.4 9.9 16.7 14.4 17.8 20.8 12 17.8 6.2 20.8 7.3 14.4 2.6 9.9 9.1 9" />
             </svg>
           </div>
-          {MARKET_CATS.map((c) => (
+          {categories.map((c) => (
             <div
               key={c}
               onClick={() => set("mktCat", c)}
@@ -204,20 +206,13 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
           {rows.map((sym) => {
             const c = cat(sym);
-            const price = st.px[sym] ?? c.base;
-            // Arcus's own 24h change when live; the simulated series' otherwise.
-            let chp: number;
-            let delta: number;
-            if (c.live) {
-              chp = Number(c.live.priceChange24h) * 100;
-              delta = price - price / (1 + chp / 100);
-            } else {
-              const list = st.candles[sym] || [];
-              const open = list.length ? list[0].o : price;
-              chp = open ? ((price - open) / open) * 100 : 0;
-              delta = price - open;
-            }
-            const up = chp >= 0;
+            // Perpl's mark and its 24h reference price; a dash for anything it hasn't said.
+            const stats = statsFor(c.live, inputs, 0);
+            const dp = c.live?.priceDecimals ?? 2;
+            const price = stats.mark;
+            const chp = stats.changePct;
+            const delta = stats.changeAbs;
+            const up = (chp ?? 0) >= 0;
             const fav = st.favs.includes(sym);
             return (
               <div
@@ -281,20 +276,30 @@ export default function MarketMenu({ engine }: { engine: TradeEngine }) {
                     </div>
                   </div>
                 </div>
-                <div style={{ fontFamily: MONO, fontSize: 13, color: "#fdfbf7", whiteSpace: "nowrap" }}>{money(price, dpOf(sym))}</div>
-                <div style={{ fontFamily: MONO, fontSize: 13, whiteSpace: "nowrap", color: up ? "#58e0a6" : "#ff8f7d" }}>
-                  {(up ? "+" : "−") + "$" + money(Math.abs(delta), dpOf(sym)).slice(1) + " (" + (up ? "+" : "") + chp.toFixed(2) + "%)"}
+                <div style={{ fontFamily: MONO, fontSize: 13, color: "#fdfbf7", whiteSpace: "nowrap" }}>{price === null ? "—" : money(price, dp)}</div>
+                <div style={{ fontFamily: MONO, fontSize: 13, whiteSpace: "nowrap", color: chp === null ? "#e3ddf4" : up ? "#58e0a6" : "#ff8f7d" }}>
+                  {chp === null || delta === null
+                    ? "—"
+                    : (up ? "+" : "−") + "$" + money(Math.abs(delta), dp).slice(1) + " (" + (up ? "+" : "") + chp.toFixed(2) + "%)"}
                 </div>
-                <div style={{ fontFamily: MONO, fontSize: 13, color: "#e3ddf4" }}>{c.vol}</div>
-                <div style={{ fontFamily: MONO, fontSize: 13, color: "#58e0a6" }}>{c.fund}</div>
-                <div style={{ fontFamily: MONO, fontSize: 13, color: "#e3ddf4" }}>{c.mcap}</div>
-                <div style={{ fontFamily: MONO, fontSize: 13, color: "#e3ddf4" }}>{c.oi}</div>
+                <div style={{ fontFamily: MONO, fontSize: 13, color: "#e3ddf4" }}>{stats.volume}</div>
+                <div
+                  style={{
+                    fontFamily: MONO,
+                    fontSize: 13,
+                    color: stats.fundingPositive === null ? "#e3ddf4" : stats.fundingPositive ? "#58e0a6" : "#ff8f7d",
+                  }}
+                >
+                  {stats.funding}
+                </div>
+                <div style={{ fontFamily: MONO, fontSize: 13, color: "#e3ddf4" }}>{stats.openInterest}</div>
+                <div style={{ fontFamily: MONO, fontSize: 13, color: "#e3ddf4" }}>{stats.tokens}</div>
               </div>
             );
           })}
           {rows.length === 0 && (
             <div style={{ padding: "44px 20px", textAlign: "center", fontSize: 13, fontWeight: 600, color: "#a79bd0" }}>
-              No market matches that search.
+              {syms().length === 0 ? "Markets are loading\u2026" : "No market matches that search."}
             </div>
           )}
         </div>

@@ -5,18 +5,18 @@ import {
   CandlestickSeries,
   createChart,
   createSeriesMarkers,
-  type CandlestickData,
   type IChartApi,
   type ISeriesApi,
-  type UTCTimestamp,
 } from "lightweight-charts";
-import { defaultTimeframe, fetchCandles, subscribeCandles, TIMEFRAMES, type Timeframe } from "@/lib/arcus";
+import { useAsset } from "@/lib/asset";
+import type { LaxuMarket } from "@/lib/markets";
+import { defaultTimeframe, fetchCandles, TIMEFRAMES, watchLiveCandles, type Bar, type Timeframe } from "@/lib/perplMarketData";
 import { MONO } from "../position/shared";
 import { applyWindow, baseChartOptions, entryLine, FROST } from "./theme";
 
 export type AssetChartProps = {
-  /** Arcus market name, e.g. "ETH-USD". */
-  market: string;
+  /** The market to draw; undefined until the live list has loaded. */
+  market: LaxuMarket | undefined;
   side: "long" | "short";
   /** Unset, the entry bar's open stands in (demo mode knows only a time). */
   entryPrice?: number | null;
@@ -30,9 +30,10 @@ export type AssetChartProps = {
 };
 
 /**
- * The underlying, as candles, straight from Arcus: history over REST, the
- * in-progress bar over WebSocket. Entry is a dashed amber price line plus an
- * arrow at the entry bar (up under it for a long, down over it for a short).
+ * The underlying, as candles, straight from Perpl: history first, then the
+ * in-progress bar re-read every few seconds. Entry is a dashed amber price
+ * line plus an arrow at the entry bar (up under it for a long, down over it
+ * for a short).
  */
 export default function AssetChart({
   market,
@@ -48,6 +49,7 @@ export default function AssetChart({
   const series = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const [timeframe, setTimeframe] = useState<Timeframe>(() => defaultTimeframe(entryTime));
   const [error, setError] = useState<string | null>(null);
+  const { decimals: assetDecimals } = useAsset();
   const onLastRef = useRef(onLast);
   const windowRef = useRef(windowSec);
   useEffect(() => {
@@ -75,17 +77,23 @@ export default function AssetChart({
     };
   }, []);
 
+  const marketId = market?.venueMarketId;
+  const priceDecimals = market?.priceDecimals;
+  const sizeDecimals = market?.sizeDecimals;
+
   useEffect(() => {
     const s = series.current;
-    if (!s) return;
+    if (!s || marketId === undefined || priceDecimals === undefined || sizeDecimals === undefined) return;
+    const scale = { venueMarketId: marketId, priceDecimals, sizeDecimals };
     const abort = new AbortController();
     let unsubscribe: (() => void) | null = null;
-    let bars: CandlestickData<UTCTimestamp>[] = [];
+    let bars: Bar[] = [];
     const lines: ReturnType<typeof s.createPriceLine>[] = [];
     let markers: { detach(): void } | null = null;
     setError(null);
+    s.applyOptions({ priceFormat: { type: "price", precision: priceDecimals, minMove: 10 ** -priceDecimals } });
 
-    fetchCandles(market, timeframe, 500, abort.signal)
+    fetchCandles(scale, timeframe, assetDecimals, 500, abort.signal)
       .then((history) => {
         if (abort.signal.aborted) return;
         bars = history;
@@ -105,18 +113,21 @@ export default function AssetChart({
         if (chart.current) applyWindow(chart.current, windowRef.current);
         if (history.length && entry) onLastRef.current?.(history[history.length - 1].close, entry);
 
-        // history first, then live with snapshot:false so nothing is doubled
-        unsubscribe = subscribeCandles(market, timeframe, (bar) => {
-          const last = bars[bars.length - 1];
-          if (last && bar.time < last.time) return; // stale frame; update() would throw
-          s.update(bar);
-          if (!last || bar.time > last.time) bars = [...bars, bar];
-          else bars[bars.length - 1] = bar;
-          if (entry) onLastRef.current?.(bar.close, entry);
+        // history first, then the live tail: each poll hands over the last few bars, oldest first
+        unsubscribe = watchLiveCandles(scale, timeframe, assetDecimals, (fresh) => {
+          for (const bar of fresh) {
+            const last = bars[bars.length - 1];
+            if (last && bar.time < last.time) continue; // stale frame; update() would throw
+            s.update(bar);
+            if (!last || bar.time > last.time) bars = [...bars, bar];
+            else bars[bars.length - 1] = bar;
+          }
+          const close = bars[bars.length - 1]?.close;
+          if (entry && close !== undefined) onLastRef.current?.(close, entry);
         });
       })
       .catch((e: unknown) => {
-        if (!abort.signal.aborted) setError(e instanceof Error ? e.message : "Could not load candles");
+        if (!abort.signal.aborted) setError(e instanceof Error ? "Perpl candles are unavailable right now" : "Could not load candles");
       });
 
     return () => {
@@ -125,7 +136,7 @@ export default function AssetChart({
       markers?.detach();
       for (const line of lines) s.removePriceLine(line);
     };
-  }, [market, timeframe, side, entryPrice, entryTime]);
+  }, [marketId, priceDecimals, sizeDecimals, timeframe, side, entryPrice, entryTime, assetDecimals]);
 
   useEffect(() => {
     if (chart.current) applyWindow(chart.current, windowSec);

@@ -12,26 +12,21 @@ import PositionsDock from "./PositionsDock";
 import StatsBar from "./StatsBar";
 import TokensView from "./TokensView";
 import TopBar from "./TopBar";
-import { deriveMarket } from "./derive";
+import { useMarketView } from "./derive";
 import { useTradeEngine } from "./engine";
 
 /**
  * The trade workspace, transcribed from `Laxu Trade.dc.html`.
  * Three columns — chart, book, ticket — over the positions dock, with the
- * grain wash the rest of the site uses laid across the whole screen.
+ * grain wash the rest of the site uses laid across the whole screen. Every
+ * market figure on it is Perpl's, read live.
  *
- * `showDepth` and `liveTicks` are the two knobs the prototype exposed.
+ * `showDepth` is the knob the prototype exposed.
  */
-export default function TradeScreen({
-  showDepth = true,
-  liveTicks = true,
-}: {
-  showDepth?: boolean;
-  liveTicks?: boolean;
-}) {
-  const engine = useTradeEngine(liveTicks);
+export default function TradeScreen({ showDepth = true }: { showDepth?: boolean }) {
+  const engine = useTradeEngine();
   const { st, hostRef } = engine;
-  const mkt = deriveMarket(st);
+  const mkt = useMarketView(st.market);
   const isTrade = st.view === "trade";
 
   return (

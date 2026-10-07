@@ -1,7 +1,6 @@
 "use client";
 
 import { useAsset } from "@/lib/asset";
-import { hoursHint } from "@/lib/markets";
 import { FaucetNudge } from "../faucet/FaucetButton";
 import { SIZE_CHIPS, cat, money } from "./data";
 import type { MarketView } from "./derive";
@@ -23,13 +22,14 @@ const INPUT: React.CSSProperties = {
 
 /** The order ticket column, with the fill toast docked to its bottom edge. */
 export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt: MarketView }) {
-  const { st, set, lev, balances, blocker, open, actions } = engine;
+  const { st, set, lev, levMax, minTrade, balances, blocker, open, actions } = engine;
   const { mark, dp } = mkt;
   const { symbol } = useAsset();
 
   const market = cat(st.market);
-  const levMax = market.lev;
-  const hint = market.live ? hoursHint(market.live) : null;
+  // The slider's top is Perpl's real limit for the market. With no live market there is no limit to offer,
+  // so the ticket is disabled (the blocker says why) instead of falling back to made-up numbers.
+  const hasMarket = Boolean(market.live);
   const notional = st.size * lev;
   const liq = mark === null ? null : liqOf(mark, st.side, lev);
   const healthPct = Math.max(8, 100 - lev * 4.2);
@@ -48,11 +48,11 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
     { k: "Notional", v: money(notional, 0), c: "#fdfbf7" },
     { k: "Entry (est.)", v: mark === null ? "—" : money(mark, dp), c: "#fdfbf7" },
     { k: "Liquidation", v: liq === null ? "—" : money(liq, dp), c: "#ffb765" },
-    { k: "Fees", v: money(notional * 0.00055, 2), c: "#e3ddf4" },
+    { k: "Fees (taker)", v: market.live ? money(notional * market.live.takerFee, 2) : "—", c: "#e3ddf4" },
   ];
 
   // deduped: a 3x market would otherwise read 1× 1× 2× 3×
-  const levTicks = [...new Set([1, Math.round(levMax * 0.25), Math.round(levMax * 0.5), levMax])];
+  const levTicks = hasMarket ? [...new Set([1, Math.round(levMax * 0.25), Math.round(levMax * 0.5), levMax])] : [];
 
   return (
     <div className="laxu-trade-ticket" style={{ flex: "0 1 262px", minWidth: 208, display: "flex", flexDirection: "column", gap: 10, position: "relative" }}>
@@ -113,7 +113,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
               {t.toUpperCase()}
             </div>
           ))}
-          <div style={{ fontSize: 10.5, color: "#998dbd" }}>Fills immediately on Arcus</div>
+          <div style={{ fontSize: 10.5, color: "#998dbd" }}>Fills immediately on Perpl</div>
         </div>
 
         {st.otype === "limit" && (
@@ -139,6 +139,12 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
             onChange={(e) => set("size", parseFloat(e.target.value.replace(/[^0-9.]/g, "")) || 0)}
             style={{ ...INPUT, fontSize: 17, fontWeight: 600, padding: 12 }}
           />
+          {hasMarket && (
+            <div style={{ fontSize: 10.5, color: "#998dbd" }}>
+              Minimum {minTrade} {symbol}
+              {minTrade > 1 ? " at this leverage" : ""}
+            </div>
+          )}
           <div style={{ display: "flex", gap: 5 }}>
             {[...SIZE_CHIPS, "max" as const].map((v) => (
               <div
@@ -177,11 +183,13 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
           <input
             type="range"
             min={1}
-            max={levMax}
+            max={Math.max(levMax, 1)}
             step={1}
             value={lev}
+            disabled={!hasMarket}
+            aria-label={hasMarket ? `Leverage, up to ${levMax}x on ${market.displaySymbol}` : "Leverage (markets not loaded)"}
             onChange={(e) => set("lev", Math.min(parseInt(e.target.value, 10), levMax))}
-            style={{ width: "100%", height: 22, cursor: "pointer" }}
+            style={{ width: "100%", height: 22, cursor: hasMarket ? "pointer" : "default" }}
           />
           <div style={{ display: "flex", justifyContent: "space-between", fontFamily: MONO, fontSize: 9.5, color: "#998dbd" }}>
             {levTicks.map((v, i) => (
@@ -193,9 +201,10 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
               {st.levNote}
             </div>
           )}
-          {hint && (
+          {hasMarket && (
             <div style={{ fontSize: 10.5, lineHeight: 1.45, color: "#998dbd" }}>
-              {hint.text} <span style={{ color: "#d5c6ff", fontWeight: 600 }}>{hint.now}</span>
+              Perpl&rsquo;s limit for {market.displaySymbol} is{" "}
+              <span style={{ color: "#d5c6ff", fontWeight: 600 }}>{levMax}&times;</span>.
             </div>
           )}
         </div>
@@ -233,7 +242,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
           )}
           {slPastLiq && (
             <div role="status" style={{ fontSize: 11, fontWeight: 600, color: "#ffb765" }}>
-              Arcus would liquidate before your stop triggers.
+              Perpl would liquidate before your stop triggers.
             </div>
           )}
         </div>
@@ -275,7 +284,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
           }}
         >
           {filling
-            ? "Opening on Arcus\u2026"
+            ? "Opening on Perpl\u2026"
             : blocker?.signIn
               ? "Sign in to trade"
               : (st.side === "long" ? "Buy / Long " : "Sell / Short ") + st.market}

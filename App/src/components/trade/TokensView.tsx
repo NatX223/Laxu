@@ -2,19 +2,18 @@
 
 import Link from "next/link";
 import { money } from "./data";
-import { posEquity, posPnl, type TradeEngine } from "./engine";
+import type { TradeEngine } from "./engine";
+import { usePositionNavs } from "./navs";
 import { Disc, MONO, SERIF } from "./shared";
 
 /** "Your tokenized positions" — one card per minted position, each linking to its page. */
 export default function TokensView({ engine }: { engine: TradeEngine }) {
   const { st } = engine;
 
-  // Arcus's mark; a position without one yet counts at its margin and shows dashes.
-  const markOf = (sym: string): number | null => st.px[sym] ?? null;
-  const tokenEquity = st.positions.reduce((a, x) => {
-    const mark = markOf(x.sym);
-    return a + (mark === null ? x.margin : posEquity(x, mark));
-  }, 0);
+  // Value and PnL are the token's own NAV (totalAssets / totalSupply); a position it hasn't answered for counts at its margin.
+  const navs = usePositionNavs(st.positions);
+  const navOf = (addr: string) => navs[addr.toLowerCase()];
+  const tokenEquity = st.positions.reduce((a, x) => a + (navOf(x.addr)?.equity ?? x.margin), 0);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -32,12 +31,13 @@ export default function TokensView({ engine }: { engine: TradeEngine }) {
 
       <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fill, minmax(min(320px, 100%), 1fr))" }}>
         {st.positions.map((x) => {
-          const mark = markOf(x.sym);
-          const pnl = mark === null ? null : posPnl(x, mark);
+          const mark = engine.markOf(x.sym);
+          const nav = navOf(x.addr);
+          const pnl = nav ? nav.pnlAbs : null;
           const cells = [
             { k: "ENTRY", v: money(x.entry, 2), c: "#fdfbf7" },
             { k: "MARK", v: mark === null ? "—" : money(mark, 2), c: "#fdfbf7" },
-            { k: "EQUITY", v: mark === null ? "—" : money(posEquity(x, mark), 0), c: "#fdfbf7" },
+            { k: "EQUITY", v: nav ? money(nav.equity, 0) : "—", c: "#fdfbf7" },
             {
               k: "UNREALIZED",
               v: pnl === null ? "—" : (pnl >= 0 ? "+" : "−") + money(Math.abs(pnl), 0).slice(1),

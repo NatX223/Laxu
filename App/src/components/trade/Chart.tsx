@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
-import type { ArcusTimeframe } from "@/lib/arcus";
+import type { Timeframe } from "@/lib/perplMarketData";
 import type { LiveBar, ScaleMode } from "../charts/TradeChart";
 import { RANGES, TIMEFRAMES, cat, volFmt } from "./data";
 import type { MarketView } from "./derive";
@@ -14,15 +14,8 @@ const TradeChart = dynamic(() => import("../charts/TradeChart"), { ssr: false })
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
-/**
- * Laxu symbol -> Arcus market: the live list's display symbol. Before it loads
- * the design's two ETF stand-ins need mapping by hand.
- */
-const ARCUS_MARKET: Record<string, string> = { GOLD: "GLD-USD", SPX: "SPY-USD" };
-export const arcusMarketFor = (sym: string) => cat(sym).live?.displaySymbol ?? ARCUS_MARKET[sym] ?? `${sym}-USD`;
-
-/** The design's timeframe pills, in Arcus's spelling. */
-const ARCUS_TF: Record<string, ArcusTimeframe> = { "1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1D": "1d" };
+/** The design's timeframe pills, in Perpl's candle resolutions. */
+const PERPL_TF: Record<string, Timeframe> = { "1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1D": "1d" };
 
 /** The footer's range pills, as a trailing window. */
 const DAY = 86_400;
@@ -47,44 +40,50 @@ const TOGGLE = (on: boolean): React.CSSProperties => ({
 });
 
 /**
- * The candle chart: TradingView Lightweight Charts over live Arcus market data,
+ * The candle chart: TradingView Lightweight Charts over live Perpl market data,
  * inside the design's header (symbol, OHLC readout, timeframes) and footer
  * (ranges, clock, scale modes).
  */
 export default function Chart({ engine, mkt }: { engine: TradeEngine; mkt: MarketView }) {
-  const { st, set, mounted } = engine;
+  const { st, set } = engine;
   const { dp } = mkt;
-  const market = arcusMarketFor(st.market);
+  const market = cat(st.market).live;
+  const marketId = market?.venueMarketId;
 
   const [bar, setBar] = useState<LiveBar | null>(null);
   const [scaleMode, setScaleMode] = useState<ScaleMode>("normal");
   const [autoScale, setAutoScale] = useState(true);
-  // The live candle's close is Arcus's mark: the rest of the screen reads it from here.
-  const { setLiveMark } = engine.actions;
-  const sym = st.market;
   const onBar = useCallback(
     (b: LiveBar) => {
       // a bar still in flight from the market just switched away from
-      if (b.market !== market) return;
+      if (b.market !== marketId) return;
       setBar(b);
-      setLiveMark(sym, b.c, b.ref);
     },
-    [setLiveMark, sym, market],
+    [marketId],
   );
 
   // a readout from the previous market would be wrong for a frame; blank it instead
-  const [shownFor, setShownFor] = useState(market);
-  if (shownFor !== market) {
-    setShownFor(market);
+  const [shownFor, setShownFor] = useState(marketId);
+  if (shownFor !== marketId) {
+    setShownFor(marketId);
     setBar(null);
   }
+
+  // The footer clock: local, so the screen itself never re-renders for it. Blank until mounted so hydration matches.
+  const [clockMs, setClockMs] = useState(0);
+  useEffect(() => {
+    const tick = () => setClockMs(Date.now());
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const chg = bar && bar.ref ? (bar.c / bar.ref - 1) * 100 : 0;
   const chgColor = chg >= 0 ? "#4caf50" : "#e8543a";
   const fmt = (n: number | undefined) => (n === undefined ? "—" : n.toFixed(dp));
 
-  const now = new Date(st.now);
-  const clock = mounted ? `${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}:${pad2(now.getUTCSeconds())}` : "--:--:--";
+  const now = new Date(clockMs);
+  const clock = clockMs ? `${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}:${pad2(now.getUTCSeconds())}` : "--:--:--";
 
   return (
     <div
@@ -113,7 +112,7 @@ export default function Chart({ engine, mkt }: { engine: TradeEngine; mkt: Marke
       >
         <Disc sym={st.market} size={17} font={9} />
         <div style={{ fontFamily: MONO, fontSize: 12, fontWeight: 500, color: "#d8d4e6", whiteSpace: "nowrap" }}>
-          {st.market} &middot; {st.tf} &middot; arcus
+          {st.market} &middot; {st.tf} &middot; perpl
         </div>
         <span
           style={{
@@ -161,7 +160,7 @@ export default function Chart({ engine, mkt }: { engine: TradeEngine; mkt: Marke
 
       <TradeChart
         market={market}
-        timeframe={ARCUS_TF[st.tf] ?? "15m"}
+        timeframe={PERPL_TF[st.tf] ?? "15m"}
         windowSec={RANGE_SEC[st.range] ?? null}
         scaleMode={scaleMode}
         autoScale={autoScale}

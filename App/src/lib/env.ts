@@ -31,8 +31,6 @@ export const env = {
    * REST). Point it at `perplApiUrl` to call Perpl directly.
    */
   marketDataBase: (process.env.NEXT_PUBLIC_MARKET_DATA_BASE || `${apiUrl}/market-data`).replace(/\/$/, ""),
-  /** Market logos, used only when the backend is unreachable (it resolves logos itself). */
-  perplBrandingUrl: (process.env.NEXT_PUBLIC_PERPL_BRANDING_URL ?? "https://branding.testnet.perpl.xyz").replace(/\/$/, ""),
   /** The collateral token's address, for approvals ahead of buy-ins, repays and lending. */
   assetAddress: process.env.NEXT_PUBLIC_ASSET_ADDRESS ?? "",
   /** A public testnet-MON faucet, linked when ours is too low to send gas. */

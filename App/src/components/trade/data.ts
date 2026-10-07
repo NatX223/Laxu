@@ -1,13 +1,14 @@
-import { colorFromString, currentMarkets, marketFor, type LaxuMarket } from "@/lib/markets";
+import { colorFromString, currentMarkets, defaultMarketSymbol, marketFor, type LaxuMarket } from "@/lib/markets";
 
 /**
- * Market catalogue + formatters, transcribed from `Laxu Trade.dc.html`.
- * The prototype kept these on the component class (`CAT`, `money`, `vol`, …);
- * they are pure, so they live outside React here.
+ * Market catalogue + formatters for the trade screen.
  *
- * The live market list (`GET /markets`, via lib/markets) is laid over this:
- * name, price, leverage limit and logo come from Arcus; the design's own
- * entries only still supply the display stats Arcus data doesn't cover.
+ * The market list is the live one (`GET /markets` joined with Perpl's own
+ * config, via lib/markets): name, mark, leverage limit and decimals all come
+ * from there. This file only adds presentation (tint, ink, logo) for the
+ * symbols Perpl lists; any other symbol gets a colour from its name. Nothing
+ * here is a market figure: volume, open interest and funding are read live
+ * (see stats.ts) and show "—" when Perpl hasn't said.
  */
 
 export type MarketCat = "Crypto" | "Equities" | "Commodities" | "Indices";
@@ -16,38 +17,31 @@ export type Market = {
   name: string;
   kind: string;
   cat: MarketCat;
-  /** used in the market-info blurb: "the tokenized {noun} price" */
+  /** used in the market-info blurb: "the {noun} price" */
   noun: string;
-  base: number;
+  /** Perpl's real leverage limit for the market; 0 until the live list has loaded (the ticket is then disabled). */
   lev: number;
   tint: string;
   ink: string;
   logo?: string;
-  isNew?: boolean;
-  vol: string;
-  fund: string;
-  mcap: string;
-  oi: string;
-  tok: string;
-  /** "ETH-USD"; the live market when the list has loaded. */
+  /** "ETH-USD" */
   displaySymbol: string;
+  /** The live market; undefined until the list has loaded. */
   live?: LaxuMarket;
 };
 
-type DesignMarket = Omit<Market, "displaySymbol" | "live">;
+type Look = { tint: string; ink: string; logo?: string };
 
-export const MARKETS: Record<string, DesignMarket> = {
-  TSLA: { name: "Tesla, Inc.", kind: "EQUITY PERP", cat: "Equities", noun: "equity", base: 431.2, lev: 10, tint: "#9670ff", ink: "#16130f", logo: "/laxu/logo-tsla.png", vol: "$263.4M", fund: "0.0091%", mcap: "$1.38T", oi: "$52.7M", tok: "412" },
-  ETH: { name: "Ethereum", kind: "CRYPTO PERP", cat: "Crypto", noun: "crypto asset", base: 4943.8, lev: 20, tint: "#ff8a3d", ink: "#16130f", logo: "/laxu/logo-eth.png", vol: "$1.02B", fund: "0.0013%", mcap: "$594B", oi: "$184.2M", tok: "1,284" },
-  BTC: { name: "Bitcoin", kind: "CRYPTO PERP", cat: "Crypto", noun: "crypto asset", base: 77519.5, lev: 40, tint: "#f7931a", ink: "#16130f", vol: "$338K", fund: "0.0013%", mcap: "$1.56T", oi: "$14.6M", tok: "906" },
-  NVDA: { name: "NVIDIA Corp.", kind: "EQUITY PERP", cat: "Equities", noun: "equity", base: 186.4, lev: 10, tint: "#76b900", ink: "#0d1a00", vol: "$291K", fund: "0.0065%", mcap: "$4.52T", oi: "$18.9M", tok: "338" },
-  CRCL: { name: "Circle Internet", kind: "EQUITY PERP", cat: "Equities", noun: "equity", base: 89.56, lev: 10, tint: "#4a9cf6", ink: "#04142b", isNew: true, vol: "$216K", fund: "0.0050%", mcap: "$22.7B", oi: "$3.61M", tok: "74" },
-  XRP: { name: "Ripple", kind: "CRYPTO PERP", cat: "Crypto", noun: "crypto asset", base: 1.334, lev: 20, tint: "#8ea3bd", ink: "#0d1622", vol: "$400K", fund: "0.0975%", mcap: "$83.5B", oi: "$21.2M", tok: "512" },
-  SOL: { name: "Solana", kind: "CRYPTO PERP", cat: "Crypto", noun: "crypto asset", base: 214.7, lev: 20, tint: "#14f195", ink: "#00291a", isNew: true, vol: "$188K", fund: "0.0210%", mcap: "$102B", oi: "$9.84M", tok: "221" },
-  USO: { name: "Crude Oil Fund", kind: "COMMODITY PERP", cat: "Commodities", noun: "commodity", base: 159.7, lev: 20, tint: "#d9dde3", ink: "#16130f", vol: "$262K", fund: "0.0050%", mcap: "$18.5B", oi: "$7.63M", tok: "118" },
-  GOLD: { name: "Gold Spot", kind: "COMMODITY PERP", cat: "Commodities", noun: "commodity", base: 3118.4, lev: 25, tint: "#ffd9a0", ink: "#3a2a08", vol: "$244K", fund: "0.0032%", mcap: "$21.4T", oi: "$11.2M", tok: "265" },
-  QQQ: { name: "Nasdaq 100", kind: "INDEX PERP", cat: "Indices", noun: "index", base: 727.1, lev: 25, tint: "#5b7cfa", ink: "#040f2b", vol: "$233K", fund: "0.0050%", mcap: "$511B", oi: "$5.54M", tok: "143" },
-  SPX: { name: "S&P 500", kind: "INDEX PERP", cat: "Indices", noun: "index", base: 6412.8, lev: 25, tint: "#a79bd0", ink: "#1c1638", vol: "$205K", fund: "0.0044%", mcap: "$49.8T", oi: "$8.12M", tok: "197" },
+/** Presentation only, for the markets Perpl lists on testnet. */
+const LOOK: Record<string, Look> = {
+  BTC: { tint: "#f7931a", ink: "#16130f" },
+  ETH: { tint: "#ff8a3d", ink: "#16130f", logo: "/laxu/logo-eth.png" },
+  SOL: { tint: "#14f195", ink: "#00291a" },
+  MON: { tint: "#836ef9", ink: "#fdfbf7" },
+  ZEC: { tint: "#f4b728", ink: "#16130f" },
+  LIT: { tint: "#e8c15a", ink: "#16130f" },
+  PUMP: { tint: "#3ddc97", ink: "#04261a" },
+  NEAR: { tint: "#00ec97", ink: "#00261a" },
 };
 
 const CAT_OF: Record<string, MarketCat> = {
@@ -63,47 +57,42 @@ const KIND_OF: Record<MarketCat, [kind: string, noun: string]> = {
   Indices: ["INDEX PERP", "index"],
 };
 
-/** Every tradeable symbol: the live list once loaded, the design's before. */
-export const syms = (): string[] => {
-  const live = currentMarkets();
-  return live.length ? live.map((m) => m.baseAsset) : Object.keys(MARKETS);
-};
+/** Every tradeable symbol: the live list. Empty until it loads. */
+export const syms = (): string[] => currentMarkets().map((m) => m.baseAsset);
 
-/** Unknown symbols fall back to TSLA, exactly as `cat()` did. */
+/**
+ * The market for `sym`. A symbol Perpl doesn't list resolves to the default
+ * market (ETH when it exists, else the first), so the screen never lands on
+ * something that isn't there. Before the list loads there is no market at
+ * all: a placeholder with `live` unset and a leverage limit of 0.
+ */
 export const cat = (sym: string): Market => {
-  const live = marketFor(sym);
-  const design = MARKETS[sym] as DesignMarket | undefined;
-  if (!live) return { ...(design ?? MARKETS.TSLA), displaySymbol: `${design ? sym : "TSLA"}-USD` };
-
-  const category = CAT_OF[live.assetClass] ?? design?.cat ?? "Crypto";
+  const live = marketFor(sym) ?? marketFor(defaultMarketSymbol());
+  if (!live) {
+    return { name: sym, kind: "CRYPTO PERP", cat: "Crypto", noun: "crypto asset", lev: 0, tint: colorFromString(sym), ink: "#16130f", displaySymbol: `${sym}-USD` };
+  }
+  const category = CAT_OF[live.assetClass] ?? "Crypto";
   const [kind, noun] = KIND_OF[category];
+  const look = LOOK[live.baseAsset];
   return {
-    kind: design?.kind ?? kind,
-    noun: design?.noun ?? noun,
-    ink: design?.ink ?? "#16130f",
-    isNew: design?.isNew,
-    // Arcus data doesn't cover these; the design's figures stand in where it had them.
-    vol: design?.vol ?? "—",
-    fund: design?.fund ?? "—",
-    mcap: design?.mcap ?? "—",
-    oi: design?.oi ?? "—",
-    tok: design?.tok ?? "0",
+    kind,
+    noun,
     name: live.fullAssetName,
     cat: category,
-    base: Number(live.markPrice) || design?.base || 0,
     lev: live.maxLeverage,
-    tint: design?.tint ?? colorFromString(sym),
-    logo: live.logoUrl ?? undefined,
+    tint: look?.tint ?? colorFromString(live.baseAsset),
+    ink: look?.ink ?? "#16130f",
+    logo: live.logoUrl ?? look?.logo,
     displaySymbol: live.displaySymbol,
     live,
   };
 };
 
-/** Sub-$10 markets (XRP) get 4 decimals, sub-cent memecoins 6; everything else 2. */
-export const dpOf = (sym: string) => {
-  const base = cat(sym).base;
-  return base >= 10 ? 2 : base >= 0.01 ? 4 : 6;
-};
+/** The categories that have at least one market, "All" first. Perpl lists crypto only. */
+export const categoriesOf = (markets: LaxuMarket[]): string[] => [
+  "All",
+  ...new Set(markets.map((m) => CAT_OF[m.assetClass] ?? "Crypto")),
+];
 
 export const money = (n: number, d = 2) =>
   "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
@@ -113,6 +102,16 @@ export function volFmt(n: number) {
   if (v >= 1e6) return (v / 1e6).toFixed(2) + " M";
   if (v >= 1e3) return (v / 1e3).toFixed(2) + " K";
   return String(Math.round(v));
+}
+
+/** "$10.25M", "$1.4B", "$512K"; a dash for anything Perpl didn't report. */
+export function compactUsd(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  const v = Math.abs(n);
+  if (v >= 1e9) return "$" + (v / 1e9).toFixed(2) + "B";
+  if (v >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+  if (v >= 1e3) return "$" + (v / 1e3).toFixed(1) + "K";
+  return "$" + v.toFixed(0);
 }
 
 export function kmoney(n: number) {
@@ -132,7 +131,7 @@ export type Position = {
   /** Base-asset size. */
   qty: number;
   entry: number;
-  /** USDG the creator put in. */
+  /** The asset the creator put in. */
   margin: number;
   /** PositionToken address. */
   addr: string;
@@ -144,15 +143,13 @@ export type Position = {
   liquidated: boolean;
 };
 
+/** The chart's timeframe pills; each is one of Perpl's supported candle resolutions. */
 export const TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1D"] as const;
 export const RANGES = ["5y", "1y", "6m", "3m", "1m", "5d", "1d"] as const;
-export const MARKET_TABS = ["Spot", "Perpetuals"] as const;
-export const MARKET_CATS = ["All", "Crypto", "Equities", "Commodities", "Indices"] as const;
-/** Quick sizes in USDG; the ticket adds MAX (the wallet's balance) after these. */
+/** Perpl lists perpetuals only. */
+export const MARKET_TABS = ["Perpetuals"] as const;
+/** Quick sizes in the asset; the ticket adds MAX (the wallet's balance) after these. */
 export const SIZE_CHIPS = [25, 50, 100];
-
-/** Minutes per bar, used to space the chart's time axis. */
-export const TF_MINUTES: Record<string, number> = { "1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240, "1D": 1440 };
 
 /** Below this width the market-info panel collapses regardless of `infoOpen`. */
 export const INFO_MIN_WIDTH = 1180;

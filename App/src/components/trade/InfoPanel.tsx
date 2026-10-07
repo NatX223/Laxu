@@ -1,8 +1,10 @@
 "use client";
 
+import { useAsset } from "@/lib/asset";
 import { cat } from "./data";
 import type { TradeEngine } from "./engine";
 import { Disc, MONO, SERIF } from "./shared";
+import { statsFor, useStatsInputs } from "./stats";
 
 /**
  * Collapsible 214px market dossier. The outer wrapper animates its width to 0
@@ -11,13 +13,16 @@ import { Disc, MONO, SERIF } from "./shared";
 export default function InfoPanel({ engine }: { engine: TradeEngine }) {
   const { st, set, infoShown } = engine;
   const m = cat(st.market);
+  const { symbol } = useAsset();
+  const stats = statsFor(m.live, useStatsInputs(), 0);
 
+  // Perpl's own figures for the market; a dash while it hasn't loaded.
   const facts = [
-    { k: "MAX LEVERAGE", v: `${m.lev}×` },
-    { k: "MIN SIZE", v: "$25" },
-    { k: "TAKER FEE", v: "0.055%" },
-    { k: "MARKET CAP", v: m.mcap },
-    { k: "SETTLES", v: "USDG" },
+    { k: "MAX LEVERAGE", v: m.live ? `${m.lev}×` : "—" },
+    { k: "MIN SIZE", v: m.live ? `${(10 ** -m.live.sizeDecimals).toFixed(m.live.sizeDecimals)} ${m.live.baseAsset}` : "—" },
+    { k: "TAKER FEE", v: m.live ? `${(m.live.takerFee * 100).toFixed(4).replace(/0+$/, "").replace(/.$/, "")}%` : "—" },
+    { k: "FUNDING", v: m.live ? `every ${stats.fundingInterval.toLowerCase()}` : "—" },
+    { k: "SETTLES", v: symbol },
   ];
 
   return (
@@ -88,8 +93,8 @@ export default function InfoPanel({ engine }: { engine: TradeEngine }) {
 
         <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 14, overflowY: "auto" }}>
           <div style={{ fontSize: 12.5, lineHeight: 1.6, fontWeight: 500, color: "#e3ddf4", textWrap: "pretty" }}>
-            Perpetual on {m.name}, settled in USDG and tradeable around the clock. Funding tracks the tokenized {m.noun} price
-            and reprices every hour.
+            Perpetual on {m.name}, settled in {symbol} and traded around the clock on Perpl. Funding follows the {m.noun} price
+            and applies every {stats.fundingInterval.toLowerCase()}.
           </div>
 
           <div
@@ -124,11 +129,11 @@ export default function InfoPanel({ engine }: { engine: TradeEngine }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.14em", color: "#a79bd0" }}>TOKENIZED ON LAXU</div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-              <div style={{ fontFamily: SERIF, fontSize: 30, lineHeight: 1, color: "#fdfbf7" }}>{m.tok}</div>
+              <div style={{ fontFamily: SERIF, fontSize: 30, lineHeight: 1, color: "#fdfbf7" }}>{stats.tokens}</div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#a79bd0" }}>open position tokens</div>
             </div>
             <div style={{ fontSize: 12, lineHeight: 1.55, fontWeight: 500, color: "#c3b8e3" }}>
-              Lending pools on {st.market} positions are averaging 8.1% APR with 54% utilisation.
+              Borrow against any {st.market} position token at a flat 10% APR, from its own isolated pool.
             </div>
           </div>
         </div>
