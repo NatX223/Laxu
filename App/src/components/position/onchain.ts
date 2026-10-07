@@ -218,7 +218,8 @@ export function liveVals(live: PublicPosition, chain: TokenState | null, viewer:
   const pnlColor = up ? "#5fe3a8" : "#ff7d92";
   const markPct = chain && chain.entry ? (chain.mark / chain.entry - 1) * 100 : 0;
 
-  const opened = live.openedAt ? `opened ${ago(live.openedAt)} ago` : "opening";
+  // no open time means the index was unavailable (or the position is still opening): only an open one is "opening"
+  const opened = live.openedAt ? `opened ${ago(live.openedAt)} ago` : live.status === "open" ? "opening" : live.status;
   const ageLabel = live.closedAt ? `closed ${ago(live.closedAt)} ago` : opened;
 
   const stats: Stat[] = [

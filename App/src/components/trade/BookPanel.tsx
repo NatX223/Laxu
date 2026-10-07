@@ -13,6 +13,8 @@ const HEAD: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacin
 const LEVELS = 8;
 /** Bars per side of the depth card. */
 const DEPTH_LEVELS = 9;
+/** The depth card ignores levels this far (fraction of mid) from the market: a stray far-off order would otherwise set the whole scale. */
+const DEPTH_REACH = 0.05;
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 const clock = (ms: number) => {
@@ -34,8 +36,11 @@ function ladder(levels: Book["bids"], dp: number, sizeDp: number, max: number): 
 /** Cumulative depth, farthest bid → nearest bid → nearest ask → farthest ask, as bar heights in percent. */
 function depthBars(book: Book | null): { bars: Array<{ bid: boolean; h: number }>; range: string } {
   if (!book || book.bids.length === 0 || book.asks.length === 0) return { bars: [], range: "" };
-  const bids = book.bids.slice(0, DEPTH_LEVELS);
-  const asks = book.asks.slice(0, DEPTH_LEVELS);
+  const mid = (book.bids[0].price + book.asks[0].price) / 2;
+  const near = (l: Book["bids"][number]) => Math.abs(l.price - mid) / mid <= DEPTH_REACH;
+  const bids = book.bids.filter(near).slice(0, DEPTH_LEVELS);
+  const asks = book.asks.filter(near).slice(0, DEPTH_LEVELS);
+  if (bids.length === 0 || asks.length === 0) return { bars: [], range: "" };
   const cumulative = (levels: Book["bids"]) => {
     let c = 0;
     return levels.map((l) => (c += l.size));
@@ -43,7 +48,6 @@ function depthBars(book: Book | null): { bars: Array<{ bid: boolean; h: number }
   const bidCum = cumulative(bids);
   const askCum = cumulative(asks);
   const max = Math.max(bidCum[bidCum.length - 1], askCum[askCum.length - 1]) || 1;
-  const mid = (book.bids[0].price + book.asks[0].price) / 2;
   const reach = Math.max(mid - bids[bids.length - 1].price, asks[asks.length - 1].price - mid) / mid;
   return {
     bars: [

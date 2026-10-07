@@ -82,6 +82,31 @@ export const getNavHistory = (token: string, limit?: number) =>
 
 export const getPublicPosition = (token: string) => apiFetch<PublicPosition>(`/positions/token/${token}`);
 
+/** The slice of `GET /positions/:address` the page's listed-position cells read. */
+export type PositionStats = {
+  holderCount: number;
+  /** All-time bought in, 2dp, in the collateral asset. */
+  buyInVolume: string;
+  /** The buy-in fee in percent, e.g. "2". */
+  buyInFeePct: string;
+};
+
+export const getPositionStats = (token: string) => apiFetch<PositionStats>(`/positions/${token}`);
+
+export type TopHolder = {
+  address: string;
+  tag: string | null;
+  /** Token units, human decimal. */
+  shares: string;
+  /** Percent of supply, 2dp. */
+  sharePct: string;
+  /** In the collateral asset, 2dp. */
+  value: string;
+};
+
+/** Top holders of a position token, collateral posted to its pool included. */
+export const getTopHolders = (token: string) => apiFetch<{ holders: TopHolder[] }>(`/positions/${token}/holders`);
+
 /** One listed position in discovery (`GET /positions`). Values are human decimal strings. */
 export type DiscoveryCard = {
   /** The position token's address, lowercase. */

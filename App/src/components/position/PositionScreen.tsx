@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { parseUnits, type Address } from "viem";
-import { BUY_IN_FEE_BPS, buyIn } from "@/lib/actions";
-import { getPublicPosition, type PublicPosition } from "@/lib/api";
+import { BUY_IN_FEE_BPS, buyIn, readPositionFromChain } from "@/lib/actions";
+import { getPositionStats, getPublicPosition, getTopHolders, type PositionStats, type PublicPosition, type TopHolder } from "@/lib/api";
 import { getAsset, useAsset } from "@/lib/asset";
 import { useWalletBalances } from "@/lib/balances";
-import { marketFor, useMarkets } from "@/lib/markets";
+import { colorFromString, marketFor, useMarkets } from "@/lib/markets";
 import { useSession } from "@/lib/session";
 import { getWalletClient } from "@/lib/walletClient";
 import { Grain } from "../landing/shared";
@@ -25,9 +25,6 @@ import VerifiedCard from "./VerifiedCard";
 import { usd } from "./data";
 import { usePositionEngine, type PositionProps } from "./engine";
 import { liveVals, minBuyIn, useTokenState } from "./onchain";
-
-/** The listed page's cells the contract can't answer yet; they keep the prototype's figures. */
-const LISTED_ONLY = ["HOLDERS", "BUY-IN VOLUME", "CREATOR FEE"];
 
 /**
  * A single position token, transcribed from `Laxu Position.dc.html`.
@@ -50,7 +47,7 @@ export default function PositionScreen({
   positionTokenAddress,
   ...props
 }: PositionProps & { positionTokenAddress?: string }) {
-  const live = usePublicPosition(positionTokenAddress);
+  const { live, failed: positionFailed } = usePublicPosition(positionTokenAddress);
   // Bumped after a buy-in so HolderActions re-reads the pending request at once.
   const [refreshKey, setRefreshKey] = useState(0);
   const bumpRefresh = useCallback(() => setRefreshKey((k) => k + 1), []);
@@ -59,6 +56,7 @@ export default function PositionScreen({
   const viewer = useSession().wallet?.address;
   const account = viewer ?? "signed-out";
   const chain = useTokenState(live?.positionTokenAddress);
+  const { stats: indexed, holders } = useIndexedStats(live?.positionTokenAddress, live?.listed ?? false);
   // The smallest buy-in Perpl can fill: it must add at least one lot of the underlying.
   useMarkets();
   const { symbol } = useAsset();
@@ -82,6 +80,7 @@ export default function PositionScreen({
       leverage: live.leverage,
       status: live.status === "open" ? "Open" : "Closed",
       collateralized,
+      creatorFeeBps: BUY_IN_FEE_BPS,
       onBuy,
     }),
   });
@@ -124,9 +123,38 @@ export default function PositionScreen({
             sub: isCreator ? "just you, until you list it" : "the creator, until it's listed",
           },
         ]
-      : engine.vals.stats.filter((s) => LISTED_ONLY.includes(s.k));
-    return { ...engine.vals, ...header, stats: [...stats, ...rest] };
+      : indexed
+        ? [
+            {
+              k: "HOLDERS",
+              v: String(indexed.holderCount),
+              c: "#fdfbf7",
+              sub: indexed.holderCount === 1 ? "just the creator so far" : "wallets holding or borrowing against it",
+            },
+            { k: "BUY-IN VOLUME", v: usd(Number(indexed.buyInVolume)), c: "#fdfbf7", sub: "lifetime, all buyers" },
+            { k: "CREATOR FEE", v: `${indexed.buyInFeePct}%`, c: "#d5c6ff", sub: "on every buy-in" },
+          ]
+        : [];
+    // The holder base is the backend's real top holders; the prototype's sample handles stay out of a minted page.
+    const holdersList = holders.map((h) => ({
+      name: h.tag ? `@${h.tag}` : `${h.address.slice(0, 6)}…${h.address.slice(-4)}`,
+      tint: colorFromString(h.address),
+      share: `${h.sharePct}%`,
+    }));
+    return { ...engine.vals, ...header, holdersList, stats: [...stats, ...rest] };
   })();
+
+  // A real token never shows the design's sample position: until it has loaded (or when neither the backend nor the chain answers) say so.
+  if (positionTokenAddress && !live) {
+    return (
+      <div className="laxu-position-root" style={{ position: "relative", minHeight: "100vh", background: "#1c1638", color: "#fdfbf7" }}>
+        <TopNav communityHref="/community" />
+        <div role="status" style={{ padding: "80px 24px", textAlign: "center", fontSize: 14, fontWeight: 600, color: "#a79bd0" }}>
+          {positionFailed ? "Couldn\u2019t load this position. Check your connection and try again." : "Loading position\u2026"}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -214,21 +242,90 @@ export default function PositionScreen({
   );
 }
 
+/** Holder count, buy-in volume and the top holders, from the backend's index; refreshed every 30s once a position is listed. */
+function useIndexedStats(token: string | undefined, listed: boolean): { stats: PositionStats | null; holders: TopHolder[] } {
+  const [state, setState] = useState<{ token: string; stats: PositionStats | null; holders: TopHolder[] } | null>(null);
+  useEffect(() => {
+    if (!token || !listed) return;
+    let cancelled = false;
+    const load = () =>
+      Promise.all([getPositionStats(token), getTopHolders(token)])
+        .then(([stats, top]) => {
+          if (!cancelled) setState({ token, stats, holders: top.holders });
+        })
+        .catch((error) => console.error("could not load position stats", error));
+    void load();
+    const id = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [token, listed]);
+  return state && state.token === token ? { stats: state.stats, holders: state.holders } : { stats: null, holders: [] };
+}
+
 /** While the backend is still creating the LendingPool, re-read until its address appears. */
 const POOL_POLL_MS = 5000;
 
-function usePublicPosition(positionTokenAddress: string | undefined): PublicPosition | null {
-  const [live, setLive] = useState<PublicPosition | null>(null);
+/** The last backend answer per token, kept in this browser only so the page survives the backend going away. */
+const cacheKey = (token: string) => `laxu:position:${token.toLowerCase()}`;
+
+function readCached(token: string): PublicPosition | null {
+  try {
+    const raw = window.localStorage.getItem(cacheKey(token));
+    return raw ? (JSON.parse(raw) as PublicPosition) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCached(token: string, position: PublicPosition): void {
+  try {
+    window.localStorage.setItem(cacheKey(token), JSON.stringify(position));
+  } catch {
+    // private mode: the page just won't survive a backend outage on the next visit
+  }
+}
+
+/**
+ * The position's identity, from the backend. If the backend can't be reached
+ * the page keeps working from the chain: the token's own fields, with what
+ * only the index knows (lending pool, logo, timestamps) taken from the last
+ * copy this browser saw. The mark, NAV, badge and holder actions are on-chain
+ * reads either way. `failed`: neither the backend nor the chain answered.
+ */
+function usePublicPosition(positionTokenAddress: string | undefined): { live: PublicPosition | null; failed: boolean } {
+  const [state, setState] = useState<{ token: string; live: PublicPosition | null; failed: boolean } | null>(null);
+  const live = state && state.token === positionTokenAddress ? state.live : null;
   const poolPending = live !== null && !live.lendingPoolAddress;
   useEffect(() => {
     if (!positionTokenAddress) return;
     let cancelled = false;
+    const done = (position: PublicPosition | null) => {
+      if (!cancelled) setState({ token: positionTokenAddress, live: position, failed: position === null });
+    };
     const load = () =>
       getPublicPosition(positionTokenAddress)
         .then((position) => {
-          if (!cancelled) setLive(position);
+          writeCached(positionTokenAddress, position);
+          done(position);
         })
-        .catch((error) => console.error("could not load position", error));
+        .catch(async (error) => {
+          console.error("could not load position from the backend; reading it from the chain", error);
+          try {
+            const fromChain = await readPositionFromChain(positionTokenAddress as Address);
+            const cached = readCached(positionTokenAddress);
+            // the chain wins on anything it knows; the cache fills in what only the index had
+            done(
+              cached
+                ? { ...cached, ...fromChain, lendingPoolAddress: cached.lendingPoolAddress, logoUrl: cached.logoUrl, fullAssetName: cached.fullAssetName, venueMarketId: cached.venueMarketId, openedAt: cached.openedAt, closedAt: cached.closedAt, entryPrice: cached.entryPrice ?? fromChain.entryPrice }
+                : fromChain,
+            );
+          } catch (chainError) {
+            console.error("could not read the position from the chain either", chainError, (chainError as { details?: string }).details ?? "");
+            done(readCached(positionTokenAddress));
+          }
+        });
     if (!poolPending) void load();
     const id = poolPending ? setInterval(load, POOL_POLL_MS) : null;
     return () => {
@@ -236,7 +333,7 @@ function usePublicPosition(positionTokenAddress: string | undefined): PublicPosi
       if (id) clearInterval(id);
     };
   }, [positionTokenAddress, poolPending]);
-  return positionTokenAddress ? live : null;
+  return { live: positionTokenAddress ? live : null, failed: state?.failed ?? false };
 }
 
 /**

@@ -3,12 +3,14 @@ import {
   ContractFunctionRevertedError,
   UserRejectedRequestError,
   erc20Abi,
+  hexToString,
   parseUnits,
   type Address,
   type Hash,
+  type Hex,
 } from "viem";
 import { lendingPoolAbi, lendingVaultAbi, positionTokenAbi } from "./abi.generated";
-import { apiFetch } from "./api";
+import { apiFetch, type PublicPosition } from "./api";
 import { publicClient } from "./chain";
 import { env } from "./env";
 import type { LaxuWalletClient } from "./walletClient";
@@ -358,6 +360,50 @@ export async function readCurrentMark(positionToken: Address): Promise<{ price: 
     functionName: "currentMark",
   });
   return { price: Number(price) / 1e18, live };
+}
+
+/**
+ * A position rebuilt from the token alone, for when the Laxu backend can't be
+ * reached: what the page needs to keep showing the live mark, NAV and the
+ * holder's own actions. What only the backend's index knows (the lending pool
+ * address, logos, open and close times) is left empty here; the caller fills
+ * it from a cached copy if it has one.
+ */
+export async function readPositionFromChain(positionToken: Address): Promise<PublicPosition> {
+  const read = <T>(functionName: string) =>
+    publicClient().readContract({ address: positionToken, abi: positionTokenAbi, functionName } as never) as Promise<T>;
+  const [market, direction, leverage, creator, nickname, listed, closed, settled, closeRequested, entry] = await Promise.all([
+    read<string>("market"),
+    read<number>("direction"),
+    read<bigint>("leverage"),
+    read<string>("creator"),
+    read<string>("nickname"),
+    read<boolean>("listed"),
+    read<boolean>("closed"),
+    read<boolean>("settled"),
+    read<boolean>("closeRequested"),
+    read<bigint>("entryPrice"),
+  ]);
+  const symbol = hexToString(market as Hex, { size: 32 }).replace(/\0+$/, "");
+  return {
+    positionTokenAddress: positionToken.toLowerCase(),
+    status: settled ? "settled" : closed ? "closed" : "open",
+    lifecycle: settled ? "settled" : closed ? "settling" : closeRequested ? "closing" : "open",
+    symbol,
+    venueMarket: `${symbol}-USD`,
+    venueMarketId: null,
+    logoUrl: null,
+    fullAssetName: null,
+    direction: Number(direction) === 1 ? "short" : "long",
+    leverage: Number(leverage),
+    nickname,
+    listed,
+    creator: creator.toLowerCase(),
+    lendingPoolAddress: null,
+    entryPrice: (Number(entry) / 1e18).toString(),
+    openedAt: null,
+    closedAt: null,
+  };
 }
 
 export type HolderState = {
