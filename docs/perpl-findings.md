@@ -1103,3 +1103,16 @@ Ad-hoc diagnostic (one-off script, same `PerplTradingConnection.sendOrder` path)
 | faucet | Cooldown scope and length | **One global 60 s cooldown for the whole contract**, not per caller or receiver: right after our claim, a call from a *different* wallet (the float, which never claimed) for a fresh receiver reverted with the same `0x20e5bc67` (no args, no public signature), and our faucet wallet was allowed again ~60 s after the claim. Unnamed no-arg views agree: `0x48645704` → 60, `0xd9772a25` → 1791222680 (= 17:51:20Z, our claim's time), `0x905467f6` → 10000000000 (= 10,000 AUSD, the claim amount), `0x14bc2fd7` → 100000000000 (100,000 AUSD, meaning unknown). The faucet held ~997.5M AUSD. | eth_call simulations (scratch script), 17:51:44–17:52:20Z |
 | faucet | Consequence for Laxu | Two users claiming within 60 s of each other — or of anyone using the Perpl UI faucet — collide; the second reverts. External mode therefore simulates first and falls back to `transfer` on any revert. | — |
 | faucet | Backend `external` mode end to end | `claimTestFunds` for two fresh users 3 s apart: the first went **external** (10,000 AUSD received; the claim row records the amount read from the receipt's Transfer log); the second hit the 60 s cooldown in **simulation** (`0x20e5bc67`, no gas spent) and **fell back to transfer** (1,000 AUSD from the faucet wallet, funded with 2,000 AUSD from the float for this: [0x5f2af101…](https://testnet.monadvision.com/tx/0x5f2af101056194c8f51021c6019b6193c4654f5b30f04449e91a4afaf4227772)). Test rows deleted afterwards. | [0x413716af…](https://testnet.monadvision.com/tx/0x413716af4a1ffd14a984e05511a93c811bf78d7dc2b63dba0a85b06bf81207c6) (external), [0x420878cf…](https://testnet.monadvision.com/tx/0x420878cf606cb4dd5e9c1783c3216e67bbca062f87b1a47b6d49ce187ad30153) (fallback) |
+
+
+---
+
+## Spec 06
+
+### Docs used (Part 1)
+
+The `~/perpl` folder named in Spec 06 is not on this machine, so the public pages at docs.perpl.xyz were used: `resources/for-developers/api/websocket.md`, `api-docs-main/websocket.md` and `types-and-errors.md`. They differ from the spec's description:
+
+- Keep-alive: "Send a Ping (`mt: 1`) about every 30 seconds"; the server replies with Pong (`mt: 2`); market-data connections do not need `mt: 1`. The pages do not say the server pings at protocol level. **Observed:** it does, every 5.0 s, from the handshake on (`docs/e2e-run.md`, Phase 6 follow-up).
+- Close codes: the public pages say `1008` covers "rate, connection, ping, or sign-in timeout limits"; the reason strings ("ping timeout", "idle timeout") appear only in the server's close frame.
+- Rate limits (public `types-and-errors.md`): about 50 messages/s per connection and about 5 connections per IP, market-data and trading combined; REST about 60 requests/min authenticated, 100/min public. The spec quotes 60 requests/min and 4 connections per wallet for the trading socket; those figures were **not verifiable** from the public pages. The backend holds one trading socket per slot plus at most one market-data socket from one IP, so it stays under 5 only with 4 or fewer slots open.

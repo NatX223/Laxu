@@ -374,3 +374,56 @@ Also: the first soak attempt (10-05 20:47) was cut off when the session ended; i
 and unattended for ~10 h (still matching Perpl exactly; `isPriceFresh` false until the first push after
 restart, as designed) and were reused for this run. The backend was restarted twice inside the window to
 deploy fixes 2 and 3 (07:39:30, 07:57:40).
+
+
+---
+
+## Phase 6 follow-up: keep-alive (Spec 06 Part 1) — 2026-10-08
+
+The original soak result above stays as recorded (**FAIL**, 6–9 closes per socket in 53 min). This section adds what the new instrumentation showed. Docs read: docs.perpl.xyz `websocket.md` and `api-docs-main/websocket.md` (the `~/perpl` copy named in the spec is not on this machine; see `perpl-findings.md`, "Spec 06").
+
+### Audit of `src/venue/perpl/tradingWs.ts` (before the change)
+
+| Question | Answer |
+|---|---|
+| Does the client send `mt:1` pings? | Yes: `setInterval` 30 s, trading socket only, started in the `open` handler right after the sign-in frame was *sent* (not after it succeeded), no jitter. |
+| Market-data socket | `services/marketData.ts` sends no pings (correct per docs: "Market-data connections do not need `mt: 1`"). It sets `Origin` when `PERPL_ORIGIN` is set. |
+| `mt:2` pong replies | Fell into `default: return`: ignored, not logged. |
+| Protocol pings | `ws` 8.21.0, `autoPong: true` (explicit); `receiverOnPing` calls `websocket.pong()` before emitting `'ping'`, so a `'ping'` listener cannot suppress the pong. No code intercepts control frames. |
+| Between us and Perpl | The handshake is answered by `server: cloudflare` (envoy upstream header on REST). No VPN or proxy of ours. |
+| Sign-in first frame | Yes, in `open`, signing is synchronous (ms), far inside the 10 s idle window. Measured: the wallet snapshot (proof the sign-in worked) arrived 1.9 s after the socket was created. |
+| Request budget | Outgoing frames are sign-in, orders, pings only. `sentLast60s` at close was 1 and 2. |
+| Closes | Logged with code and event-loop delay; 1008/3401/others all went to the same backoff reconnect (1 s, 2 s, ... 60 s, reset on a wallet snapshot). A fresh timestamp and nonce is built on every connect. 1001 was not reconnected at once. 1013: frames were already queued off the receive callback. |
+| Heavy inline work | None: `enqueue` + `setImmediate` drain in batches of 50. |
+
+### What the instrumentation showed (`scripts/wsKeepAlive.ts`, `.e2e/ws-keepalive-idle30.*`)
+
+- The **server pings every 5.0 s** (median gap 5000 ms, min about 4.6 s) at protocol level, on both sockets.
+- **We answer every one with 0 ms lag** (337 pings, 337 pongs sent at the same millisecond).
+- Our `mt:1` pings are **answered with `mt:2`** every time (55 and 56 of them; RTT about 350–500 ms, one 689 ms): the application round trip is long, about 0.4 s.
+- Hypothesis (a), our pongs not sent or late: **ruled out**. Hypothesis (b), the server also needs our `mt:1`: **not supported**, since the pings were sent and answered and closes still happened (a pings-off A/B was not run).
+- Cause is therefore outside this process: either the path (this PC in Nigeria, about 0.4 s RTT, via Cloudflare) or the server.
+
+### Run: idle, two slot sockets, no orders, 30.05 min, run locally on this PC (no hosted backend was available to me)
+
+Ping period 30 s (default), PC kept awake with `SetThreadExecutionState` (no stall over 10 s was seen).
+
+| Time (UTC) | Slot | Close | Uptime | Since last server ping | Since last data frame |
+|---|---|---|---|---|---|
+| 13:39:46.508 | `…sqmnb8` | 1008 ping timeout | 1,688 s | 1,048 ms | 412 ms |
+| 13:39:46.513 | `…6cc1x5` | 1008 ping timeout | 1,688 s | 1,055 ms | 419 ms |
+
+- **Closes: 1 per socket in 30 min** (2 in total), both `1008 ping timeout`. The earlier soak had 6–9 per socket in 53 min.
+- **The two closes were 5 ms apart**, and ping #337 had arrived 546 ms late (gap 5,546 ms against 5,000) on both sockets at the same instant, 1 s before the close. Both sockets lost about half a second together and then the server closed both. A data frame had arrived 0.4 s before each close, and every earlier pong had been sent immediately.
+- Both reconnected and held to the end of the run (44 more server pings each after the reconnect).
+
+### What changed
+
+- `PERPL_WS_PING_MS` (default 30000, 0 = off): the app ping now starts **after** the sign-in succeeded (first wallet snapshot), with ±2 s jitter (`PingTimer` in `keepAlive.ts`), and stops on close / error / stop. Never on the market-data socket.
+- Every socket keeps a `SocketTimeline`; every close is logged at **info** with code, reason, uptime, ms since the last server ping / data frame / pong sent / app ping / app pong, counts, the server ping gap, and requests in the last 60 s. Debug logs show each server ping received, pong sent, app ping sent and app pong received (with RTT). A `closed` event carries the same summary.
+- 1001 now reconnects immediately.
+- Tests: `keepAlive.test.ts` (timer start/stop, jitter, no double start, timeline) and `keepAlive.socket.test.ts` (a real socket against a local server: sign-in is the first frame, no ping before the sign-in succeeds, pings after, close summary). 87 backend tests pass, `tsc` clean.
+
+### Honest read
+
+The earlier numbers are not explained by a missing ping: the 30 s pings were already being sent. The improvement from 6–9 to 1 per socket could come from the new start timing, but more likely from the environment (the soak ran with open positions and two Modern Standby sleeps; this run was idle and kept awake), so it should not be credited to the change. One close per socket in 30 min is 2/h, **right at the budget, not under it**. Not run: the second 30–45 min run with small orders, and a run from a hosted machine to separate "this PC's network" from "the server". For Perpl: `1008 ping timeout` hits both of an account pair's sockets within 5 ms, about 1 s after a protocol ping that we answered immediately, while data frames were still arriving.
