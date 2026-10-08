@@ -6,6 +6,7 @@ import { config } from "../../config/env";
 import { loadEd25519PrivateKey } from "../../lib/ed25519";
 import { createLogger, errorFields } from "../../lib/logger";
 import { Mt, OrderStatus, perplChainId, perplTradingWsUrl } from "./config";
+import { PingTimer, SocketTimeline } from "./keepAlive";
 import { recordFrame } from "./recorder";
 import { getWallet } from "./rest";
 import { signInFrame } from "./signing";
@@ -99,7 +100,8 @@ interface AckWaiter {
 }
 
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000];
-const PING_INTERVAL_MS = 30_000;
+/// Application pings sit PERPL_WS_PING_MS (default 30 s) +/- this apart.
+const PING_JITTER_MS = 2_000;
 const ACK_TIMEOUT_MS = 10_000;
 const READY_TIMEOUT_MS = 15_000;
 /// A heartbeat head older than this is not trusted for `lb`; REST answers instead.
@@ -124,6 +126,10 @@ export type ConnectionState = "idle" | "connecting" | "open" | "reconnecting" | 
  *   - Frames are queued and handled on the next turn of the event loop, never
  *     inside the socket's receive callback, and `ws` answers server pings
  *     itself (autoPong): a busy handler can never delay a pong.
+ *   - Application pings (mt:1, PERPL_WS_PING_MS, jittered) start only after the
+ *     sign-in succeeded (first wallet snapshot) and stop on close / error /
+ *     stop(); see keepAlive.ts. Every socket keeps a {SocketTimeline} so a close
+ *     can be explained (do the server's pings arrive, did we answer).
  *
  * Emits `position` (ApiPosition, plus each settlement event in `e[]`) and
  * `account` (ApiAccount).
@@ -133,7 +139,8 @@ export class PerplTradingConnection extends EventEmitter {
   private state: ConnectionState = "idle";
   private retryCount = 0;
   private reconnectTimer: NodeJS.Timeout | undefined;
-  private pingTimer: NodeJS.Timeout | undefined;
+  private pings: PingTimer | undefined;
+  private timeline: SocketTimeline | undefined;
 
   private lastSn: number | undefined;
   private headBlock: bigint | undefined;
@@ -179,7 +186,7 @@ export class PerplTradingConnection extends EventEmitter {
   stop(): void {
     this.state = "stopped";
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pings?.stop();
     this.failInFlight(new ConnectionLostError("Perpl trading connection stopped"));
     for (const waiter of this.readyWaiters.splice(0)) waiter.reject(new ConnectionLostError("connection stopped"));
     this.ws?.removeAllListeners();
@@ -332,6 +339,7 @@ export class PerplTradingConnection extends EventEmitter {
   private send(ws: WebSocket, frame: Record<string, unknown>): void {
     recordFrame(this.slotId, "out", frame);
     ws.send(JSON.stringify(frame));
+    this.timeline?.frameSent(Date.now());
   }
 
   private nextFrameSn(): number {
@@ -419,9 +427,41 @@ export class PerplTradingConnection extends EventEmitter {
     const ws = new WebSocket(perplTradingWsUrl(), { autoPong: true });
     this.ws = ws;
     this.serverPings = 0;
+    const timeline = new SocketTimeline(Date.now());
+    this.timeline = timeline;
+    this.pings?.stop();
+    this.pings = new PingTimer({
+      intervalMs: config.perplWsPingMs,
+      jitterMs: Math.min(PING_JITTER_MS, config.perplWsPingMs / 4),
+      send: () => {
+        if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return false;
+        const t = Date.now();
+        this.send(ws, { mt: Mt.Ping, t });
+        timeline.appPingSent(t);
+        log.debug("app ping sent", { slotId: this.slotId, epoch: this.epoch });
+        return true;
+      },
+    });
 
+    // The server's protocol-level pings and our pongs, timestamped: this is
+    // what tells a late/missing pong apart from a server that never pinged.
     ws.on("ping", () => {
+      const now = Date.now();
       this.serverPings += 1;
+      timeline.serverPing(now);
+      log.debug("server ping received", { slotId: this.slotId, n: this.serverPings, sinceOpenMs: now - timeline.openedAt });
+    });
+    // ws answers each ping with this.pong() (autoPong); wrapping it records when the pong actually went out.
+    const sendPong = ws.pong.bind(ws);
+    ws.pong = ((data?: unknown, mask?: boolean, cb?: (error?: Error) => void) => {
+      timeline.pongSent(Date.now());
+      log.debug("pong sent", { slotId: this.slotId, n: timeline.pongsSent });
+      sendPong(data as never, mask, cb);
+    }) as typeof ws.pong;
+    ws.on("upgrade", (response) => {
+      // Who answers the handshake (Cloudflare? envoy?) -- relevant to who sends the pings.
+      const h = response.headers;
+      log.debug("trading socket upgraded", { slotId: this.slotId, server: h.server, via: h.via, cfRay: h["cf-ray"] });
     });
 
     ws.on("open", () => {
@@ -441,45 +481,49 @@ export class PerplTradingConnection extends EventEmitter {
         ws.close();
         return;
       }
-      if (this.pingTimer) clearInterval(this.pingTimer);
-      this.pingTimer = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) this.send(ws, { mt: Mt.Ping, t: Date.now() });
-      }, PING_INTERVAL_MS);
     });
 
     // Only queue here: the receive callback returns at once.
-    ws.on("message", (data) => this.enqueue(ws, data.toString()));
+    ws.on("message", (data) => {
+      timeline.dataFrame(Date.now());
+      this.enqueue(ws, data.toString());
+    });
 
     ws.on("close", (code, reason) => {
       if (this.ws !== ws) return;
-      if (this.pingTimer) clearInterval(this.pingTimer);
+      this.pings?.stop();
       this.lastError = `closed ${code}${reason.length ? ` ${reason.toString()}` : ""}`;
+      const summary = timeline.summary(Date.now());
       // 3401 = auth failure: the reconnect re-signs with a fresh timestamp + nonce.
-      log.warn("trading socket closed", {
+      log.info("trading socket closed", {
         slotId: this.slotId,
         code,
         reason: reason.toString(),
-        serverPings: this.serverPings,
+        epoch: this.epoch,
+        ...summary,
         queued: this.inbox.length,
         eventLoopMaxMs: Math.round(loopDelay.max / 1e6),
         eventLoopP99Ms: Math.round(loopDelay.percentile(99) / 1e6),
       });
+      this.emit("closed", { slotId: this.slotId, code, reason: reason.toString(), at: Date.now(), epoch: this.epoch, ...summary });
       loopDelay.reset();
       this.failInFlight(new ConnectionLostError(`Perpl trading socket closed (${code})`));
-      this.scheduleReconnect();
+      // 1001 = the server is going away: its replacement is up, so reconnect at once.
+      this.scheduleReconnect(code === 1001 ? 0 : undefined);
     });
 
     ws.on("error", (error) => {
+      this.pings?.stop();
       this.lastError = error.message;
       log.warn("trading socket error", { slotId: this.slotId, error: error.message });
     });
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(immediateMs?: number): void {
     if (this.state === "stopped") return;
     this.state = "reconnecting";
-    const delay = RECONNECT_DELAYS_MS[Math.min(this.retryCount, RECONNECT_DELAYS_MS.length - 1)];
-    this.retryCount += 1;
+    const delay = immediateMs ?? RECONNECT_DELAYS_MS[Math.min(this.retryCount, RECONNECT_DELAYS_MS.length - 1)];
+    if (immediateMs === undefined) this.retryCount += 1;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
@@ -513,6 +557,9 @@ export class PerplTradingConnection extends EventEmitter {
         if (this.account) this.emit("account", this.account);
         this.state = "open";
         this.snapshotReady = true;
+        // The sign-in is proven (the server sent the account): pings may start.
+        this.timeline?.signedIn(Date.now());
+        if (config.perplWsPingMs > 0) this.pings?.start();
         this.retryCount = 0;
         this.lastError = undefined;
         for (const waiter of this.readyWaiters.splice(0)) waiter.resolve();
@@ -567,6 +614,14 @@ export class PerplTradingConnection extends EventEmitter {
             });
           }
         }
+        return;
+      }
+      case Mt.Pong: {
+        // Reply to our mt:1 ping; `t` echoes our timestamp when the server sets it.
+        const now = Date.now();
+        this.timeline?.appPong(now);
+        const echoed = Number(message.t);
+        log.debug("app pong received", { slotId: this.slotId, rttMs: Number.isFinite(echoed) && echoed > 0 ? now - echoed : undefined });
         return;
       }
       case Mt.FillsUpdate:

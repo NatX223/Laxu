@@ -92,6 +92,8 @@ export const config = {
   /// `false` only logs it -- a testing safety valve against a reconnect loop if
   /// the gap rule itself turns out to be wrong.
   perplHeartbeatGapReconnect: bool("PERPL_HEARTBEAT_GAP_RECONNECT", true),
+  /// Application ping (mt:1) period on the trading sockets; 0 turns pings off (experiments only).
+  perplWsPingMs: num("PERPL_WS_PING_MS", 30_000),
   /// When set, every trading-WS frame (in and out) and every REST call is
   /// appended, redacted, as JSONL under this directory. Testing/fixtures only.
   perplRecordDir: optional("PERPL_RECORD_DIR"),
