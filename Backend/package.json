@@ -15,6 +15,7 @@
     "db:seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts",
     "tags:fix": "ts-node-dev --transpile-only --respawn=false scripts/fix-numeric-tags.ts",
     "slots:provision": "ts-node-dev --transpile-only --respawn=false scripts/provisionSlots.ts",
+    "slots:enroll": "ts-node --transpile-only scripts/perpl/enrollSlotKey.ts",
     "markets:map": "ts-node-dev --transpile-only --respawn=false scripts/marketsMap.ts",
     "abi:gen": "ts-node-dev --transpile-only --respawn=false scripts/genAbi.ts",
     "probe": "ts-node --transpile-only scripts/probe.ts",
