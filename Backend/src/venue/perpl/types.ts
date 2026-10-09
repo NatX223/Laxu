@@ -73,8 +73,10 @@ export interface ApiOrder {
   fp?: number;
   /// Filled size (cumulative).
   fs?: number;
-  /// Fee paid, Amount.
+  /// Fee paid, Amount (gross: includes `bfa`).
   f?: string;
+  /// Builder-fee portion of `f`; omitted or "0" when zero.
+  bfa?: string;
   lv?: number;
 }
 
@@ -272,4 +274,7 @@ export interface OrderSpec {
   fl: number;
   lv: number;
   lb: number;
+  /// Builder fee, hundred-thousandths (1 = 0.1 bps). Only on a builder-bound
+  /// key and <= its enrolled ceiling; see builder.ts.
+  bf?: number;
 }

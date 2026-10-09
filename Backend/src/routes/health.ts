@@ -4,6 +4,7 @@ import { db } from "../config/db";
 import { config } from "../config/env";
 import { asyncHandler } from "../lib/async";
 import { fromAsset6 } from "../lib/units";
+import { chargedFeePer100k, per100kToPct } from "../venue/perpl/builder";
 import { connectionStates } from "../venue/perpl/connections";
 import { currentSlotProblems, poolStats } from "../services/allocator";
 import { faucetAssetBalance, faucetBalance } from "../services/faucet";
@@ -28,7 +29,10 @@ healthRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
     const slots = await poolStats().catch(() => null);
-    res.json({ status: "ok", slots });
+    // The Laxu (builder) fee charged on every venue order, percent of notional;
+    // 0 while builder fees are off. The App discloses it only when above 0.
+    const laxuFeePct = per100kToPct(chargedFeePer100k(config.perplBuilder));
+    res.json({ status: "ok", slots, laxuFeePct });
   }),
 );
 

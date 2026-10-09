@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { getVenueFills, type VenueFill, type VenueFills } from "@/lib/api";
 import { useAsset } from "@/lib/asset";
 import { env } from "@/lib/env";
+import { laxuFeeLabel, useLaxuFeePct } from "@/lib/laxuFee";
 import { CELL_BG, HAIRLINE, MONO, Panel, PanelHead } from "./shared";
 
 const GOOD = "#5fe3a8";
@@ -26,6 +27,7 @@ const usd = (s: string | null) =>
  */
 export default function FillsCard({ token, base, refreshKey }: { token: string; base: string; refreshKey?: number }) {
   const asset = useAsset();
+  const laxuFeePct = useLaxuFeePct();
   const [data, setData] = useState<VenueFills | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -123,6 +125,11 @@ export default function FillsCard({ token, base, refreshKey }: { token: string; 
         )}
         {data?.stale && <div style={{ color: WARN }}>Perpl is busy right now; showing the last copy fetched at {time(data.fetchedAt)}.</div>}
         {data?.truncated && <div style={{ color: WARN }}>History is long; the oldest fills may be missing.</div>}
+        {laxuFeePct > 0 && (
+          <div>
+            Laxu fee: {laxuFeeLabel(laxuFeePct)} of each order, included in the fee column (Laxu fee column shows its part).
+          </div>
+        )}
         <div>Straight from Perpl&apos;s API. Order history can lag up to ~25 seconds.</div>
       </div>
     </Panel>

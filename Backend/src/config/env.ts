@@ -1,5 +1,7 @@
 import dotenv from "dotenv";
 
+import { builderConfigFrom } from "../venue/perpl/builder";
+
 dotenv.config();
 
 function required(name: string): string {
@@ -78,6 +80,10 @@ export const config = {
   /// Only for programmatic API-key enrollment (scripts/provisionSlots.ts):
   /// Perpl must have whitelisted this Origin.
   perplOrigin: optional("PERPL_ORIGIN"),
+  /// Builder code (Spec 06 Part 5): PERPL_BUILDER_ENABLED / _ID /
+  /// PERPL_MAX_BUILDER_FEE_PER_100K / PERPL_BUILDER_FEE_PER_100K. Validated
+  /// here, so an inconsistent setting refuses to start. Off by default.
+  perplBuilder: builderConfigFrom(process.env),
   /// Market-order slippage bound (`ms`), clamped to each market's
   /// order_max_market_slippage_bps.
   perplSlippageBps: num("PERPL_SLIPPAGE_BPS", 100),

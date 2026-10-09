@@ -22,6 +22,7 @@ import {
 } from "./exchange";
 import { getPositions, getTicker } from "./rest";
 import { type OrderKind, type RawOrderResult } from "./tradingWs";
+import { builderFeeField } from "./builder";
 import type { ApiOrder, OrderSpec } from "./types";
 import {
   apiAmountToAsset,
@@ -175,6 +176,8 @@ export class PerplAdapter implements VenueAdapter {
       lb: Number(params.lastExecBlock),
       // `mnp` omitted on purpose: the market default applies (an explicit 0
       // would refuse any fill that collateralizes negative PnL).
+      // Builder fee: `bf` only when enabled with a fee > 0; nothing otherwise.
+      ...builderFeeField(config.perplBuilder),
     };
     const raw = await ensure(slot).sendOrder(spec, "ioc");
     const outcome = await this.toOutcome(raw, params.requestId, market, "ioc");

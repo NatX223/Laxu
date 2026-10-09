@@ -339,7 +339,8 @@ export const claimFaucet = () => apiFetch<FaucetClaimResult>("/faucet/claim", { 
 export type SlotStats = { free: number; reserved: number; allocated: number; settling: number; total: number };
 
 /** `slots` is null when the backend couldn't count them (database down). */
-export const getHealth = () => apiFetch<{ status: string; slots: SlotStats | null }>("/health");
+/** `laxuFeePct`: the Laxu (Perpl builder) fee on every venue order, percent of notional; 0 = none. */
+export const getHealth = () => apiFetch<{ status: string; slots: SlotStats | null; laxuFeePct?: number }>("/health");
 
 // --- the signed-in user's own positions ------------------------------------
 

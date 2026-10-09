@@ -1,6 +1,7 @@
 "use client";
 
 import { useAsset } from "@/lib/asset";
+import { laxuFeeLabel, useLaxuFeePct } from "@/lib/laxuFee";
 import { FaucetNudge } from "../faucet/FaucetButton";
 import { SIZE_CHIPS, cat, money } from "./data";
 import type { MarketView } from "./derive";
@@ -25,6 +26,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
   const { st, set, lev, levMax, minTrade, balances, blocker, open, actions } = engine;
   const { mark, dp } = mkt;
   const { symbol } = useAsset();
+  const laxuFeePct = useLaxuFeePct();
 
   const market = cat(st.market);
   // The slider's top is Perpl's real limit for the market. With no live market there is no limit to offer,
@@ -49,6 +51,10 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
     { k: "Entry (est.)", v: mark === null ? "—" : money(mark, dp), c: "#fdfbf7" },
     { k: "Liquidation (≈ entry ∓ 1/lev)", v: liq === null ? "—" : money(liq, dp), c: "#ffb765" },
     { k: "Fees (taker)", v: market.live ? money(notional * market.live.takerFee, 2) : "—", c: "#e3ddf4" },
+    // Shown only when Laxu charges a builder fee (off by default).
+    ...(laxuFeePct > 0
+      ? [{ k: `Laxu fee: ${laxuFeeLabel(laxuFeePct)}`, v: money((notional * laxuFeePct) / 100, 2), c: "#e3ddf4" }]
+      : []),
   ];
 
   // deduped: a 3x market would otherwise read 1× 1× 2× 3×
