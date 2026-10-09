@@ -290,7 +290,7 @@ cd Backend && npm install && npm test
 Run on 9 Oct 2026:
 
 - **Contracts: 143 passing, 2 pending.** `PositionToken.js` 76, `Lending.js` 38, `Venue.js` 29. The 2 pending tests in `test/fork/PerplReader.fork.js` need a live Monad RPC (`MONAD_FORK_RPC`).
-- **Backend: 151 passing, 0 failing.**
+- **Backend: 152 passing, 0 failing.**
 
 The invariants these back are listed with exact test names in [litepaper §5](docs/LITEPAPER.md#5-the-invariants-we-hold). The ones closest to money:
 
