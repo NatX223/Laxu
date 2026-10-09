@@ -5,7 +5,9 @@ import { healthToWad } from "./protectionMath";
 import {
   ProtectionInputError,
   decide,
+  gasShortfall,
   pendingState,
+  ruleResetData,
   shouldRecordSkip,
   skipNote,
   validateRuleInput,
@@ -197,4 +199,43 @@ test("a PENDING marker blocks the rule while fresh and is settled once stale", (
   assert.equal(pendingState(T0, T0 + 5_000, stale), "in-flight");
   assert.equal(pendingState(T0, T0 + stale - 1, stale), "in-flight");
   assert.equal(pendingState(T0, T0 + stale, stale), "stale");
+});
+
+// --- Spec 05b section 6: gas check and re-enable ------------------------------------------------------
+
+test("gas gate: the wallet must cover the gas LIMIT at the fee cap (Monad bills the limit)", () => {
+  const gwei = 10n ** 9n;
+  // 200_000 gas at 102 gwei = 0.0204 MON, the cost actually observed on testnet.
+  const need = 200_000n * 102n * gwei;
+  assert.equal(need, 20_400_000_000_000_000n);
+  assert.equal(gasShortfall(need, 200_000n, 102n * gwei), null, "exactly enough");
+  assert.equal(gasShortfall(need + 1n, 200_000n, 102n * gwei), null);
+  assert.equal(gasShortfall(need - 1n, 200_000n, 102n * gwei), 1n, "one wei short");
+  assert.equal(gasShortfall(0n, 200_000n, 102n * gwei), need, "an empty wallet is short by all of it");
+  assert.equal(gasShortfall(5n, 200_000n, 0n), null, "no fee, nothing needed");
+});
+
+test("gas skip note says what to do, in plain words", () => {
+  assert.match(skipNote("gas", "AUSD", 100n * AUSD, 6), /^Add MON for gas/);
+  // Not confused with the asset notes.
+  assert.doesNotMatch(skipNote("gas", "AUSD", 100n * AUSD, 6), /AUSD/);
+});
+
+test("re-enable: a rule created again starts clean whatever the old one had", () => {
+  const valid = validateRuleInput({ triggerHealth: "1.20", targetHealth: "1.40", maxSpend: "80" }, 6, CAP);
+  const reset = ruleResetData(valid, "policy_new", "wallet_id");
+  assert.deepEqual(reset, {
+    triggerHealth: "1.2000",
+    targetHealth: "1.4000",
+    maxSpend: "80000000",
+    maxPerCall: "40000000",
+    spent: "0", // not the old rule's spend
+    privyPolicyId: "policy_new", // the new policy, not the old one
+    privyWalletId: "wallet_id",
+    enabled: false, // never on until the backend has verified signer and allowance again
+    signerVerifiedAt: null,
+    lastActionAt: null, // no inherited cooldown
+    lastCheckedAt: null,
+    lastNote: null, // no stale banner
+  });
 });

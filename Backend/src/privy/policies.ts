@@ -2,6 +2,7 @@ import { getAddress } from "viem";
 
 import { privy } from "../auth/privy";
 import { config } from "../config/env";
+import { normalizeAuthKey } from "./authKey";
 
 /**
  * The Privy policy behind one loan-protection rule (Spec 05 2.4).
@@ -78,6 +79,13 @@ export function buildRepayPolicy(input: RepayPolicyInput, ownerId: string): Repa
     ],
     owner_id: ownerId,
   };
+}
+
+/// Deletes a policy this server owns. Callers must first be sure no signer on any wallet still holds it.
+export async function deletePolicy(policyId: string): Promise<void> {
+  await privy()
+    .policies()
+    .delete(policyId, { authorization_context: { authorization_private_keys: [normalizeAuthKey(config.privyAuthPrivateKey)] } } as never);
 }
 
 /// Creates the policy in Privy (owned by the server's key quorum) and returns its id.

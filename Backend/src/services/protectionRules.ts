@@ -144,7 +144,8 @@ export interface Reader {
   detail(): Promise<Detail>;
 }
 
-export type SkipReason = Limit | "dust";
+/// "gas": the user's wallet cannot pay the MON fee for the repay (decided by the worker, not by `decide`).
+export type SkipReason = Limit | "dust" | "gas";
 
 export type Decision =
   | { kind: "idle"; why: "disabled" | "signer-unverified" | "wallet-mismatch" }
@@ -200,7 +201,36 @@ export function skipNote(reason: SkipReason, assetSymbol: string, maxSpend: bigi
       return "Protection could not act: the per-repay limit is too small to matter.";
     case "dust":
       return "Protection has nothing worth repaying right now.";
+    case "gas":
+      return "Add MON for gas: Laxu's repay is sent from your wallet, so your wallet pays the fee.";
   }
+}
+
+/// The MON a wallet is missing to pay `gasLimit` at up to `maxFeePerGas` (wei), or null when it has enough.
+/// Monad bills the gas limit rather than gas used, so the limit times the fee cap is the right bar.
+export function gasShortfall(balance: bigint, gasLimit: bigint, maxFeePerGas: bigint): bigint | null {
+  const required = gasLimit * maxFeePerGas;
+  return balance >= required ? null : required - balance;
+}
+
+/// What POST /protection writes onto a rule that already exists for (wallet, pool) -- one that was turned off
+/// or never finished -- and onto a new one: a clean slate, so a re-created rule can never inherit `spent`,
+/// a verified signer or a stale banner from the last one (Spec 05b 6.2).
+export function ruleResetData(valid: ValidRule, policyId: string, privyWalletId: string) {
+  return {
+    triggerHealth: valid.triggerHealth,
+    targetHealth: valid.targetHealth,
+    maxSpend: valid.maxSpend.toString(),
+    maxPerCall: valid.maxPerCall.toString(),
+    spent: "0",
+    privyPolicyId: policyId,
+    privyWalletId,
+    enabled: false,
+    signerVerifiedAt: null,
+    lastActionAt: null,
+    lastCheckedAt: null,
+    lastNote: null,
+  };
 }
 
 // ---------------------------------------------------------------------------

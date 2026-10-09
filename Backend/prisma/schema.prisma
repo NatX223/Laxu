@@ -693,7 +693,8 @@ model ProtectionEvent {
   id           String         @id @default(cuid())
   ruleId       String         @map("rule_id")
   rule         ProtectionRule @relation(fields: [ruleId], references: [id])
-  /// PENDING | REPAID | SKIPPED | FAILED | ENABLED | DISABLED. A PENDING row is
+  /// CREATED | PENDING | REPAID | SKIPPED | FAILED | ENABLED | DISABLED. CREATED marks a setup starting (or restarting);
+  /// a PENDING row is
   /// the in-flight marker for an action; it becomes REPAID or FAILED in place.
   kind         String
   amount       String?

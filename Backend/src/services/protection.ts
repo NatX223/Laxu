@@ -10,14 +10,16 @@ import { config, protectionConfigProblems } from "../config/env";
 import { startWorker } from "../lib/async";
 import { HttpError, badRequest, conflict, notFound, serviceUnavailable } from "../lib/errors";
 import { createLogger, errorFields } from "../lib/logger";
-import { createRepayPolicy } from "../privy/policies";
+import { createRepayPolicy, deletePolicy } from "../privy/policies";
 import { classifyPrivyError, describePrivyError, privyWalletSender } from "../privy/signer";
 import { UINT256_MAX, formatHealth, healthToWad } from "./protectionMath";
 import {
   ProtectionInputError,
   baseToHuman,
   decide,
+  gasShortfall,
   pendingState,
+  ruleResetData,
   shouldRecordSkip,
   skipNote,
   validateRuleInput,
@@ -175,6 +177,7 @@ async function runRuleLocked(rule: ProtectionRule, now: number): Promise<Decisio
   const wallet = rule.walletAddress as Address;
   const decision = await decide(view, chainReader(pool, wallet), now, config.protectionCooldownS);
   const decimals = await assetDecimals();
+  let result: Decision | "busy" = decision;
 
   switch (decision.kind) {
     case "idle":
@@ -217,12 +220,27 @@ async function runRuleLocked(rule: ProtectionRule, now: number): Promise<Decisio
       break;
     }
 
-    case "repay":
+    case "repay": {
+      // The repay is sent FROM the user's wallet, so that wallet pays the gas in MON (Spec 05b 6.3).
+      const gate = await gasGate(rule, decision.amount);
+      if (gate.kind === "short") {
+        const note = skipNote("gas", ASSET_SYMBOL, view.maxSpend, decimals);
+        if (shouldRecordSkip(toLast(last), note, now, config.protectionCooldownS)) {
+          await db.protectionEvent.create({
+            data: { ruleId: rule.id, kind: "SKIPPED", note, healthBefore: formatHealth(decision.health) },
+          });
+          log.info("could not act", { ruleId: rule.id, reason: "gas", missingWei: gate.missing.toString() });
+        }
+        await touch(rule, now, note);
+        result = { kind: "skip", reason: "gas", health: decision.health, plan: decision.plan };
+        break;
+      }
       await touch(rule, now, undefined);
-      await executeRepay(rule, decision.amount, decision.health, now);
+      await executeRepay(rule, decision.amount, decision.health, now, gate.kind === "ok" ? gate.gas : undefined);
       break;
+    }
   }
-  return decision;
+  return result;
 }
 
 const toLast = (event: ProtectionEvent | null) =>
@@ -243,7 +261,28 @@ function repaidFromLogs(logs: Log[], pool: Address, wallet: Address): bigint | n
   return found ? found.args.principal + found.args.interest : null;
 }
 
-async function executeRepay(rule: ProtectionRule, amount: bigint, healthBefore: bigint, now: number): Promise<void> {
+type GasGate = { kind: "ok"; gas: bigint } | { kind: "short"; missing: bigint } | { kind: "unknown" };
+
+/**
+ * Does the wallet hold enough MON to pay for this repay? Monad bills the gas LIMIT at up to maxFeePerGas,
+ * so that product is the bar. "unknown" (an estimate that reverts, a flaky read) is not a reason to skip:
+ * the normal path then fails and records why.
+ */
+async function gasGate(rule: ProtectionRule, amount: bigint): Promise<GasGate> {
+  try {
+    const wallet = rule.walletAddress as Address;
+    const gas = await gasWithBuffer({ address: rule.poolAddress as Address, abi: lendingPoolAbi, functionName: "repay", args: [amount], account: wallet });
+    const [balance, fees] = await Promise.all([publicClient().getBalance({ address: wallet }), publicClient().estimateFeesPerGas()]);
+    const perGas = (fees as { maxFeePerGas?: bigint; gasPrice?: bigint }).maxFeePerGas ?? (fees as { gasPrice?: bigint }).gasPrice ?? 0n;
+    const missing = gasShortfall(balance, gas, perGas);
+    return missing === null ? { kind: "ok", gas } : { kind: "short", missing };
+  } catch (error) {
+    log.warn("could not check gas before repaying", { ruleId: rule.id, ...errorFields(error) });
+    return { kind: "unknown" };
+  }
+}
+
+async function executeRepay(rule: ProtectionRule, amount: bigint, healthBefore: bigint, now: number, knownGas?: bigint): Promise<void> {
   const pool = rule.poolAddress as Address;
   const wallet = rule.walletAddress as Address;
   const walletId = rule.privyWalletId as string;
@@ -260,7 +299,7 @@ async function executeRepay(rule: ProtectionRule, amount: bigint, healthBefore: 
     const data = encodeFunctionData({ abi: lendingPoolAbi, functionName: "repay", args: [amount] });
     // Our own estimate plus the shared buffer: Monad bills the gas LIMIT, so no large constant. A call that
     // would revert (allowance or balance moved since the read) fails here, before any gas is spent.
-    const gas = await gasWithBuffer({ ...call, account: wallet });
+    const gas = knownGas ?? (await gasWithBuffer({ ...call, account: wallet }));
 
     const { hash } = await withWalletLock(wallet, () =>
       privyWalletSender().sendTx(walletId, { to: pool, data, value: 0n, gas, chainId: config.chainId }),
@@ -422,26 +461,29 @@ export async function createRule(caller: Caller, input: CreateInput) {
   const privyWallet = await privyWalletOf(caller.walletAddress);
   const policyId = await createRepayPolicy({ pool: poolAddress, maxPerCall: valid.maxPerCall, chainId: config.chainId });
 
+  // A rule re-created after being turned off starts from a clean slate (spent 0, nothing verified).
   const data = {
     privyUserId: caller.privyUserId,
     walletAddress: caller.walletAddress,
     poolAddress,
     positionToken: pool.positionTokenAddress,
-    triggerHealth: valid.triggerHealth,
-    targetHealth: valid.targetHealth,
-    maxSpend: valid.maxSpend.toString(),
-    maxPerCall: valid.maxPerCall.toString(),
-    // A re-created rule starts from a clean slate: the old allowance was set to 0 when it was turned off.
-    spent: "0",
-    privyPolicyId: policyId,
-    privyWalletId: privyWallet.id,
-    enabled: false,
-    signerVerifiedAt: null,
-    lastNote: null,
+    ...ruleResetData(valid, policyId, privyWallet.id),
   };
   const rule = existing
     ? await db.protectionRule.update({ where: { id: existing.id }, data })
     : await db.protectionRule.create({ data });
+  await db.protectionEvent.create({
+    data: { ruleId: rule.id, kind: "CREATED", note: existing ? "Set up again." : "Set up started." },
+  });
+
+  // The replaced policy is retired, but ONLY when Privy confirms our signer is no longer on the wallet:
+  // a signer must never be left holding a policy that no longer exists.
+  const signers = (privyWallet.additional_signers ?? []) as Array<{ signer_id: string }>;
+  if (existing?.privyPolicyId && existing.privyPolicyId !== policyId && !signers.some((s) => s.signer_id === config.privySignerId)) {
+    await deletePolicy(existing.privyPolicyId).catch((error) =>
+      log.warn("could not delete the replaced Privy policy", { ruleId: rule.id, ...errorFields(error) }),
+    );
+  }
 
   const debtAsset = await poolDebtAsset(poolAddress as Address);
   return {
@@ -505,7 +547,14 @@ export async function activateRule(caller: Caller, id: string) {
 /// Stops the worker at once (the rule row is what it reads). Never depends on Privy being up.
 export async function turnOffRule(caller: Caller, id: string) {
   const rule = await ownedRule(caller, id);
-  if (!rule.enabled) return serialise(rule, []);
+  if (!rule.enabled) {
+    // Cancel setup (or a repeat call): record the end of a setup that never finished, once.
+    const last = await latestEvent(rule.id);
+    if (last?.kind !== "DISABLED") {
+      await db.protectionEvent.create({ data: { ruleId: rule.id, kind: "DISABLED", note: "Setup cancelled." } });
+    }
+    return serialise(rule, []);
+  }
 
   // Best effort: what the wallet looks like right now, for the log. Failure here changes nothing.
   const state = await liveSignerAndAllowance(rule).catch(() => null);
@@ -552,12 +601,22 @@ export async function listRules(caller: Caller) {
     include: { events: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: EVENTS_SHOWN } },
   });
   const decimals = await assetDecimals();
+  const nativeBalance = await publicClient()
+    .getBalance({ address: caller.walletAddress as Address })
+    .then((wei) => wei.toString())
+    .catch(() => null);
   return {
     assetDecimals: decimals,
     assetSymbol: ASSET_SYMBOL,
+    /// PROTECTION_MAX_SPEND_CAP, so the form does not hard-code it. Debt-asset base units.
+    maxSpendCap: config.protectionMaxSpendCap,
+    /// The wallet's MON, in wei (null if the read failed): it pays the gas for every repay.
+    walletNativeBalance: nativeBalance,
     /// The id to add as a signer (a public id, not a key): lets the browser resume an unfinished setup.
     signerId: config.privySignerId,
-    rules: await Promise.all(rules.map(async (rule) => serialise(rule, rule.events, await liveView(rule)))),
+    rules: await Promise.all(
+      rules.map(async (rule) => serialise(rule, rule.events, { ...(await liveView(rule)), phase: phaseOf(rule, rule.events[0]) })),
+    ),
   };
 }
 
@@ -578,8 +637,18 @@ async function liveView(rule: ProtectionRule) {
     debt: debt?.toString() ?? null,
     walletBalance: balance?.toString() ?? null,
     allowance: signerState?.allowance ?? null,
-    signerPresent: signerState?.signerPresent ?? null,
+    /// Best effort from Privy: null when Privy could not be asked.
+    walletHasSigner: signerState?.signerPresent ?? null,
   };
+}
+
+/**
+ * Where a rule is in its life, decided here so the browser never guesses from leftovers:
+ * "on" (enabled), "off" (the last thing that happened was it being turned off), "setup" (created, not finished).
+ */
+function phaseOf(rule: ProtectionRule, latest: ProtectionEvent | undefined): "setup" | "on" | "off" {
+  if (rule.enabled) return "on";
+  return latest?.kind === "DISABLED" ? "off" : "setup";
 }
 
 function serialise(rule: ProtectionRule, events: ProtectionEvent[], live: Record<string, unknown> = {}) {
@@ -602,6 +671,7 @@ function serialise(rule: ProtectionRule, events: ProtectionEvent[], live: Record
     lastActionAt: rule.lastActionAt?.toISOString() ?? null,
     lastNote: rule.lastNote,
     createdAt: rule.createdAt.toISOString(),
+    phase: rule.enabled ? "on" : "off",
     ...live,
     events: events.map((event) => ({
       id: event.id,
