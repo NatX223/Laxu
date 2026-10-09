@@ -128,7 +128,7 @@ Script change: `03-user-signer.ts` now exits (code 3) when the signer is missing
 
 ### Step 00 results (no signer needed)
 
-- App credentials in `Backend/.env` are accepted by Privy (read-only `wallets().list` returned 1 wallet). I cannot tell from the API whether this is the Monad app or the Singapore app; the user should confirm in the dashboard.
+- App credentials in `Backend/.env` are accepted by Privy (read-only `wallets().list` returned 1 wallet). I cannot tell from the API whether this is the Monad app or an older app; the user should confirm in the dashboard.
 - The auth-key normaliser accepts SEC1 PEM, PKCS8 PEM, single-line PEM with `\n`, base64 PKCS8 DER and the `wallet-auth:` prefix, and rejects a non-P-256 key.
 
 ## SDK calls (`@privy-io/node` 0.35.0 and `@privy-io/react-auth` 3.45.0; every row below was run on Monad except "Remove signer (server)")

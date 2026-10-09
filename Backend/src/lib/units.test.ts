@@ -24,12 +24,12 @@ test("size is base quantity x 1e6 and always positive", () => {
   assert.equal(toSize6("0.01"), 10000n);
 });
 
-test("size x 1e6 with prices x 1e18 makes pnl land in USDG 6dp (spec worked example)", () => {
+test("size x 1e6 with prices x 1e18 makes pnl land in asset 6dp (spec worked example)", () => {
   const pnl = (toSize6("0.25") * (toPrice18("2200") - toPrice18("2000"))) / E18;
   assert.equal(pnl, 50_000_000n); // $50
 });
 
-test("USDG amounts are signed 6dp", () => {
+test("asset amounts are signed 6dp", () => {
   assert.equal(toAsset6("500"), 500_000_000n);
   assert.equal(toAsset6("-2"), -2_000_000n);
   assert.equal(fromAsset6(-2_000_000n), "-2");

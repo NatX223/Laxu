@@ -23,11 +23,10 @@ The app expects the Laxu backend at `NEXT_PUBLIC_API_URL` (default `http://local
 | `src/components/position/` | Position page: borrow/repay, buy-in/redeem, stop-loss/take-profit panel |
 | `src/components/faucet/` | "Get test funds" |
 | `src/lib/actions.ts` | Contract writes; checks `LendingPool` reverts (e.g. "exceeds LTV", stale prices) before the wallet prompt |
-| `src/lib/arcus.ts` | Public Arcus market data (candles, marks) |
+| `src/lib/perplMarketData.ts` | Perpl public market data (candles, book, ticker), read through the backend's proxy |
 | `src/lib/api.ts` | Backend client |
 
 ## Known limits
 
-- The main chart and mark price are live Arcus data. The order book, tape and market-menu sparklines are simulated.
-- The positions dock's PnL ignores funding.
-- The community page shows sample data, labelled as a preview.
+- The **Protect this loan** card is hidden unless `NEXT_PUBLIC_ENABLE_PROTECTION=true`, and has not yet been walked through in a browser.
+- Perpl allows browser reads only from its own origin, so market data goes through the backend's proxy (`GET {API_URL}/market-data/v1/...`) unless `NEXT_PUBLIC_MARKET_DATA_BASE` is set.

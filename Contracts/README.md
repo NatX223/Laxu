@@ -1,217 +1,100 @@
 # Laxu Contracts
 
-Tokenized Arcus perp positions (`PositionToken`) and an isolated lending market that accepts them
-as collateral (`LendingVault` / `LendingPool` / `LendingPoolFactory`).
+Tokenized Perpl perp positions (`PositionToken`) and an isolated lending market that accepts them as collateral (`LendingVault` / `LendingPool`), deployed on **Monad testnet (chain 10143)**. The asset is **AUSD**, Perpl's collateral token (6 decimals).
 
+The design rationale, invariants and trust model are in the [litepaper](../docs/LITEPAPER.md); deployed addresses are in the [root README](../README.md#deployed-contracts) and [`deployments/monadTestnet.json`](deployments/monadTestnet.json).
+
+```bash
+npm install
+cp .env.example .env
+npx hardhat compile
+npx hardhat test          # 143 passing, 2 pending
+npx hardhat run scripts/deploy.js --network monadTestnet
 ```
-npm run compile
-npm test        # 114 tests: PositionToken 76, lending 38
-```
 
-The design rationale, invariants and trust model are written up in the
-[litepaper](../docs/LITEPAPER.md).
+**Tests** (9 Oct 2026): 143 passing: `test/PositionToken.js` 76, `test/Lending.js` 38, `test/Venue.js` 29. The 2 pending tests in `test/fork/PerplReader.fork.js` run only against a live Monad RPC (`MONAD_FORK_RPC`).
 
----
+## Contracts
+
+| Contract | Role |
+|---|---|
+| `PerplReader` | Reads Perpl's exchange: the mark (with paused, halted and price-age checks), a position by account, venue equity; converts Perpl units to Laxu's. Market mapping is owner-set, once per market. |
+| `PositionToken` | One EIP-1167 clone per trade. ERC-20 shares, ERC-7540 async buy-ins and redeems, close → settle → claim, per-holder stop-loss / take-profit. |
+| `PositionTokenFactory` | Creates tokens. Operator-only, leverage 1–20 (`MAX_LEVERAGE`). |
+| `LendingVault` | Synchronous ERC-4626 AUSD vault (`lxAUSD`). Lenders deposit; registered pools draw against a per-pool debt ceiling. |
+| `LendingPool` | One isolated market per token: deposit shares, borrow AUSD, repay, get liquidated. EIP-1167 clone. |
+| `LendingPoolFactory` | Clones a pool and registers it with the vault in one call. Permissionless. |
+| `vendor/` | OpenZeppelin community ERC-7540 files, vendored with four storage fields made `internal` (see each header). |
+| `mocks/` | Test-only: a mock Perpl exchange and mock ERC-20s. |
 
 ## Position token
 
-One EIP-1167 clone per Arcus trade (`PositionTokenFactory.createPosition`, callable only by the
-backend operator, after a real fill). ERC-20 shares, valued on-chain:
-
 ```
-totalAssets = capital + size × (mark − entry) / 1e18 (negated for shorts) + (funding − fundingSettled)
+totalAssets = capital + size × (mark − entry) / 1e18   (negated for shorts) + (fundingAccrued − fundingSettled)
 ```
 
-Buy-ins and redeems are ERC-7540 async requests that the operator fulfils after the Arcus side has
-moved; both auto-settle in the fulfil transaction and keep NAV per share constant. Either can be
-cancelled after 20 minutes (`REQUEST_CANCEL_TIMEOUT`). Non-creator buy-ins pay a 2% fee
-(`BUY_IN_FEE_BPS`) to the creator at request time.
+- **The mark is read, not reported.** `currentMark()` reads Perpl's mark through `PerplReader` on every valuation. If the read fails, the last cached mark is used, so `totalAssets` never reverts. There is no function that lets the operator set a price.
+- **Creation is checked against Perpl.** `initialize` reads the slot's Perpl position: direction and size must match exactly, entry within 0.5% (`ENTRY_TOLERANCE_BPS = 50`).
+- **Funding is the one reported value** (`applyFunding`), because Perpl resets its funding accumulator when a position grows. Report timestamps must strictly increase and be at most 60 seconds ahead.
+- **Freshness.** `isPriceFresh()` is true for a closed position, or when funding is under `FUNDING_MAX_AGE` (2 hours) and the mark is live, valid and under `MARK_MAX_AGE` (5 minutes).
+- **Buy-ins and redeems** are ERC-7540 requests that the operator fulfils after the Perpl side has moved; both settle in the fulfil transaction and keep NAV per share constant. Either can be cancelled after 20 minutes (`REQUEST_CANCEL_TIMEOUT`). Non-creator buy-ins pay 2% (`BUY_IN_FEE_BPS`) to the creator at request time.
 
-**What the operator (`arcusOperator`) supplies:** mark/funding reports (`applyReport`, strictly
-increasing timestamps), fill size and price on `fulfillDepositRequest` / `fulfillRedeemRequest` /
-`executeTrigger`, the final mark and funding on `close`, and the recovered amount on `settle`.
-**What it can't do:** set a share price directly, mint itself shares, exit a holder whose own
-trigger isn't hit, pay a claim to anyone but the holder, or take pending buy-in USDG or unclaimed
-settlement funds (`recoverExcess` only returns the balance above both).
+**What the operator supplies:** trade details at creation (checked against Perpl), funding, fill size and price on `fulfillDepositRequest` / `fulfillRedeemRequest` / `executeTrigger`, final funding on `close`, and the recovered amount on `settle`.
+**What it cannot do:** set a price; mint a token for a trade Perpl does not hold; mint itself shares; exit a holder whose level is not crossed at the live mark; pay a claim to anyone but the holder; take pending buy-ins or unclaimed settlement funds (`recoverExcess` returns only the balance above both); block `repay()`, `liquidate()` or `claim()`.
 
----
+## Lending
 
-## Lending system
-
-**Liquidity is shared, risk is isolated.** One `LendingVault` holds all USDG that lenders deposit —
-a single deep book, so rates are worth having. Many `LendingPool` clones, one per `PositionToken`,
-each capped by its own debt ceiling at the vault. A position that goes bad can burn at most its own
-pool's ceiling, never the whole book.
-
-| Contract | Role |
-| --- | --- |
-| `LendingVault` | Synchronous ERC-4626 USDG vault. Lenders deposit; pools draw against a per-pool debt ceiling. |
-| `LendingPool` | One isolated market per `PositionToken`. Deposit shares, borrow USDG, get liquidated. EIP-1167 clone. |
-| `LendingPoolFactory` | Clones a pool and registers it with the vault in one call. Permissionless. |
+**Liquidity is shared, risk is isolated.** One `LendingVault` holds all lenders' AUSD; many `LendingPool` clones, one per token, each capped by its own debt ceiling (10,000 AUSD per new pool on testnet). A position that goes bad can burn at most its own pool's ceiling.
 
 ### Deployment wiring
 
-Order matters in one place: **the factory must hold the vault's `registrar` role before any pool is
-created.** A pool that was never registered will accept collateral and then revert on every borrow.
+The factory must hold the vault's `registrar` role before any pool is created; an unregistered pool accepts collateral and then reverts on every borrow. `scripts/deploy.js` does this in order:
 
 ```
-1. deploy LendingVault(usdg, name, symbol, owner)
-2. deploy LendingPool()                     // implementation only, never initialized
-3. deploy LendingPoolFactory(poolImpl, vault, defaultDebtCeiling, owner)
-4. vault.setRegistrar(factory)              // <- required before step 5
-5. factory.createPool(positionToken)        // permissionless from here on
+1. PerplReader(exchange)                       // then setMarket(...) per market
+2. PositionToken(asset)                        // implementation only
+3. PositionTokenFactory(impl, operator, asset, reader)
+4. LendingVault(asset, name, symbol, owner)
+5. LendingPool()                               // implementation only
+6. LendingPoolFactory(poolImpl, vault, defaultDebtCeiling, owner)
+7. vault.setRegistrar(factory)                 // required before any createPool
 ```
 
 ### Risk parameters
 
-Protocol-wide, leverage-tiered, and resolved into each pool's own storage once — inside
-`LendingPool.initialize()`, purely as a function of the collateral token's already-fixed
-`leverage` — never a per-pool argument. That is what makes permissionless pool creation safe: no
-caller, including whoever calls `createPool`, ever gets to choose a pool's risk numbers; a
-duplicate pool for the same token resolves to the identical tier and behaves identically to the
-first.
+Resolved once in `LendingPool.initialize()` from the token's fixed leverage; no caller chooses them, so permissionless pool creation is safe.
 
 | Leverage | LTV | Liquidation threshold | Liquidation bonus |
-| --- | --- | --- | --- |
+|---|---|---|---|
 | 1–5× | 50% | 60% | 8% |
 | 6–10× | 40% | 50% | 10% |
 | 11–20× | 25% | 35% | 12% |
 
-Plus, flat across every tier: close factor 50% (100% below HF 0.95 or below dust), borrow APR 10%
-simple interest.
+Flat across tiers: close factor 50% (100% below health 0.95, or below the dust threshold of 50 units of the asset), borrow APR 10% simple. Deliberately far below blue-chip lending LTVs: a leveraged position moves several times faster than its underlying and can be liquidated on Perpl in one step. A starting point, not back-tested.
 
-Far below Aave's blue-chip defaults (75–80% LTV) even at the least conservative tier, deliberately.
-Collateral here is a leveraged perp position — a 5× position swings ~5× faster than its underlying,
-which alone puts it in the volatile/exotic bracket. Two things push it lower still, and both get
-**worse as leverage climbs**, which is the reason for tiering rather than one flat number: the
-underlying Arcus position can be liquidated, which steps `PositionToken` value down in one move
-rather than letting it drift, and a bigger step at higher leverage; and `markPrice` arrives in
-periodic reports from Laxu's backend price reporter, not continuously, so for the same real-world price move a 20× position's
-value swings ~4× faster than a 5× position's — a higher-leverage position has a meaningfully higher
-chance of gapping straight through its liquidation threshold between two report intervals. Lower
-LTV at higher leverage buys more cushion before the trigger; the rising bonus pays liquidators more
-to prioritize the riskiest tier first when things move fast (same logic as Aave V4's dynamic
-bonus).
+### Freshness guard
 
-Starting recommendation, not back-tested. The tier table is resolved once, at pool-creation time,
-and never re-read — a `PositionToken`'s `leverage` never changes after its own `initialize()`, so
-re-deriving the tier on every borrow/liquidate would just be gas spent computing the same answer.
+`borrow()` and `withdrawCollateral()` carry `freshOracle`, which requires `isPriceFresh()`. Both open new risk, so both need recent data. A closed position is exempt, so borrowers can always withdraw collateral to claim.
 
----
+`repay()`, `liquidate()` and `healthFactor()` are **not** gated, on purpose: blocking liquidation while data is stale would let bad debt grow while nobody can act. Liquidating on last-known data beats not liquidating.
+
+### Two choices that look like shortcuts
+
+- **Liquidation transfers shares; it does not call `redeem()`.** Redemptions are async and wait on a real Perpl margin reduction. A liquidator who had already repaid debt would not know what they were getting while the position kept moving. They pick their own exit afterwards.
+- **`liquidate()` is a plain public function.** No role, no allowlist. The backend's liquidator bot (`ENABLE_LIQUIDATOR`, off by default) uses a wallet with no protocol role; `test/Lending.js` asserts an address with no role can liquidate.
 
 ## Known gaps
 
-Stated rather than hidden. None of these are solved in this codebase.
+1. **Bad debt is not absorbed.** If seized collateral cannot cover a loan, `LendingVault.totalAssets()` stays overstated by the shortfall. `liquidate` caps the seizure at the collateral held rather than reverting, but nothing repairs the vault's books afterwards. No insurance fund. **The vault is not loss-proof.**
+2. **Fills, funding and settlement amounts are operator-reported.** `settle(assets)` checks that the token holds `assets` plus pending buy-ins, not that `assets` equals what Perpl returned. Fill prices passed on fulfil move `entryPrice` for every holder.
+3. **Duplicate pools per token are allowed.** Risk resolves the same way for each, so it is fragmentation, not a safety hole; `factory.primaryPool()` gives the UI one answer.
+4. **Positions open only on a 6-decimal asset.** PnL lands in asset base units, so `size` must be in 10^assetDecimals units; the deployed `PerplReader` sizes at 1e6. The backend refuses to open a position otherwise (`assertPnlScaleSupported` in `Backend/src/venue/perpl/units.ts`). True for AUSD.
+5. **Every token depends on `PerplReader`.** The owner can point the factory at a new reader for future positions only (`setVenueReader`).
 
-**1. Bad debt is not absorbed.** If a pool's collateral is fully seized and still cannot cover the
-debt, that pool's `currentDebt` never fully zeroes out, and `LendingVault.totalAssets()` stays
-overstated by the shortfall — lenders are owed marginally more than exists. `LendingPool.liquidate`
-surfaces this honestly (it caps the seizure at collateral actually held rather than reverting, so
-the position stays liquidatable) but nothing repairs the vault's books afterward. Production
-protocols use an insurance fund or governance write-offs. Out of scope for hackathon timeline.
-**The vault is not loss-proof.**
+## Perpl venue facts
 
-**2. Leverage above 20× is not covered by the tier table.** `LendingPool._riskTierFor` has three
-brackets (1–5×, 6–10×, 11–20×) and no upper bound check — a position above 20× silently falls
-through to the 11–20× tier rather than reverting or getting its own bracket. Not a live problem
-today because Laxu's backend caps leverage at 20× (`LAXU_MAX_LEVERAGE` in
-`Backend/src/services/markets.ts`) before it opens a position, but neither `PositionToken` nor
-`LendingPool` enforces that cap, so this is a real gap if the platform ever supports higher
-leverage. Revisit then; `test/Lending.js` documents the current fall-through behavior explicitly
-rather than leaving it implicit.
-
-**3. `DUST_THRESHOLD_USD` assumes a 6-decimal USDG.** It is `50e6` per spec. If USDG ships with 18
-decimals (as `MockUSDG` does) the constant is effectively zero and the force-full-liquidation dust
-rule never fires. Harmless in testing, re-scale before mainnet.
-
-**4. Duplicate pools per token are allowed.** `createPool` does not reject a `PositionToken` that
-already has a pool. Because risk parameters resolve deterministically from the collateral's own
-leverage, duplicates are a liquidity-fragmentation inefficiency, not a safety hole —
-`factory.primaryPool()` gives the UI one canonical answer.
-
-**5. `MAX_REPORT_AGE` (7 minutes) still wants real-world validation.** It is not an independent
-guess — it is the backend reporter's 1% deviation / 5-minute heartbeat write policy (see
-`Backend/src/services/reporter.ts`) plus a buffer for normal execution/confirmation lag — but that buffer is
-sized on paper, not against an observed live lag. See "Oracle staleness guard" below for what the
-guard does and doesn't cover.
-
-**6. Fills and settlement amounts are operator-reported.** `settle(assets)` only checks that the
-token holds `assets` plus pending buy-ins; it can't check that `assets` matches what Arcus actually
-returned, and `recoverExcess` sends anything above that to an address the operator picks. Fill
-prices passed to `fulfillDepositRequest` move `entryPrice` for every holder. Same trust as the
-price reports: the operator is trusted to pass Arcus's numbers through honestly.
-
-**7. Positions can only open on a 6-decimal asset.** The contract's PnL scale is the asset's
-decimals: `PositionToken.totalAssets = capital + size × (mark − entry) / 1e18` adds the PnL to
-`capital`, which is in asset base units, so `size` must be in 10^assetDecimals units. The deployed
-`PerplReader` sizes positions at its immutable `sizeScale` (1e6 on testnet), `initialize` compares
-that size to the one the backend passes with no tolerance, and the backend's size unit is 6 decimals.
-The backend refuses to *open* a position unless `asset.decimals() == 6` and
-`reader.sizeScale() == 10^6` (`assertPnlScaleSupported` in `Backend/src/venue/perpl/units.ts`);
-deposits, withdrawals and settlement are unaffected (collateral converts for any decimals). True for
-AUSD today; another asset needs a new `PerplReader` and a size unit derived from its decimals.
-
----
-
-## Oracle staleness guard
-
-`LendingPool.borrow()` and `withdrawCollateral()` are gated by a `freshOracle` modifier: both
-revert if `block.timestamp - PositionToken.lastReportTimestamp() > MAX_REPORT_AGE` (7 minutes —
-the reporter's 5-minute heartbeat plus a lag buffer, not a round-number guess). Both are
-actions that *open* new risk against a live collateral read, so both need that read to be recent.
-
-A **closed** position is exempt: its value is final, and reports stop at close, so without the
-exemption `withdrawCollateral()` would fail permanently seven minutes after close and borrowers
-could never get their collateral back to claim. `borrow()` against a closed position is refused
-separately. `repay()` is never gated.
-
-`liquidate()` and `healthFactor()` are deliberately **not** gated, and this is not an oversight.
-More reporters wouldn't fix this either way — agreement between several reporters protects
-against one of them lying about the data (an integrity problem), not against how long ago the last
-successful report was (a recency problem). Blocking liquidation during a staleness
-window would trade a small risk (acting on a slightly-old price) for a much bigger one (bad debt
-accumulating unchecked while liquidation sits frozen) — liquidating on last-known data is safer
-than refusing to liquidate at all, so `liquidate()` keeps working exactly as spec'd, unguarded.
-
----
-
-## Two notes on design that are easy to misread as shortcuts
-
-**Liquidation transfers shares, it does not call `redeem()`.** `PositionToken` redemptions are async
-(ERC-7540) — they wait on `arcusOperator` confirming a real Arcus margin reduction. Routing
-liquidation through `redeem()` would leave a liquidator having already paid off debt but not yet
-knowing what they are getting, while the position's real value keeps moving underneath a pending
-request. That is the precise scenario liquidation exists to prevent. Transferring seized shares
-directly is also strictly less code. The liquidator picks their own exit afterwards, on their own
-clock, bearing that timing risk themselves.
-
-**`liquidate()` is a plain public function.** No allowlist, no role, nothing to configure. The
-backend ships a liquidator bot (`ENABLE_LIQUIDATOR`, off by default on testnet to save gas) and
-could run several independent wallets doing it, because nothing in the contract treats
-"liquidator" as an identity. Worth funding those wallets separately from
-`arcusOperator` and the deployer: they hold none of the protocol's privileged roles and can still
-liquidate. `test/Lending.js` asserts exactly that.
-
----
-
-## Perpl venue facts (Monad deployment)
-
-**Market ids.** Perpl's API `Market` has two ids: `id` (the API market id, used in orders) and
-`perpetual_id` (the on-chain `perpId` that `getPerpetualInfo` / `getPosition` take).
-`PerplReader.setMarket(market, perpId)` takes `perpetual_id`, and the mapping is set-once.
-`scripts/perplMarkets.js` snapshots both into `deployments/perplMarkets.testnet.json`, which
-`deploy.js` maps from (cross-checking each perp's on-chain decimals) and `scripts/checkReader.js`
-audits the live reader against. On testnet today the two ids happen to be equal for every market.
-
-**Position direction.** On-chain `PositionInfo.positionType` is `0 = Long, 1 = Short`; the API's
-`Position.sd` is `1 = Long, 2 = Short`. `PerplReader` reads the on-chain field.
-
-**Collateral units.** Perpl's `…CNS` amounts are scaled by `getExchangeInfo().collateralDecimals`,
-which may differ from the ERC-20's `decimals()`. Laxu never values positions off CNS amounts, but
-`PerplReader.sizeScale` is `10^collateralDecimals` while `PositionToken` computes PnL in asset base
-units, so `deploy.js` refuses to deploy if the two differ (both are 6 for AUSD today).
-
-**Venue equity.** `PerplReader.venueEquity = depositCNS + pnlCNS`. Confirmed on testnet
-(2026-10-05): `pnlCNS` already includes the funding premium (`pnlCNS = deltaPnlCNS + premiumPnlCNS`,
-e.g. 103880 = 104580 − 700), so adding `premiumPnlCNS` again would double-count funding. The
-backend's funding reconciliation uses the same sum (`docs/perpl-findings.md#v-adapter-277`).
+- **Market ids.** Perpl's API market has `id` (used in orders) and `perpetual_id` (the on-chain `perpId` for `getPerpetualInfo` / `getPosition`). `PerplReader.setMarket` takes `perpetual_id`. `scripts/perplMarkets.js` snapshots both into `deployments/perplMarkets.testnet.json`; `deploy.js` maps from it and `scripts/checkReader.js` audits the live reader. On testnet the two ids are equal for every market.
+- **Direction.** On-chain `positionType` is `0 = Long, 1 = Short`; the API's `sd` is `1 = Long, 2 = Short`. `PerplReader` reads the on-chain field.
+- **Collateral units.** Perpl's `…CNS` amounts scale by `getExchangeInfo().collateralDecimals`. `deploy.js` refuses to deploy if that differs from the asset's `decimals()` (both 6 for AUSD).
+- **Venue equity** is `depositCNS + pnlCNS`; `pnlCNS` already includes the funding premium, so adding `premiumPnlCNS` would count funding twice (confirmed on testnet, `docs/perpl-findings.md#v-adapter-277`).
+- **Interface.** `interfaces/IPerplExchange.sol` is generated from Perpl's Exchange ABI (`abi/perpl/Exchange.json`, trimmed from `PerplFoundation/dex-sdk` commit `01b9910`) by `scripts/gen-perpl-iface.js`. Field order is load-bearing; the fork test checks it against the live exchange.

@@ -14,7 +14,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  * and only here -- one deep book instead of one shallow book per position token, which is what
  * makes rates worth having.
  *
- * Plain, SYNCHRONOUS ERC-4626, unlike {PositionToken}. Nothing in this contract waits on Arcus or
+ * Plain, SYNCHRONOUS ERC-4626, unlike {PositionToken}. Nothing in this contract waits on Perpl or
  * on an off-chain confirmation: AUSD in, shares out, same transaction. The async ERC-7540
  * machinery next door exists because a deposit there must be matched by a real margin move on a
  * real exchange; nothing of the sort applies to parking stablecoins in a vault, so none of that

@@ -75,7 +75,7 @@ async function deployLendingFixture({ leverage = RISK_TIERS.low.leverage } = {})
     ENTRY_PRICE,
     sizeForLeverage(leverage),
     INITIAL_DEPOSIT,
-    ethers.encodeBytes32String("arcus-1"),
+    ethers.encodeBytes32String("perpl-1"),
     usdg.target,
     operator.address,
     reader.target,
@@ -146,7 +146,7 @@ async function report(positionToken, operator, markPrice) {
 }
 
 describe("LendingVault", function () {
-  it("counts lent-out USDG in totalAssets so the share price does not move on a borrow", async function () {
+  it("counts lent-out AUSD in totalAssets so the share price does not move on a borrow", async function () {
     const { vault, pool, positionToken, borrower } = await deployLendingFixture();
 
     const before = await vault.totalAssets();

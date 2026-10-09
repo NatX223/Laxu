@@ -10,14 +10,14 @@ const BUY_IN_FEE_BPS = 200n; // 2%
 const REQUEST_CANCEL_TIMEOUT = 20n * 60n;
 const Direction = { Long: 0, Short: 1 };
 
-// "#" + first 4 bytes of venuePositionId as hex -- "arcu" from encodeBytes32String("arcus-1").
-const STRUCTURED_NAME = "Laxu ETH-PERP Long 5x #61726375";
+// "#" + first 4 bytes of venuePositionId as hex -- "perp" from encodeBytes32String("perpl-1").
+const STRUCTURED_NAME = "Laxu ETH-PERP Long 5x #70657270";
 
 async function deployPositionTokenFixture({
   direction = Direction.Long,
   leverage = 5n,
   entryPrice = 2000n * PRICE_SCALE,
-  size = (5n * PRICE_SCALE) / 2n, // 2.5 "size units" -> notional 5000 USDG @ entry (5x leverage on 1000 deposit)
+  size = (5n * PRICE_SCALE) / 2n, // 2.5 "size units" -> notional 5000 AUSD @ entry (5x leverage on 1000 deposit)
   initialDeposit = 1000n * PRICE_SCALE,
   listed = false,
   defaultStopLoss = 0n,
@@ -49,7 +49,7 @@ async function deployPositionTokenFixture({
     .find((parsed) => parsed && parsed.name === "Cloned");
   const positionToken = PositionToken.attach(clonedEvent.args.instance);
 
-  const venuePositionId = ethers.encodeBytes32String("arcus-1");
+  const venuePositionId = ethers.encodeBytes32String("perpl-1");
   const market = ethers.encodeBytes32String("ETH-PERP");
 
   // The real venue position the token is checked against, with the mark at entry.
@@ -214,7 +214,7 @@ describe("PositionToken", function () {
             2000n * PRICE_SCALE,
             2n * PRICE_SCALE,
             1000n * PRICE_SCALE,
-            ethers.encodeBytes32String("arcus-1"),
+            ethers.encodeBytes32String("perpl-1"),
             wrongAsset.target,
             backendOperator.address,
             backendOperator.address, // venue reader: never reached, the asset check fires first
@@ -251,7 +251,7 @@ describe("PositionToken", function () {
         2000n * PRICE_SCALE,
         (5n * PRICE_SCALE) / 2n,
         1000n * PRICE_SCALE,
-        ethers.encodeBytes32String("arcus-1"),
+        ethers.encodeBytes32String("perpl-1"),
         accountId,
         1900n * PRICE_SCALE,
         2400n * PRICE_SCALE,
@@ -507,10 +507,10 @@ describe("PositionToken", function () {
       ).to.be.revertedWith("PositionToken: not operator");
     });
 
-    it("reverts fulfillment if the vault hasn't received the freed USDG yet", async function () {
-      // The creator's initialDeposit shares were minted at genesis with no matching USDG ever
+    it("reverts fulfillment if the vault hasn't received the freed AUSD yet", async function () {
+      // The creator's initialDeposit shares were minted at genesis with no matching AUSD ever
       // entering the vault (the real capital lives on the venue) -- so redeeming them requires the
-      // backend to have actually sent freed USDG back in first.
+      // backend to have actually sent freed AUSD back in first.
       const { positionToken, creator, backendOperator, initialDeposit } = await deployPositionTokenFixture();
 
       await positionToken.connect(creator).requestRedeem(initialDeposit, creator.address, creator.address);
@@ -520,7 +520,7 @@ describe("PositionToken", function () {
       ).to.be.revertedWith("PositionToken: insufficient assets to fulfill redeem");
     });
 
-    it("auto-settles on fulfil: pays USDG straight to the redeemer, nothing left pending or claimable", async function () {
+    it("auto-settles on fulfil: pays AUSD straight to the redeemer, nothing left pending or claimable", async function () {
       const { positionToken, depositor, backendOperator, usdg, depositedShares } = await boughtInFixture();
 
       await positionToken.connect(depositor).requestRedeem(depositedShares, depositor.address, depositor.address);
@@ -794,7 +794,7 @@ describe("PositionToken", function () {
     });
   });
 
-  // Real units from here on: USDG and shares at 6 decimals, size = base quantity x 1e6, prices x 1e18.
+  // Real units from here on: AUSD and shares at 6 decimals, size = base quantity x 1e6, prices x 1e18.
   describe("buy-ins and redeems keep leverage constant", function () {
     const USD = 10n ** 6n;
     const ETH = 10n ** 6n; // size scale
@@ -1039,7 +1039,7 @@ describe("PositionToken", function () {
       await expect(positionToken.connect(creator).claim()).to.be.revertedWith("PositionToken: not settled");
     });
 
-    it("pays 1,000 USDG out 500/300/200 and keeps totalAssets/totalSupply constant between claims", async function () {
+    it("pays 1,000 AUSD out 500/300/200 and keeps totalAssets/totalSupply constant between claims", async function () {
       const { positionToken, backendOperator, creator, depositor, otherAccount, usdg } =
         await threeHolderClosedFixture();
       const recovered = 1000n * PRICE_SCALE;
@@ -1324,9 +1324,9 @@ describe("PositionToken", function () {
         .withArgs(depositor.address, false, true, 300n * PRICE_SCALE, anyUint, 1790n * PRICE_SCALE);
     });
 
-    it("reverts when the token can't pay without touching pending buy-in USDG", async function () {
+    it("reverts when the token can't pay without touching pending buy-in AUSD", async function () {
       const { positionToken, depositor, backendOperator } = await threeHolderFixture();
-      // The depositor's own pending buy-in is the only USDG in the token.
+      // The depositor's own pending buy-in is the only AUSD in the token.
       await positionToken.connect(depositor).requestDeposit(500n * PRICE_SCALE, depositor.address, depositor.address);
       await report(positionToken, backendOperator, 1890n * PRICE_SCALE);
       await expect(
