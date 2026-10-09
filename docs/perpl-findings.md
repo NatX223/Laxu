@@ -1116,3 +1116,23 @@ The `~/perpl` folder named in Spec 06 is not on this machine, so the public page
 - Keep-alive: "Send a Ping (`mt: 1`) about every 30 seconds"; the server replies with Pong (`mt: 2`); market-data connections do not need `mt: 1`. The pages do not say the server pings at protocol level. **Observed:** it does, every 5.0 s, from the handshake on (`docs/e2e-run.md`, Phase 6 follow-up).
 - Close codes: the public pages say `1008` covers "rate, connection, ping, or sign-in timeout limits"; the reason strings ("ping timeout", "idle timeout") appear only in the server's close frame.
 - Rate limits (public `types-and-errors.md`): about 50 messages/s per connection and about 5 connections per IP, market-data and trading combined; REST about 60 requests/min authenticated, 100/min public. The spec quotes 60 requests/min and 4 connections per wallet for the trading socket; those figures were **not verifiable** from the public pages. The backend holds one trading socket per slot plus at most one market-data socket from one IP, so it stays under 5 only with 4 or fewer slots open.
+
+### Docs used (Parts 2-5)
+
+Still no `~/perpl` folder; these pages were read from docs.perpl.xyz (the same files the spec names, published at the site root): `rest-endpoints.md`, `types.md`, `integrations.md`, `authentication.md`, `resources/for-developers/api/builder-codes.md`, `exchange/funding.md`.
+
+### Part 2: fills on Perpl (2026-10-09)
+
+Quoted from `rest-endpoints.md`: history endpoints take `page` ("Cursor for pagination (from previous response `np`)") and `count` ("Items per page (max: 100)"); "Server-side filtering by market ID or date range is not currently supported. Filter results client-side if needed."; pages are "newest to oldest". `Fill` is `{ at: BlockTxLogTimestamp, mkt, acc, oid, t, l, p?, s, f, bfa? }`, with `f` "gross: protocol fee + `bfa`".
+
+What the testnet actually returns (slot 1, account 824, and slot 2, account 841):
+
+- **`at.txid` has no `0x` prefix** (`"1b15773e…6894"`). `types.md` only says "Transaction hash". The backend adds `0x` and drops anything that is not 32 bytes of hex. Checked one against the chain: `0xd2523953…790e` is block 68499916, tx index 1, to the Exchange `0x1964…80cc`, status 1, exactly the fill's `at.b` / `at.tx`.
+- `bfa` is present as `"0"` on every fill, not omitted as the docs say ("omitted when zero"). Treated as no builder fee.
+- Position-history events carry fields `types.md` does not list: `cpnl`, `pay`, `xfs`; `ots` is `{}` on every event.
+- **No `Funding` (type 8) account events at all** on either slot, although both held positions through several funding intervals. Funding is realised into the position: each position-history event carries `fnd` (realised funding PnL of that event). Account-history types seen: 1 Deposit, 2 Withdrawal, 3 IncreasePositionCollateral, 4 Settlement.
+- Fee amounts `f` are collateral base units (AUSD 6 dp), the same unit as every other API Amount (`v-units-75` above).
+
+**Matching method** (`services/venueFillsMath.ts`): order ids. A fill has `oid` but no `rq`, and a slot is reused across positions, so the backend takes the oids it saved (the entry order on `positions.venue_order_id`, the ledger rows' `venue_order_id`), finds the position's `pid` (saved on `positions.venue_position_pid`, or named by the entry order's position-history event), adds every oid from position-history events with that `pid`, and keeps only fills with account + market + one of those oids. The `pid` step matters: the close order's oid is not stored anywhere in our DB (close ledger rows have no `venue_order_id`). A time window alone would also be wrong: the entry fill (18:57:54) is two minutes before `opened_at` (18:59:51, set when the token minted). The time window (open request − 5 min to close + 10 min) is used only when not a single oid is known.
+
+Checked on the real data: slot 1 held two Laxu ETH longs one after the other, next to probe trades. Position `0xaedd…53f9` gets 5 fills (open, increase, two decreases, close), `0x96e2…d7fa` gets 2 (open, close); no overlap, and none of the 19 probe/e2e fills. Spot-check against `GET /v1/trading/order-history` for oid 4489210494992: `fp` 271592 = price 2715.92, `fs` 14 = 0.014 ETH, `f` 13118 = 0.013118 AUSD, `t` 1 OpenLong, same txid, all as the panel shows.

@@ -83,6 +83,43 @@ export const getNavHistory = (token: string, limit?: number) =>
 export const getPublicPosition = (token: string) => apiFetch<PublicPosition>(`/positions/token/${token}`);
 
 /** The slice of `GET /positions/:address` the page's listed-position cells read. */
+/** One fill of the position on Perpl, from Perpl's own history API. Amounts are human decimal strings. */
+export type VenueFill = {
+  fillId: string;
+  /** ISO time of the block. */
+  time: string | null;
+  side: "buy" | "sell";
+  action: "open" | "close";
+  sizeHuman: string;
+  priceHuman: string | null;
+  /** Gross fee in the collateral asset (includes any builder fee); negative = rebate. */
+  feeHuman: string;
+  /** Builder-fee portion of `feeHuman`; only when non-zero. */
+  builderFeeHuman?: string;
+  liquiditySide: "maker" | "taker" | "unknown";
+  orderId: string;
+  /** 0x hash; absent when Perpl gave none. */
+  txHash?: string;
+  blockNumber?: number;
+};
+
+export type VenueFills = {
+  source: "perpl";
+  accountId: string | null;
+  market: string | null;
+  matchedBy: "order-ids" | "time-window" | null;
+  /** Newest first. */
+  fills: VenueFill[];
+  /** Funding realised on Perpl so far, collateral asset, positive = received. */
+  realisedFunding: string | null;
+  fetchedAt: string;
+  truncated: boolean;
+  /** Served from the backend's cache because Perpl was rate limiting. */
+  stale?: boolean;
+};
+
+export const getVenueFills = (token: string) => apiFetch<VenueFills>(`/positions/${token}/venue-fills`);
+
 export type PositionStats = {
   holderCount: number;
   /** All-time bought in, 2dp, in the collateral asset. */

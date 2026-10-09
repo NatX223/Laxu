@@ -22,6 +22,16 @@ export interface BlockTimestamp {
   t?: number;
 }
 
+/// History records carry the transaction too. `txid` comes WITHOUT a 0x
+/// prefix on testnet (seen 2026-10-09); prefix it before building a link.
+export interface BlockTxLogTimestamp extends BlockTimestamp {
+  /// Transaction index in the block.
+  tx?: number;
+  txid?: string;
+  /// Log index in the transaction.
+  l?: number;
+}
+
 export interface ApiAccount {
   mt?: number;
   in: number;
@@ -68,20 +78,28 @@ export interface ApiOrder {
   lv?: number;
 }
 
+/// `LiquiditySide` on a fill.
+export const LiquiditySide = { Maker: 1, Taker: 2 } as const;
+
 export interface ApiFill {
-  at?: BlockTimestamp;
+  at?: BlockTxLogTimestamp;
   mkt: number;
   acc: number;
   oid: number;
+  /// Order type (1 OpenLong ... 4 CloseShort).
   t: number;
+  /// LiquiditySide: 1 maker, 2 taker.
   l: number;
   p?: number;
   s: number;
+  /// Fee, gross (protocol + `bfa`); negative = rebate. API Amount (CNS units).
   f: string;
+  /// Builder-fee portion of `f`; omitted (or "0") when zero. Never add it to `f`.
+  bfa?: string;
 }
 
 export interface ApiPosition {
-  at?: BlockTimestamp;
+  at?: BlockTxLogTimestamp;
   mkt: number;
   acc: number;
   pid: number;
@@ -95,7 +113,13 @@ export interface ApiPosition {
   ep?: number;
   s?: number;
   fee?: string;
+  /// Fee the close/decrease itself paid; included in `fee`.
+  cfee?: string;
   lv?: number;
+  /// Realized delta PnL of this event.
+  dpnl?: string;
+  /// Realized funding PnL of this event (positive = received).
+  fnd?: string;
   xp?: number;
   ots?: BlockTimestamp;
   /// Settlement events (updates only).
@@ -103,7 +127,7 @@ export interface ApiPosition {
 }
 
 export interface ApiAccountEvent {
-  at?: BlockTimestamp;
+  at?: BlockTxLogTimestamp;
   in: number;
   id: number;
   et: number;
@@ -115,7 +139,11 @@ export interface ApiAccountEvent {
   b: string;
   lb: string;
   f: string;
+  bfa?: string;
 }
+
+/// `AccountEventType` values Laxu reads.
+export const AccountEventType = { Settlement: 4, Liquidation: 5, Funding: 8 } as const;
 
 export interface HistoryPage<T> {
   d: T[];
@@ -145,6 +173,32 @@ export interface ApiMarketState {
   prv?: number;
 }
 
+/**
+ * One funding interval's rate (types.md FundingEvent). `rate` is in micros
+ * (10^-6) per funding interval -- checked on testnet: `ppl` = idx x rate / 10^6
+ * for every market. Positive: longs pay shorts. `at` is when the rate APPLIES;
+ * the newest event's `at.t` is an estimate until its block arrives, and the
+ * same `feb` is then republished with the exact time.
+ */
+export interface ApiFundingEvent {
+  at: BlockTimestamp;
+  feb: number;
+  rate: number;
+  idx: number;
+  ppl: number;
+  sum: number;
+  div: number;
+}
+
+export interface ApiFundingSeries {
+  mt?: number;
+  sn?: number;
+  at?: BlockTimestamp;
+  m: number;
+  /// Oldest first.
+  d: ApiFundingEvent[];
+}
+
 export interface ApiMarket {
   id: number;
   instance_id?: number;
@@ -157,6 +211,8 @@ export interface ApiMarket {
   order_max_neg_pnl_collat_bps?: number;
   config: ApiMarketConfig;
   state?: ApiMarketState;
+  funding_interval_sec?: number;
+  funding?: ApiFundingEvent;
 }
 
 export interface ApiToken {

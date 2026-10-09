@@ -22,6 +22,7 @@ import ProtectionCard from "./ProtectionCard";
 import Reactions from "./Reactions";
 import StateGrid from "./StateGrid";
 import TriggersPanel from "./TriggersPanel";
+import FillsCard from "./FillsCard";
 import VerifiedCard from "./VerifiedCard";
 import { usd } from "./data";
 import { usePositionEngine, type PositionProps } from "./engine";
@@ -185,6 +186,7 @@ export default function PositionScreen({
         <div style={{ display: "flex", flexDirection: "column", gap: 20, minWidth: 0 }}>
           <StateGrid vals={vals} />
           {live && <VerifiedCard live={live} chain={chain} />}
+          {live && <FillsCard token={live.positionTokenAddress} base={live.symbol ?? ""} refreshKey={refreshKey} />}
           <LeverageView
             engine={engine}
             live={live}

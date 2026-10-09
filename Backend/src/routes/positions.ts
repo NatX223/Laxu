@@ -10,6 +10,7 @@ import { claimedBy, getNavHistory, getPublicPosition } from "../services/navHist
 import { getOpenRequest, reportPayment, requestOpenPosition } from "../services/openPosition";
 import { bytes32ToSymbol } from "../services/markets";
 import { discoverPositions, holderTriggers, leaderboard, positionDetail, topHolders } from "../services/discovery";
+import { venueFillsFor } from "../services/venueFills";
 
 export const positionsRouter = Router();
 
@@ -203,6 +204,21 @@ positionsRouter.get(
     const address = addressParam.safeParse(req.params.address);
     if (!address.success) return next();
     res.json(await positionDetail(address.data));
+  }),
+);
+
+/// "Fills on Perpl": the position's real fills from Perpl's own history API,
+/// with transaction hashes. Public, like the data on Perpl. `:id` is the token
+/// address or the position id.
+positionsRouter.get(
+  "/:id/venue-fills",
+  asyncHandler(async (req, res) => {
+    const key = req.params.id;
+    if (!addressParam.safeParse(key).success && !/^[a-z0-9]{20,40}$/.test(key)) {
+      throw badRequest("Invalid position", "INVALID_POSITION");
+    }
+    res.set("Cache-Control", "public, max-age=15");
+    res.json(await venueFillsFor(key));
   }),
 );
 
