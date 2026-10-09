@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
+import { useExportWallet, useLinkAccount } from "@privy-io/react-auth";
 import { getAddress } from "viem";
+import { env } from "@/lib/env";
 import { useSession } from "@/lib/session";
 
 const MONO = "var(--font-ibm-plex-mono), monospace";
@@ -63,7 +65,7 @@ function useIsMobile(): boolean {
  * never stands in for the username.
  */
 export default function AccountMenu({ tone = "frost" }: { tone?: keyof typeof TONES }) {
-  const { ready, authenticated, user, userFailed, login, logout } = useSession();
+  const { ready, authenticated, user, userFailed, wallet, login, logout } = useSession();
   const t = TONES[tone];
   const mobile = useIsMobile();
   const pathname = usePathname();
@@ -181,7 +183,8 @@ export default function AccountMenu({ tone = "frost" }: { tone?: keyof typeof TO
   };
 
   const onMenuKeyDown = (event: React.KeyboardEvent) => {
-    const items = itemRefs.current.filter((item): item is HTMLButtonElement => item !== null);
+    // Every menu item in the DOM, so items added by <WalletTools> join the arrow-key order.
+    const items = Array.from(rootRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
     const index = items.indexOf(document.activeElement as HTMLButtonElement);
     const focusAt = (i: number) => items[(i + items.length) % items.length]?.focus();
     switch (event.key) {
@@ -300,10 +303,10 @@ export default function AccountMenu({ tone = "frost" }: { tone?: keyof typeof TO
 
           <div role="separator" style={{ height: 1, margin: "6px 4px", background: "rgba(255,255,255,0.1)" }} />
 
+          {/* Privy hooks need the provider, which exists whenever someone is signed in. */}
+          {env.privyAppId && <WalletTools address={address} embedded={wallet?.walletClientType === "privy"} itemBase={itemBase} onDone={() => close(true)} />}
+
           <button
-            ref={(el) => {
-              itemRefs.current[1] = el;
-            }}
             type="button"
             role="menuitem"
             onClick={() => void signOut()}
@@ -319,5 +322,72 @@ export default function AccountMenu({ tone = "frost" }: { tone?: keyof typeof TO
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Export the wallet's key, and link another sign-in method, both through Privy's own UI (Spec 05 2.7).
+ * Export is for embedded wallets only and sits behind a plain warning: whoever holds the key controls
+ * the wallet. Linking leaves the Laxu wallet unchanged -- it is the one stored at first sign-in.
+ */
+function WalletTools({
+  address,
+  embedded,
+  itemBase,
+  onDone,
+}: {
+  address: string;
+  embedded: boolean;
+  itemBase: React.CSSProperties;
+  onDone: () => void;
+}) {
+  const { exportWallet } = useExportWallet();
+  const { linkEmail, linkWallet } = useLinkAccount();
+  const [warning, setWarning] = useState(false);
+  const item: React.CSSProperties = { ...itemBase, fontSize: 13, fontWeight: 600, color: "#fdfbf7" };
+
+  return (
+    <>
+      {embedded && !warning && (
+        <button type="button" role="menuitem" className="laxu-account-item" style={item} onClick={() => setWarning(true)}>
+          Export wallet
+        </button>
+      )}
+      {embedded && warning && (
+        <div role="group" aria-label="Export wallet" style={{ padding: "6px 10px 8px", fontSize: 12, lineHeight: 1.5, color: "#ffd29c" }}>
+          Anyone who has your private key controls this wallet and everything in it. Export it only to move it to a wallet you trust, and never share it.
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button
+              type="button"
+              role="menuitem"
+              className="laxu-account-item"
+              style={{ ...item, width: "auto", padding: "6px 10px", border: "1px solid rgba(255,255,255,0.25)" }}
+              onClick={() => {
+                setWarning(false);
+                onDone();
+                void exportWallet({ address }).catch((error) => console.error("wallet export failed", error));
+              }}
+            >
+              Export
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="laxu-account-item"
+              style={{ ...item, width: "auto", padding: "6px 10px", color: "#a79bd0" }}
+              onClick={() => setWarning(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      <button type="button" role="menuitem" className="laxu-account-item" style={item} onClick={() => { onDone(); linkEmail(); }}>
+        Link an email
+      </button>
+      <button type="button" role="menuitem" className="laxu-account-item" style={item} onClick={() => { onDone(); linkWallet(); }}>
+        Link another wallet
+      </button>
+    </>
   );
 }

@@ -26,11 +26,12 @@ Borrow against your open perp trades. Earn when others back them.
 7. [Tests: the risky path](#tests-the-risky-path)
 8. [Edge cases handled](#edge-cases-handled)
 9. [Deployed contracts](#deployed-contracts)
-10. [Built with / credits](#built-with--credits)
-11. [How this was built](#how-this-was-built)
-12. [Run it locally](#run-it-locally)
-13. [Roadmap](#roadmap)
-14. [Acknowledgments](#acknowledgments)
+10. [How Laxu uses Privy](#how-laxu-uses-privy)
+11. [Built with / credits](#built-with--credits)
+12. [How this was built](#how-this-was-built)
+13. [Run it locally](#run-it-locally)
+14. [Roadmap](#roadmap)
+15. [Acknowledgments](#acknowledgments)
 
 ## The problem, and who has it
 
@@ -316,6 +317,14 @@ Robinhood Chain testnet, chain ID 46630. Explorer: https://explorer.testnet.chai
 | USDG (Arcus testnet) | `0x293b337712d4312776a3a2d292f44410e7873bad` | [View](https://explorer.testnet.chain.robinhood.com/address/0x293b337712d4312776a3a2d292f44410e7873bad) | Stablecoin | n/a |
 
 Full deployment record: [Contracts/deployments/robinhoodTestnet.json](Contracts/deployments/robinhoodTestnet.json).
+
+## How Laxu uses Privy
+
+Privy handles sign-in and embedded wallets, and the backend verifies every request's Privy token and reads the user's wallet from Privy, never from the request. Beyond login, **loan protection** lets a borrower allow Laxu to repay their loan from their own wallet when its health factor drops:
+
+- The user adds Laxu as a **Privy signer** on their embedded wallet, restricted by a **Privy policy** to `repay` on that one pool, up to a per-call cap, with no native value. Privy enforces it: other calls (a `transfer`, another pool, a bigger amount) are refused by the policy.
+- The user also approves an ERC-20 allowance equal to their spend limit, so the allowance caps the total. A backend worker watches the health factor and repays through Privy.
+- Status: the signer and policy behaviour is measured on Monad testnet; the full end-to-end loan run is not yet recorded, and Part 3 (Privy server wallets for the faucet and liquidator) is not built. Details, the exact policy, limits and evidence: [docs/privy-integration.md](docs/privy-integration.md) and [docs/privy-findings.md](docs/privy-findings.md).
 
 ## Built with / credits
 
