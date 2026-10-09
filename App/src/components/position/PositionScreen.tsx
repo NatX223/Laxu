@@ -18,6 +18,7 @@ import HolderBase from "./HolderBase";
 import LendingPanel from "./LendingPanel";
 import LeverageView from "./LeverageView";
 import PositionHeader from "./PositionHeader";
+import ProtectionCard from "./ProtectionCard";
 import Reactions from "./Reactions";
 import StateGrid from "./StateGrid";
 import TriggersPanel from "./TriggersPanel";
@@ -205,6 +206,7 @@ export default function PositionScreen({
               onCollateralChange={onCollateralChange}
             />
           )}
+          {live && <ProtectionCard key={`protection-${account}`} live={live} refreshKey={refreshKey} onDone={engine.flash} />}
           {live && <TriggersPanel key={`triggers-${account}`} live={live} refreshKey={refreshKey} onDone={engine.flash} />}
           {/* Buy-ins open only once the creator lists the position, and close with it. */}
           {(!live || (live.listed && live.lifecycle === "open")) && <BuyPanel engine={engine} liveBuy={liveBuy} />}

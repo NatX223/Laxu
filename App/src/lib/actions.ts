@@ -113,6 +113,24 @@ export async function approveIfNeeded(
   );
 }
 
+/**
+ * Set `spender`'s allowance of `token` to EXACTLY `amount` (0 revokes it), whatever it was before.
+ * Loan protection needs this rather than {@link approveIfNeeded}: that skips the prompt when a bigger
+ * allowance already exists, which would leave the on-chain spending cap larger than the one the user chose.
+ */
+export async function setAllowance(wallet: LaxuWalletClient, token: Address, spender: Address, amount: bigint): Promise<Hash | null> {
+  const current = await publicClient().readContract({
+    address: token,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: [wallet.account.address, spender],
+  });
+  if (current === amount) return null;
+  return confirm(
+    await wallet.writeContract({ address: token, abi: erc20Abi, functionName: "approve", args: [spender, amount] }),
+  );
+}
+
 // --- open -------------------------------------------------------------------
 
 export type OpenReservation = {

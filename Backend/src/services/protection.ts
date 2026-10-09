@@ -555,6 +555,8 @@ export async function listRules(caller: Caller) {
   return {
     assetDecimals: decimals,
     assetSymbol: ASSET_SYMBOL,
+    /// The id to add as a signer (a public id, not a key): lets the browser resume an unfinished setup.
+    signerId: config.privySignerId,
     rules: await Promise.all(rules.map(async (rule) => serialise(rule, rule.events, await liveView(rule)))),
   };
 }
