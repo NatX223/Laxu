@@ -117,8 +117,9 @@ export async function approveIfNeeded(
  * Set `spender`'s allowance of `token` to EXACTLY `amount` (0 revokes it), whatever it was before.
  * Loan protection needs this rather than {@link approveIfNeeded}: that skips the prompt when a bigger
  * allowance already exists, which would leave the on-chain spending cap larger than the one the user chose.
+ * Never max-uint; the amount is the rule's maxSpend, what is left of it, or 0.
  */
-export async function setAllowance(wallet: LaxuWalletClient, token: Address, spender: Address, amount: bigint): Promise<Hash | null> {
+export async function setExactAllowance(wallet: LaxuWalletClient, token: Address, spender: Address, amount: bigint): Promise<Hash | null> {
   const current = await publicClient().readContract({
     address: token,
     abi: erc20Abi,

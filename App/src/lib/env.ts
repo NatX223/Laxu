@@ -9,6 +9,8 @@ export const env = {
   privyAppId: process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "",
   /** Dev-only pages (/dev/*) exist only when this is "1"; otherwise they 404. */
   devTools: process.env.NEXT_PUBLIC_DEV_TOOLS === "1",
+  /** The Protect-this-loan card (Spec 05b). Off, it is not rendered and nothing else changes. */
+  protectionEnabled: process.env.NEXT_PUBLIC_ENABLE_PROTECTION === "true",
   /** The Privy key quorum id (a public id, not a secret) that /dev/privy offers as signer. */
   privySignerId: process.env.NEXT_PUBLIC_PRIVY_SIGNER_ID ?? "",
   /** Monad testnet. */
