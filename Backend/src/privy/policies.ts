@@ -59,7 +59,7 @@ export function buildRepayPolicy(input: RepayPolicyInput, ownerId: string): Repa
     chain_type: "ethereum",
     rules: [
       {
-        name: "allow repay(amount <= maxPerCall) on this pool only",
+        name: "repay up to the cap, on this pool only",
         method: "eth_sendTransaction",
         action: "ALLOW",
         conditions: [

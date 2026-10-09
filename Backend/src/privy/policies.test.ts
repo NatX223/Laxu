@@ -15,7 +15,7 @@ test("repay policy: exact shape (this JSON is quoted in docs/privy-integration.m
     owner_id: "quorum_id",
     rules: [
       {
-        name: "allow repay(amount <= maxPerCall) on this pool only",
+        name: "repay up to the cap, on this pool only",
         method: "eth_sendTransaction",
         action: "ALLOW",
         conditions: [
@@ -40,6 +40,12 @@ test("repay policy: exact shape (this JSON is quoted in docs/privy-integration.m
       },
     ],
   });
+});
+
+test("repay policy: names fit Privy's limit (a rule name must be under 50 characters; one of 51 was refused by Privy)", () => {
+  const policy = buildRepayPolicy({ pool: POOL, maxPerCall: 1n, chainId: 10143 }, "q");
+  assert.ok(policy.name.length < 50, policy.name);
+  for (const rule of policy.rules) assert.ok(rule.name.length < 50, `${rule.name} (${rule.name.length})`);
 });
 
 test("repay policy: one ALLOW rule, no DENY (a DENY-all would override the ALLOW), and the ABI is repay only", () => {
