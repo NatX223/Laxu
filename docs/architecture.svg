@@ -1,0 +1,315 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2240" height="1790" viewBox="0 0 2240 1790">
+<defs>
+<marker id="hD4651B" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8.5" markerHeight="8.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#D4651B"/></marker>
+<marker id="h5836CF" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8.5" markerHeight="8.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5836CF"/></marker>
+<marker id="h0C8A87" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8.5" markerHeight="8.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#0C8A87"/></marker>
+<marker id="h1E8A57" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8.5" markerHeight="8.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#1E8A57"/></marker>
+<marker id="h8A8796" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8.5" markerHeight="8.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#8A8796"/></marker>
+<filter id="sh" x="-5%" y="-5%" width="110%" height="115%"><feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#2a2540" flood-opacity="0.10"/></filter>
+<linearGradient id="hd" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#A9B9D8"/><stop offset="0.5" stop-color="#C9A8CB"/><stop offset="1" stop-color="#F5C68B"/></linearGradient>
+</defs>
+<rect width="2240" height="1790" fill="#FCFAF6"/>
+<rect width="2240" height="150" fill="url(#hd)"/>
+<text x="44" y="90" font-family="'Bitstream Charter', Charter, Georgia, 'Times New Roman', serif" font-size="66" font-weight="400" fill="#1b1a22" text-anchor="start" font-style="italic">Laxu — Architecture</text>
+<text x="46" y="127" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="19" font-weight="400" fill="#26242e" text-anchor="start">Open a perp trade on Perpl → it becomes a token you own on Monad → borrow AUSD against it → Privy lets Laxu repay it for you, within limits. Testnet.</text>
+<text x="44" y="192" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#6b6877" text-anchor="start" letter-spacing="1.8">USERS</text>
+<rect x="30" y="545" width="360" height="362" rx="30" fill="#E6F5F4" stroke="#0C8A87" stroke-width="2" stroke-dasharray="0"/>
+<text x="52" y="578" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#0C8A87" text-anchor="start" letter-spacing="1.6">PRIVY</text>
+<rect x="445" y="160" width="850" height="914" rx="30" fill="#FFF3E6" stroke="#D4651B" stroke-width="2" stroke-dasharray="9 7"/>
+<text x="471" y="193" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#D4651B" text-anchor="start" letter-spacing="1.6">LAXU BACKEND · OFF-CHAIN · TRUSTED OPERATOR (TESTNET)</text>
+<rect x="1370" y="160" width="795" height="914" rx="30" fill="#F1EDFB" stroke="#5836CF" stroke-width="2" stroke-dasharray="0"/>
+<text x="1396" y="193" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#5836CF" text-anchor="start" letter-spacing="1.6">MONAD TESTNET (10143) · ON-CHAIN · RULES IN CODE</text>
+<rect x="1305" y="1140" width="860" height="300" rx="30" fill="#F2F1F3" stroke="#8A8796" stroke-width="2" stroke-dasharray="0"/>
+<text x="2139" y="1173" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#8A8796" text-anchor="end" letter-spacing="1.6">PERPL · PERP VENUE (EXTERNAL)</text>
+<rect x="40" y="215" width="340" height="124" rx="20" fill="#FFFFFF" stroke="#8A8796" stroke-width="2" filter="url(#sh)"/>
+<text x="64" y="251" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Laxu app</text>
+<text x="64" y="279" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">Next.js · trade, position &amp; borrow</text>
+<text x="64" y="300.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">“Protect this loan” card · test funds</text>
+<text x="64" y="321.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">real Perpl book, tape and candles</text>
+<rect x="40" y="385" width="340" height="124" rx="20" fill="#FFFFFF" stroke="#8A8796" stroke-width="2" filter="url(#sh)"/>
+<text x="64" y="421" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">You (trader / holder)</text>
+<text x="64" y="449" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">Privy embedded wallet signs your</text>
+<text x="64" y="470.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">AUSD payment, lending txs and the</text>
+<text x="64" y="491.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">two loan-protection approvals</text>
+<path d="M210 385 L210 341" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<rect x="52" y="600" width="262" height="103" rx="20" fill="#FFFFFF" stroke="#0C8A87" stroke-width="2" filter="url(#sh)"/>
+<text x="76" y="636" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="20" font-weight="650" fill="#1d1b24" text-anchor="start">Login + wallet</text>
+<text x="76" y="664" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">email or wallet login</text>
+<text x="76" y="684.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">embedded wallet on first login</text>
+<rect x="52" y="735" width="320" height="145" rx="20" fill="#FFFFFF" stroke="#0C8A87" stroke-width="2" filter="url(#sh)"/>
+<text x="76" y="771" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="20" font-weight="650" fill="#1d1b24" text-anchor="start">Signer + policy engine</text>
+<text x="76" y="799" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">Laxu’s server key is a signer on your</text>
+<text x="76" y="819.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">wallet. Policy: repay() on that pool</text>
+<text x="76" y="840.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">only, ≤ a cap per call, chain 10143.</text>
+<text x="76" y="860.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">Anything else is refused by Privy.</text>
+<path d="M140 509 L140 598" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<rect x="146.0" y="522" width="55.0" height="18" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="150" y="534" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="500" fill="#8A8796" text-anchor="start">sign in</text>
+<path d="M330 509 L330 733" fill="none" stroke="#0C8A87" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h0C8A87)" opacity="1.0"/>
+<circle cx="330" cy="640" r="15" fill="#0C8A87" stroke="#FCFAF6" stroke-width="3"/>
+<text x="330" y="645" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle">P1</text>
+<rect x="470" y="215" width="370" height="124" rx="20" fill="#FFFFFF" stroke="#D4651B" stroke-width="2" filter="url(#sh)"/>
+<text x="494" y="251" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">REST API · Express</text>
+<text x="494" y="279" font-family="'DejaVu Sans Mono', Menlo, Consolas, monospace" font-size="14.0" font-weight="400" fill="#444" text-anchor="start">/positions/open  /paid  /markets</text>
+<text x="494" y="300.0" font-family="'DejaVu Sans Mono', Menlo, Consolas, monospace" font-size="14.0" font-weight="400" fill="#444" text-anchor="start">/funding  /venue-fills  /protection</text>
+<text x="494" y="321.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">verifies your Privy token on every call</text>
+<rect x="920" y="215" width="340" height="124" rx="20" fill="#FFFFFF" stroke="#D4651B" stroke-width="2" filter="url(#sh)"/>
+<text x="944" y="251" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Open-position flow</text>
+<text x="944" y="279" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">pay → deposit → order → mint</text>
+<text x="944" y="300.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">refunds on failure · resumes on restart</text>
+<text x="944" y="321.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">checks the chain before any re-send</text>
+<rect x="470" y="385" width="370" height="124" rx="20" fill="#FFFFFF" stroke="#D4651B" stroke-width="2" filter="url(#sh)"/>
+<text x="494" y="421" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Slot allocator</text>
+<text x="494" y="449" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">one wallet = one Perpl account = one slot</text>
+<text x="494" y="470.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">reserve → allocated → released</text>
+<text x="494" y="491.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">one worker per slot (lock + lease)</text>
+<rect x="920" y="385" width="340" height="124" rx="20" fill="#FFFFFF" stroke="#D4651B" stroke-width="2" filter="url(#sh)"/>
+<text x="944" y="421" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Funding reporter + triggers</text>
+<text x="944" y="449" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">funding = Perpl account value − capital</text>
+<text x="944" y="469.3" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">− price PnL · pushed on change or 30 min</text>
+<text x="944" y="489.6" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">fires SL/TP on Perpl’s mark · no price writes</text>
+<rect x="470" y="555" width="370" height="124" rx="20" fill="#FFFFFF" stroke="#D4651B" stroke-width="2" filter="url(#sh)"/>
+<text x="494" y="591" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Postgres (Neon)</text>
+<text x="494" y="619" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">shared state: users, slots, open requests,</text>
+<text x="494" y="640.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">positions, NAV history, protection</text>
+<text x="494" y="661.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">rules and events</text>
+<rect x="920" y="555" width="340" height="124" rx="20" fill="#FFFFFF" stroke="#D4651B" stroke-width="2" filter="url(#sh)"/>
+<text x="944" y="591" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Indexer + reconciler</text>
+<text x="944" y="619" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">reads contract events · checks our</text>
+<text x="944" y="640.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">ledger against Perpl on-chain ·</text>
+<text x="944" y="661.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">resumes interrupted jobs</text>
+<rect x="470" y="725" width="370" height="145" rx="20" fill="#FFFFFF" stroke="#0C8A87" stroke-width="2" filter="url(#sh)"/>
+<text x="494" y="761" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Protection worker</text>
+<text x="494" y="789" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">every 5 s: reads healthFactor on each rule</text>
+<text x="494" y="810.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">at or below your trigger it asks Privy to</text>
+<text x="494" y="831.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">repay toward your target, inside every</text>
+<text x="494" y="852.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">limit · logs each action</text>
+<rect x="920" y="725" width="340" height="145" rx="20" fill="#FFFFFF" stroke="#D4651B" stroke-width="2" filter="url(#sh)"/>
+<text x="944" y="761" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Operator key</text>
+<text x="944" y="789" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">createPosition · createPool · close</text>
+<text x="944" y="810.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">applyFunding · fulfil buy-ins and</text>
+<text x="944" y="831.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">redeems · has no function that sets</text>
+<text x="944" y="852.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">a price</text>
+<rect x="470" y="915" width="370" height="124" rx="20" fill="#FFFFFF" stroke="#D4651B" stroke-width="2" filter="url(#sh)"/>
+<text x="494" y="951" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Faucet + liquidator bot</text>
+<text x="494" y="979" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">faucet (testnet): AUSD from Perpl’s faucet</text>
+<text x="494" y="1000.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">contract + MON gas, rate-limited per user</text>
+<text x="494" y="1021.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">liquidator: one of many, anyone can</text>
+<rect x="920" y="915" width="340" height="124" rx="20" fill="#FFFFFF" stroke="#D4651B" stroke-width="2" filter="url(#sh)"/>
+<text x="944" y="951" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Slot wallets + float</text>
+<text x="944" y="979" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">slot wallet owns one Perpl account and</text>
+<text x="944" y="999.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">holds a trade-only API key (can’t withdraw)</text>
+<text x="944" y="1020.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">float wallet fronts buy-in/redeem payouts</text>
+<path d="M840 245 L918 245" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<path d="M655 339 L655 383" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<rect x="655.7" y="354" width="88.6" height="18" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="700" y="366" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="500" fill="#8A8796" text-anchor="middle">reserve slot</text>
+<path d="M655 509 L655 553" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<rect x="657.4" y="524" width="75.2" height="18" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="695" y="536" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="500" fill="#8A8796" text-anchor="middle">slot state</text>
+<path d="M918 617 L842 617" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<path d="M920 305 L872 305 L872 790 L918 790" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<path d="M920 280 L898 280 L898 965 L918 965" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<g transform="rotate(-90 872 520)"><rect x="824.3" y="508" width="95.4" height="18" rx="3" fill="#FCFAF6" opacity="0.92"/></g>
+<text x="872" y="520" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="500" fill="#8A8796" text-anchor="middle" transform="rotate(-90 872 520)">mint · fulfil</text>
+<g transform="rotate(-90 898 800)"><rect x="840.2" y="788" width="115.5" height="18" rx="3" fill="#FCFAF6" opacity="0.92"/></g>
+<text x="898" y="800" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="500" fill="#8A8796" text-anchor="middle" transform="rotate(-90 898 800)">deposit · refund</text>
+<rect x="1392" y="215" width="330" height="103" rx="20" fill="#FFFFFF" stroke="#5836CF" stroke-width="2" filter="url(#sh)"/>
+<text x="1416" y="251" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">PositionTokenFactory</text>
+<text x="1416" y="279" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">clones one token per trade;</text>
+<text x="1416" y="300.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">only the operator can create</text>
+<rect x="1778" y="215" width="362" height="124" rx="20" fill="#FFFFFF" stroke="#5836CF" stroke-width="2" filter="url(#sh)"/>
+<text x="1802" y="251" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">PositionToken ×N</text>
+<text x="1802" y="279" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">ERC-20 / ERC-7540 · one per trade</text>
+<text x="1802" y="299.3" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">value = capital + PnL (Perpl mark) + funding</text>
+<text x="1802" y="319.6" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">entry checked against Perpl · 2% buy-in fee</text>
+<rect x="1392" y="385" width="330" height="103" rx="20" fill="#FFFFFF" stroke="#5836CF" stroke-width="2" filter="url(#sh)"/>
+<text x="1416" y="421" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">LendingPoolFactory</text>
+<text x="1416" y="449" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">permissionless · one isolated pool</text>
+<text x="1416" y="470.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">per position token</text>
+<rect x="1778" y="425" width="362" height="145" rx="20" fill="#FFFFFF" stroke="#5836CF" stroke-width="2" filter="url(#sh)"/>
+<text x="1802" y="461" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">LendingPool ×N</text>
+<text x="1802" y="489" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">LTV 50 / 40 / 25% by leverage</text>
+<text x="1802" y="509.3" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">borrowing needs a fresh price: mark ≤ 5 min,</text>
+<text x="1802" y="529.6" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">funding ≤ 2 h · liquidation never pauses</text>
+<text x="1802" y="549.9" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.8" font-weight="400" fill="#2c2a35" text-anchor="start">open liquidation · 50% close factor</text>
+<rect x="1392" y="555" width="330" height="103" rx="20" fill="#FFFFFF" stroke="#5836CF" stroke-width="2" filter="url(#sh)"/>
+<text x="1416" y="591" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">AUSD</text>
+<text x="1416" y="619" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">Perpl’s collateral token (6 decimals)</text>
+<text x="1416" y="639.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">payments, loans, payouts, Perpl margin</text>
+<rect x="1392" y="725" width="330" height="124" rx="20" fill="#FFFFFF" stroke="#1E8A57" stroke-width="2" filter="url(#sh)"/>
+<text x="1416" y="761" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">PerplReader</text>
+<text x="1416" y="789" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">reads Perpl’s live mark and every</text>
+<text x="1416" y="810.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">position on-chain · the operator</text>
+<text x="1416" y="831.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">cannot set the price</text>
+<rect x="1392" y="915" width="330" height="124" rx="20" fill="#FFFFFF" stroke="#8A8796" stroke-width="2" filter="url(#sh)"/>
+<text x="1416" y="951" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Perpl Exchange</text>
+<rect x="1628.8" y="931" width="77.2" height="22" rx="11" fill="#8A8796"/>
+<text x="1667.4" y="946.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="700" fill="#fff" text-anchor="middle" letter-spacing="0.8">EXTERNAL</text>
+<text x="1416" y="979" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">accounts · positions · mark price ·</text>
+<text x="1416" y="999.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">depositCollateral / withdrawCollateral</text>
+<text x="1416" y="1020.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">our slots are accounts on it</text>
+<rect x="1778" y="620" width="362" height="124" rx="20" fill="#FFFFFF" stroke="#5836CF" stroke-width="2" filter="url(#sh)"/>
+<text x="1802" y="656" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">LendingVault</text>
+<text x="1802" y="684" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">ERC-4626 · shared AUSD liquidity</text>
+<text x="1802" y="705.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">per-pool debt ceilings</text>
+<text x="1802" y="726.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">interest accrues to lenders</text>
+<rect x="1778" y="800" width="172" height="124" rx="20" fill="#FFFFFF" stroke="#5836CF" stroke-width="2" stroke-dasharray="7 6" filter="url(#sh)"/>
+<text x="1802" y="836" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="19" font-weight="650" fill="#1d1b24" text-anchor="start">Lenders</text>
+<text x="1802" y="864" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#2c2a35" text-anchor="start">any wallet:</text>
+<text x="1802" y="884.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#2c2a35" text-anchor="start">deposit AUSD,</text>
+<text x="1802" y="904.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#2c2a35" text-anchor="start">earn interest</text>
+<rect x="1962" y="800" width="178" height="124" rx="20" fill="#FFFFFF" stroke="#5836CF" stroke-width="2" stroke-dasharray="7 6" filter="url(#sh)"/>
+<text x="1986" y="836" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="19" font-weight="650" fill="#1d1b24" text-anchor="start">Liquidators</text>
+<text x="1986" y="864" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#2c2a35" text-anchor="start">anyone: repay an</text>
+<text x="1986" y="884.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#2c2a35" text-anchor="start">unhealthy loan, get</text>
+<text x="1986" y="904.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#2c2a35" text-anchor="start">its tokens + a bonus</text>
+<path d="M1722 266 L1776 266" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<path d="M1722 436 L1776 436" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<path d="M2050 423 L2050 341" fill="none" stroke="#5836CF" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h5836CF)" opacity="1.0"/>
+<circle cx="2050" cy="383" r="15" fill="#5836CF" stroke="#FCFAF6" stroke-width="3"/>
+<text x="2050" y="388" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">B</text>
+<path d="M1955 570 L1955 618" fill="none" stroke="#5836CF" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h5836CF)" opacity="1.0"/>
+<circle cx="1955" cy="594" r="15" fill="#5836CF" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1955" y="599" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">C</text>
+<path d="M1864 798 L1864 746" fill="none" stroke="#8A8796" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<rect x="1886.0" y="766.5" width="53.1" height="17.5" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="1890" y="778" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="500" fill="#8A8796" text-anchor="start">deposit</text>
+<path d="M2140 862 L2154 862 L2154 560 L2142 560" fill="none" stroke="#5836CF" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h5836CF)" opacity="1.0"/>
+<g transform="rotate(-90 2154 710)"><rect x="2114.6" y="698.5" width="78.8" height="17.5" rx="3" fill="#FCFAF6" opacity="0.92"/></g>
+<text x="2154" y="710" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="500" fill="#8A8796" text-anchor="middle" transform="rotate(-90 2154 710)">liquidate()</text>
+<path d="M1557 913 L1557 851" fill="none" stroke="#1E8A57" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="7 5" marker-end="url(#h1E8A57)" opacity="1.0"/>
+<rect x="1556.0" y="873.5" width="123.9" height="17.5" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="1618" y="885" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="500" fill="#1E8A57" text-anchor="middle">getPosition · mark</text>
+<path d="M1722 790 L1750 790 L1750 315 L1776 315" fill="none" stroke="#1E8A57" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="7 5" marker-end="url(#h1E8A57)" opacity="1.0"/>
+<circle cx="1750" cy="650" r="15" fill="#1E8A57" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1750" y="655" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">R</text>
+<path d="M1778 520 L1280 520 L1280 617 L1262 617" fill="none" stroke="#8A8796" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="6 6" marker-end="url(#h8A8796)" opacity="1.0"/>
+<rect x="1442.3" y="500.5" width="175.4" height="17.5" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="1530" y="512" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="500" fill="#8A8796" text-anchor="middle">events from tokens &amp; pools</text>
+<path d="M380 270 L468 270" fill="none" stroke="#D4651B" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#hD4651B)" opacity="1.0"/>
+<circle cx="424" cy="270" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="424" y="275" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<path d="M380 450 L424 450 L424 1056 L962 1056 L962 1041" fill="none" stroke="#D4651B" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#hD4651B)" opacity="1.0"/>
+<circle cx="424" cy="640" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="424" y="645" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<path d="M468 977 L404 977 L404 482 L382 482" fill="none" stroke="#8A8796" stroke-width="2.0" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h8A8796)" opacity="1.0"/>
+<g transform="rotate(-90 414 890)"><rect x="363.8" y="879" width="100.4" height="17" rx="3" fill="#FCFAF6" opacity="0.92"/></g>
+<text x="414" y="890" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="11" font-weight="500" fill="#8A8796" text-anchor="middle" transform="rotate(-90 414 890)">test AUSD + MON</text>
+<path d="M1260 977 L1390 977" fill="none" stroke="#D4651B" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#hD4651B)" opacity="1.0"/>
+<circle cx="1281" cy="977" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1281" y="982" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<rect x="1325.5" y="951.5" width="53.1" height="17.5" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="1352" y="963" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="11.5" font-weight="500" fill="#D4651B" text-anchor="middle">deposit</text>
+<path d="M1262 300 L1322 300 L1322 1300 L1358 1300" fill="none" stroke="#D4651B" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#hD4651B)" opacity="1.0"/>
+<circle cx="1322" cy="690" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1322" y="695" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<path d="M1557 1200 L1557 1043" fill="none" stroke="#D4651B" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#hD4651B)" opacity="1.0"/>
+<rect x="1562.0" y="1056" width="229.8" height="18" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="1566" y="1068" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="500" fill="#D4651B" text-anchor="start">Perpl forwards the order on-chain</text>
+<path d="M1262 797 L1346 797 L1346 266 L1390 266" fill="none" stroke="#D4651B" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#hD4651B)" opacity="1.0"/>
+<path d="M1346 436 L1390 436" fill="none" stroke="#D4651B" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#hD4651B)" opacity="1.0"/>
+<circle cx="1368" cy="266" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1368" y="271" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+<circle cx="1368" cy="436" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1368" y="441" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<path d="M1262 447 L1304 447 L1304 352 L1850 352 L1850 341" fill="none" stroke="#1E8A57" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="7 5" marker-end="url(#h1E8A57)" opacity="1.0"/>
+<rect x="1367.8" y="334" width="384.3" height="18" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="1560" y="346" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="500" fill="#1E8A57" text-anchor="middle">applyFunding (funding only — the price comes from Perpl)</text>
+<path d="M468 797 L374 797" fill="none" stroke="#0C8A87" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h0C8A87)" opacity="1.0"/>
+<circle cx="452" cy="797" r="15" fill="#0C8A87" stroke="#FCFAF6" stroke-width="3"/>
+<text x="452" y="802" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle">P2</text>
+<path d="M222 880 L222 1096 L2192 1096 L2192 478 L2142 478" fill="none" stroke="#0C8A87" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h0C8A87)" opacity="1.0"/>
+<circle cx="760" cy="1096" r="15" fill="#0C8A87" stroke="#FCFAF6" stroke-width="3"/>
+<text x="760" y="1101" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle">P3</text>
+<rect x="874.2" y="1078" width="451.5" height="18" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="1100" y="1090" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="500" fill="#0C8A87" text-anchor="middle">repay() is sent from your own wallet, only if the policy allows it</text>
+<path d="M40 450 L24 450 L24 1120 L2214 1120 L2214 528 L2142 528" fill="none" stroke="#5836CF" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#h5836CF)" opacity="1.0"/>
+<circle cx="24" cy="760" r="15" fill="#5836CF" stroke="#FCFAF6" stroke-width="3"/>
+<text x="24" y="765" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">A</text>
+<rect x="951.5" y="1102" width="297.0" height="18" rx="3" fill="#FCFAF6" opacity="0.92"/>
+<text x="1100" y="1114" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12" font-weight="500" fill="#5836CF" text-anchor="middle">lending txs are signed by your Privy wallet</text>
+<rect x="1360" y="1200" width="520" height="208" rx="20" fill="#FFFFFF" stroke="#8A8796" stroke-width="2" filter="url(#sh)"/>
+<text x="1384" y="1236" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Perpl API · REST + WebSocket</text>
+<text x="1384" y="1264" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">trading socket: signed market orders, one</text>
+<text x="1384" y="1285.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">Ed25519 trade key per slot wallet</text>
+<text x="1384" y="1306.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">orders, fills and positions streams</text>
+<text x="1384" y="1327.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">market-data socket: book, trades, candles</text>
+<text x="1384" y="1348.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="400" fill="#2c2a35" text-anchor="start">REST: markets, history, funding</text>
+<rect x="1912" y="1200" width="228" height="208" rx="20" fill="#FFFFFF" stroke="#8A8796" stroke-width="2" filter="url(#sh)"/>
+<text x="1936" y="1236" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="650" fill="#1d1b24" text-anchor="start">Markets</text>
+<text x="1936" y="1264" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">8 crypto perps:</text>
+<text x="1936" y="1284.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">BTC ETH SOL MON</text>
+<text x="1936" y="1305.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">PUMP ZEC LIT NEAR</text>
+<text x="1936" y="1325.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">max leverage 3–15×</text>
+<text x="1936" y="1346.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15" font-weight="400" fill="#2c2a35" text-anchor="start">by market</text>
+<rect x="445" y="1140" width="850" height="300" rx="30" fill="#FFFFFF" stroke="#8A8796" stroke-width="2" filter="url(#sh)"/>
+<text x="471" y="1175" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13" font-weight="700" fill="#6b6877" text-anchor="start" letter-spacing="1.6">WHO YOU HAVE TO TRUST</text>
+<text x="471" y="1208" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="650" fill="#1d1b24" text-anchor="start">On-chain, no operator needed</text>
+<text x="471" y="1230" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#3a3844" text-anchor="start">the price (Perpl’s mark via PerplReader), the entry / size / direction check, SL/TP triggers, loan</text>
+<text x="471" y="1249.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#3a3844" text-anchor="start">rules, liquidation. Borrowing keeps working with our backend down, for up to 2 hours.</text>
+<text x="471" y="1280.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="650" fill="#1d1b24" text-anchor="start">Trusted operator (testnet)</text>
+<text x="471" y="1302.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#3a3844" text-anchor="start">reports funding (bounded: borrowing pauses after 2 h), opens and closes the Perpl position,</text>
+<text x="471" y="1321.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#3a3844" text-anchor="start">fulfils buy-ins and redeems. It cannot set a price.</text>
+<text x="471" y="1352.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="650" fill="#1d1b24" text-anchor="start">Trusted venue</text>
+<text x="471" y="1374.0" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#3a3844" text-anchor="start">Perpl: positions live in its Exchange contract, our contracts read them.</text>
+<text x="471" y="1404.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="15.5" font-weight="650" fill="#1d1b24" text-anchor="start">Known gaps</text>
+<text x="471" y="1426.5" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14.5" font-weight="400" fill="#3a3844" text-anchor="start">funding is operator-reported · bad debt is not absorbed by the vault · unaudited.</text>
+<line x1="44" y1="1480" x2="2196" y2="1480" stroke="#E6E2DA" stroke-width="2"/>
+<text x="44" y="1520" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="700" fill="#D4651B" text-anchor="start" letter-spacing="1.4">OPEN A TRADE</text>
+<circle cx="59" cy="1551" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="59" y="1556" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">1</text>
+<text x="88" y="1556" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Reserve a free slot (a wallet that is a Perpl account)</text>
+<circle cx="59" cy="1585" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="59" y="1590" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">2</text>
+<text x="88" y="1590" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Pay AUSD to the slot wallet, signed by your Privy wallet</text>
+<circle cx="59" cy="1619" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="59" y="1624" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">3</text>
+<text x="88" y="1624" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">The slot deposits it into Perpl (depositCollateral)</text>
+<circle cx="59" cy="1653" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="59" y="1658" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">4</text>
+<text x="88" y="1658" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Place a market order on Perpl’s API at your leverage;</text>
+<text x="88" y="1680" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Perpl forwards it on-chain, we confirm the fill with getPosition</text>
+<circle cx="59" cy="1709" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="59" y="1714" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">5</text>
+<text x="88" y="1714" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Mint the position token; the contract checks it against Perpl</text>
+<circle cx="59" cy="1743" r="15" fill="#D4651B" stroke="#FCFAF6" stroke-width="3"/>
+<text x="59" y="1748" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">6</text>
+<text x="88" y="1748" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Create the token’s isolated lending pool</text>
+<text x="640" y="1520" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="700" fill="#5836CF" text-anchor="start" letter-spacing="1.4">BORROW</text>
+<circle cx="655" cy="1551" r="15" fill="#5836CF" stroke="#FCFAF6" stroke-width="3"/>
+<text x="655" y="1556" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">A</text>
+<text x="684" y="1556" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Deposit your tokens as collateral, then borrow</text>
+<circle cx="655" cy="1585" r="15" fill="#5836CF" stroke="#FCFAF6" stroke-width="3"/>
+<text x="655" y="1590" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">B</text>
+<text x="684" y="1590" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">The pool values them live from the token</text>
+<circle cx="655" cy="1619" r="15" fill="#5836CF" stroke="#FCFAF6" stroke-width="3"/>
+<text x="655" y="1624" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">C</text>
+<text x="684" y="1624" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">AUSD is drawn from the vault to your wallet</text>
+<text x="684" y="1658" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Repay any time. If a loan becomes unhealthy,</text>
+<text x="684" y="1680" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">anyone can liquidate it.</text>
+<text x="1120" y="1520" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="700" fill="#0C8A87" text-anchor="start" letter-spacing="1.4">PROTECT YOUR LOAN</text>
+<circle cx="1135" cy="1551" r="15" fill="#0C8A87" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1135" y="1556" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle">P1</text>
+<text x="1164" y="1556" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">You allow Laxu to repay and nothing else: a Privy signer</text>
+<text x="1164" y="1578" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">with a policy, plus an exact AUSD allowance. The backend</text>
+<text x="1164" y="1600" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">checks both before it shows “Protected”.</text>
+<circle cx="1135" cy="1629" r="15" fill="#0C8A87" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1135" y="1634" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle">P2</text>
+<text x="1164" y="1634" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">The worker watches your health. At your trigger it asks</text>
+<text x="1164" y="1656" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Privy to send repay().</text>
+<circle cx="1135" cy="1685" r="15" fill="#0C8A87" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1135" y="1690" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle">P3</text>
+<text x="1164" y="1690" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Privy checks the policy. A capped repay lands on the pool;</text>
+<text x="1164" y="1712" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">transfers, other pools and over-cap calls are refused.</text>
+<text x="1700" y="1520" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="700" fill="#1E8A57" text-anchor="start" letter-spacing="1.4">KEEP PRICES FRESH</text>
+<circle cx="1715" cy="1551" r="15" fill="#1E8A57" stroke="#FCFAF6" stroke-width="3"/>
+<text x="1715" y="1556" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="13.5" font-weight="700" fill="#fff" text-anchor="middle">R</text>
+<text x="1744" y="1556" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">PerplReader reads Perpl’s mark on-chain; no operator</text>
+<text x="1744" y="1578" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">can write a price</text>
+<text x="1744" y="1612" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Funding (which absorbs fees) comes from Perpl account</text>
+<text x="1744" y="1634" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">equity, pushed by the reporter</text>
+<text x="1744" y="1656" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">Borrowing pauses if the mark is &gt; 5 min old or</text>
+<text x="1744" y="1678" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="16" font-weight="400" fill="#2c2a35" text-anchor="start">funding &gt; 2 h old; liquidation never pauses</text>
+<text x="2196" y="1764" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-size="14" font-weight="400" fill="#6b6877" text-anchor="end">Grey lines = supporting connections</text>
+</svg>
