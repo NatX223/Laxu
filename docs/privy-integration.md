@@ -12,7 +12,7 @@ Laxu uses Privy for sign-in and embedded wallets, and goes further for one featu
 | Server-verified identity: the backend verifies the access token and reads the user's wallet from Privy; an address in a request body is never trusted | `Backend/src/auth/privy.ts` | Built, in use |
 | **Signers + policies (loan protection)** | `Backend/src/privy/`, `Backend/src/services/protection*.ts`, `App/src/components/position/ProtectionCard.tsx` | Built. Signer and policy behaviour measured on Monad testnet in the spike; the full loan-protection run is **not yet done** (see Evidence) |
 | Export wallet, link email / wallet (account menu) | `App/src/components/auth/AccountMenu.tsx` | Built; not yet exercised in a browser |
-| Server wallets for the faucet and liquidator (Part 3) | n/a | **Not built** |
+| Server wallet (spike script 01) | `Backend/scripts/privy/01-server-wallet.ts` | **A proof, not a shipped feature.** It showed Privy can create a wallet and sign and broadcast on Monad testnet. Part 3 (running the faucet and liquidator through Privy server wallets) was cancelled: those wallets, like the slot, float and operator wallets, still use their own keys and are untouched |
 
 ## Loan protection
 
@@ -35,7 +35,7 @@ A trigger health (default 1.15), a target health (default 1.30) and a maximum to
       | POST /protection  ------>|                          |                   |
       |                          |-- create policy -------->|                   |
       |<-- policyId, signer, allowance to approve ----------|                   |
-      | 1. addSigners(signerId, [policyId]) ---------------->| (Privy prompt)    |
+      | 1. addSigners(signerId, [policyId]) ---------------->| (no popup seen)   |
       | 2. approve(pool, maxSpend) ------------------------------------------->|
       | POST /protection/:id/activate ->|                    |                   |
       |                          |-- is our signer on the wallet, with this policy? ->|
@@ -63,7 +63,7 @@ Built by `buildRepayPolicy` (`Backend/src/privy/policies.ts`) and pinned by a un
   "owner_id": "<the server key quorum id>",
   "rules": [
     {
-      "name": "allow repay(amount <= maxPerCall) on this pool only",
+      "name": "repay up to the cap, on this pool only",
       "method": "eth_sendTransaction",
       "action": "ALLOW",
       "conditions": [
@@ -84,9 +84,10 @@ There is deliberately **no DENY rule**. Measured in the spike: a request that ma
 Every `PROTECTION_INTERVAL_MS` (5 s) it reads `healthFactor` and `currentDebt` for each enabled rule. At or below the trigger, and out of cooldown, it computes the repay (debt minus the debt that sits on the target, plus 1%, clamped by the per-call cap, the remaining spend, the wallet balance and the allowance; below 0.01 AUSD it does nothing) and sends `repay` through Privy with a gas limit from our own estimate plus a buffer. It records what the pool actually took (the `Repaid` event), not what it asked for. A `PENDING` event marks a repay in flight and is settled from the chain after a restart. It never acts on a rule whose signer the backend has not verified, or whose wallet no longer matches the user's.
 
 ### Honest limits
-- **It needs AUSD in the wallet, and a little MON for gas.** With an empty wallet it cannot act and says so (a "could not act" note on the card).
+- **It needs AUSD in the wallet, and a little MON for gas.** The repay is sent from the user's wallet, so that wallet pays the fee. With no AUSD, or too little MON for the gas limit, the worker records a skipped event with a plain note ("add AUSD" / "Add MON for gas"), at most once per cooldown, and sends nothing.
 - **A very fast market move can still liquidate you** between checks. It is a safety net, not a guarantee.
 - **One rule per wallet and pool, and one *active* rule per wallet.** A signer carries at most one policy, so adding it for a second loan would replace the first loan's policy. The backend refuses a second active rule.
+- **Consent is the page's own button.** `addSigners` showed no Privy popup on this setup, so the consent text and the button under it are the only consent the user sees; nothing is granted before that button is pressed. If a Privy prompt does appear it is shown as Privy's own.
 - **Embedded (email sign-in) wallets only.** Signers attach to Privy wallets, not to MetaMask and the like. Others see "Loan protection needs a Laxu wallet created with email sign-in."
 - **The allowance is shared.** The user's own manual repays draw on it too. If the user approves more than their spend limit elsewhere, the on-chain cap is larger than the limit they set (Laxu still stops at the limit itself).
 - **Monad bills the gas limit, not the gas used,** so each repay costs its estimated limit plus a buffer, not a bit more than needed.
@@ -99,9 +100,12 @@ Every `PROTECTION_INTERVAL_MS` (5 s) it reads `healthFactor` and `currentDebt` f
 **Measured on Monad testnet (the spike, `docs/privy-findings.md`):**
 - Privy signs and broadcasts: `sendTransaction`, 5 of 5, median 1172 ms.
 - Policy enforcement: an allowed `approve` went through; an over-limit amount, a different function (`transfer`), a different target address, a plain value send and `approve` carrying value were each refused with `{"error":"RPC request denied due to policy violation","code":"policy_violation"}`.
-- A user's embedded wallet `0xfc7d5c97ec539215fab84a732b74f5dce6833d21` added the server as a signer with a policy attached (through Privy's prompt). The server, using only its own key, then sent an allowed `approve` from that wallet (tx `0x370e8a29a2c5a29fbdfc9a99db1b2b5b7b745e195ab81a1f64af367cb2f7cc8f`) and was refused the forbidden calls. After the user removed the signer, the same call failed with HTTP 401.
+- A user's embedded wallet `0xfc7d5c97ec539215fab84a732b74f5dce6833d21` added the server as a signer with a policy attached (no Privy popup appeared, so the page's own button was the only consent step). The server, using only its own key, then sent an allowed `approve` from that wallet (tx `0x370e8a29a2c5a29fbdfc9a99db1b2b5b7b745e195ab81a1f64af367cb2f7cc8f`) and was refused the forbidden calls. After the user removed the signer, the same call failed with HTTP 401.
+
+**Run without a browser (2026-10-09, `Backend/scripts/privy/qa-protection.ts`, 22 of 22 passed):** against the real database, chain and Privy, through the real service functions: validation and refusals (bad trigger, bad target, over the spend cap, unknown pool, no loan), the embedded-wallet check, a created-but-unfinished rule reading as phase `setup` with the signer and allowance read live, `activate` refused while Laxu's signer is not on the wallet (and the rule staying disabled), another user unable to touch the rule, cancel-setup recorded once and giving phase `off`, and the worker's no-debt and wallet-mismatch paths. It found a real bug: Privy refused the policy because a rule name was 51 characters (the limit is under 50), which would have failed every first setup; fixed. No transaction was sent.
 
 **Not yet run (do not read this page as claiming them):**
+- The browser QA list of Spec 05b section 7.2, beyond the parts above. See `docs/privy-findings.md`, "Frontend QA", for each item and its status.
 - An end-to-end loan-protection run on testnet: a real loan near the cap, protection firing, a `REPAID` event with a tx hash, health moving to the target.
 - The rejection script against a live protection rule: `npx ts-node --transpile-only scripts/privy/demo-rejection.ts --full` (saves `Backend/.e2e/privy-rejections.json`).
 - Screenshots of the card.
@@ -117,4 +121,4 @@ cd Backend && npx prisma migrate deploy && npx prisma generate
 # 3. One backend with workers per database, then sign in with email and open a position page with a loan.
 ```
 
-The demo path does not need the market to move: set the trigger **above** the loan's current health (for example 1.6 against a health of 1.3) and protection acts at once.
+The card is behind `NEXT_PUBLIC_ENABLE_PROTECTION=true` in the App (off, it renders nothing). The demo path does not need the market to move: set the trigger **above** the loan's current health (for example 1.6 against a health of 1.3) and protection acts at once.

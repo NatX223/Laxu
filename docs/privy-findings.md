@@ -103,7 +103,7 @@ Evidence: `Backend/.e2e/privy-spike.json` (`spike12`). Policy ids: P1 `zm752z8mu
 | `approve` at another address | `policy_violation` |
 | Script after Remove (`--expect-removed`) | `additional_signers: 0`; the same allowed call now fails `HTTP 401 No valid authorization signatures were provided` |
 
-So the server can act on a user's embedded wallet through a signer with a policy attached, the policy enforces the same rules as in 1.2, and **removing the signer stops further calls** (401, before any policy check). The user approved both steps in Privy's own prompt; the server never held a user key.
+So the server can act on a user's embedded wallet through a signer with a policy attached, the policy enforces the same rules as in 1.2, and **removing the signer stops further calls** (401, before any policy check). The user pressed the page's own buttons; no Privy popup appeared for `addSigners` on this setup, so the page's button was the only consent step. The server never held a user key.
 
 How a policy id is attached from the React SDK (1.3 step 4): the policy must already exist (created server-side with `policies().create`), and its id is passed in the same call that adds the signer: `useSigners().addSigners({ address, signers: [{ signerId: <quorum id>, policyIds: [<policy id>] }] })`. The server then sees it on the wallet as `additional_signers[0].override_policy_ids`.
 
@@ -115,8 +115,8 @@ What happened, from the page log and the script output:
 
 | Time | Step | Result |
 |---|---|---|
-| 20:44:54 | `useSigners().addSigners({ address, signers: [{ signerId: <quorum id>, policyIds: [<policy id>] }] })` | **OK** (Privy consent prompt accepted) |
-| 20:47:26 | `removeSigners({ address })` | FAILED `signal is aborted without reason` (first attempt; cause unknown, likely the prompt was dismissed or timed out) |
+| 20:44:54 | `useSigners().addSigners({ address, signers: [{ signerId: <quorum id>, policyIds: [<policy id>] }] })` | **OK** (no Privy popup appeared) |
+| 20:47:26 | `removeSigners({ address })` | FAILED `signal is aborted without reason` (first attempt; cause unknown, possibly a dismissed or timed-out request) |
 | 20:50:23 | `removeSigners({ address })` retry | **OK** |
 | after | `03-user-signer.ts` (twice, incl. `--expect-removed`) | wallet has `additional_signers: 0`; every call `HTTP 401 No valid authorization signatures were provided` |
 
@@ -159,11 +159,53 @@ REST name differences: the React `signerId` / `policyIds` are `signer_id` / `ove
 - **Stateful (cumulative) limits.** Documented as supported (aggregations with `sum`, rolling windows of 1 to 72 hours, up to 10 per app), but only for `eth_signTransaction` and `eth_signUserOperation`, not `eth_sendTransaction`. Values update after signing, so concurrent requests can pass together. Not usable for the send path, and the ERC-20 allowance already caps total spend, so Part 2 does not depend on it.
 - **Embedded wallets for signers.** Privy's quickstart sets `createOnLogin: 'all-users'`; the app uses `'users-without-wallets'`. Per the spec nothing is changed until the signer flow shows it is needed.
 
+## Part 2 build notes (Spec 05 Part 2 and 05b)
+
+Part 3 (Privy server wallets for the faucet and liquidator) was cancelled by the owner on 2026-10-09; the gate table's "Part 3 only" row is therefore moot. Script 01 (a server wallet on Monad) stays as a proof, not a shipped feature.
+
+Where the code differs from the specs, and why:
+- **Rule name length.** Privy rejects a rule name of 50 or more characters. Found by running the real service (the first unit test had pinned a 51-character name); shortened to `repay up to the cap, on this pool only`.
+- **One active rule per wallet.** A signer carries at most one policy ("up to one policy ID"), so a second active rule would replace the first's policy. The backend refuses it. Stricter than Spec 05.
+- **Old policies on re-enable.** Spec 05b 6.2 says delete the old policy "if the API allows". It does (`policies().delete` with the owner's authorization), but it is done only when Privy confirms our signer is no longer on the wallet: a signer must never be left holding a policy that no longer exists. Verified against Privy by the QA harness (a fixture policy was created and deleted).
+- **A server-computed `phase`** (`setup` | `on` | `off`) per rule, from the rule and its last event, and a `CREATED` event. The browser cannot tell "setup never finished" from "turned off, with a permission left" from leftovers alone.
+- **Cancel setup** is `DELETE /protection/:id` on a rule that is not enabled: it records "Setup cancelled" once.
+- **GET /protection** returns `maxSpendCap` and `walletNativeBalance` at the top level and `walletHasSigner` and `allowance` per rule.
+- **Worker gas check:** before a repay, the wallet must hold the gas limit times the fee cap in MON; otherwise a SKIPPED event and the note "Add MON for gas", no Privy call.
+- **No Privy popup.** `addSigners` showed no popup on this setup (Spec 05b 4.2b), so the consent text and its button are the only consent; the card says "Powered by Privy" but never shows or implies a Privy dialog.
+- **Extra files:** `ProtectionParts.tsx` (shared pieces) and `lib/protectionEligibility.ts` / `lib/protectionMath.ts` (dependency-free, so a script can test them), besides the files Spec 05b names.
+- **SDK (Spec 05b 1):** `@privy-io/react-auth` 3.45.0. `useSigners()` gives `addSigners({ address, signers: [{ signerId, policyIds }] }): Promise<{ user }>` and `removeSigners({ address }): Promise<{ user }>` (removes all signers). An embedded wallet is `ConnectedWallet.walletClientType === "privy"`.
+
+## Frontend QA (Spec 05b 7.2)
+
+Run 2026-10-09. **Status: not complete.** What can run without a signed-in browser was run. Everything that needs an email user in a browser, a loan, or a screenshot was **not run**: this session has no browser and cannot sign in, and neither test wallet has a loan (neither holds position tokens; `0xfc7d5c97…3d21` holds 10,000 AUSD and 0.459 MON, `0x85892112…8033` holds nothing). No external-wallet (MetaMask) user exists in the database. The table says exactly what each line rests on.
+
+| # | Scenario | Result | What it rests on / what remains |
+|---|---|---|---|
+| 1 | External-wallet user sees the disabled "needs email sign-in" card | **PARTIAL** | The eligibility function returns `not-embedded` for a MetaMask wallet and for an embedded wallet that is not the Laxu wallet (`App/scripts/checkProtectionMath.mjs`). Not seen in a browser. The backend's `NOT_EMBEDDED_WALLET` answer is unexercised: no such user exists. |
+| 2 | Email user, no debt: Off state, "Borrow first" | **PARTIAL** | Live: `POST /protection` for `0xfc7d…` on a real pool answers `400 NO_LOAN`. Eligibility returns `no-debt`. The card was not rendered. |
+| 3 | Full setup (both steps), Protected only after the backend confirms | **NOT RUN** | Needs a loan and a session. Live, server side: `activate` is refused `409 SIGNER_MISSING` while the signer is absent and the rule stays disabled; GET reads the signer (Privy) and the allowance (chain). |
+| 4 | Trigger above health fires at once; event with tx link | **NOT RUN** | No loan. The decision and every clamp are unit-tested; live, only the worker's no-debt branch ran (one SKIPPED event across two ticks, nothing sent). |
+| 5 | Empty wallet: skipped event, banner, no error spam | **NOT RUN live** | Unit: the `balance` skip, and one note per cooldown window. |
+| 6 | MON near zero: gas warning, worker skips "Add MON for gas" | **NOT RUN live** | Unit: `gasShortfall` (including the 0.0204 MON a 200,000-gas repay cost on testnet), the note text. Live: GET returns the wallet's MON (0.4592). |
+| 7 | Close the prompt in step 1: neutral "Cancelled", Continue works | **NOT RUN** | Code: a closed prompt becomes a typed `UserCancelled`, shown as a neutral line. Note: per the spike no Privy popup appears for step 1 on this setup, so there may be nothing to close. |
+| 8 | Reject the approval in step 2, reload: Finish setup resumes at step 2 | **NOT RUN** | The resume inputs (`walletHasSigner`, `allowance`, `phase`) are verified live in GET. |
+| 9 | Turn off: backend first, then signer, then allowance 0; verify on chain | **NOT RUN** | Live: disabling stops the rule and records once (shown for a cancelled setup and for the rule-7 switch-off). |
+| 10 | Turn off with a rejected approval lands in Cleanup, then clean it | **NOT RUN** | Live: phase `off` reads correctly; leftovers come from live `walletHasSigner` / `allowance`. |
+| 11 | Turn on again after turning off (spent back to 0) | **NOT RUN live** | `ruleResetData` is unit-tested (spent 0, disabled, unverified, no inherited cooldown or banner). `POST /protection`'s re-enable path needs a loan. |
+| 12 | Phone-width screenshot of the On state | **NOT RUN** | No browser. |
+
+**What did run:** backend suite 117 passing; `qa-protection.ts` 22 of 22 (evidence `Backend/.e2e/privy-qa.json`); App repay-preview vectors 6 of 6 identical to the backend's `planRepay` and 9 eligibility cases (`node scripts/checkProtectionMath.mjs`); `tsc` and `next build` pass with `NEXT_PUBLIC_ENABLE_PROTECTION` on and off; eslint clean on the changed files (one pre-existing error in `trade/engine.ts`).
+
+**To finish the QA (needs your browser and a loan):**
+1. Backend: stop any other backend, set `ENABLE_PROTECTION=true` in `Backend/.env`, start one backend. App: set `NEXT_PUBLIC_ENABLE_PROTECTION=true` in `App/.env.local`, restart `npm run dev`.
+2. Sign in with email (`0xfc7d…` is embedded and has 10,000 AUSD and 0.459 MON). Open a position, deposit its tokens and borrow near the cap, so there is real debt. Sign in once with an external wallet for item 1.
+3. Walk items 1 to 12; screenshot each step into `docs/screenshots/`, and note the tx hashes. Then run `npx ts-node --transpile-only scripts/privy/demo-rejection.ts --full`.
+
 ## Still to do
 
 1. ~~1.3 (user-wallet signer)~~ done, see above. How it was run: the page is built: `App/src/app/dev/privy` (404 unless `NEXT_PUBLIC_DEV_TOOLS=1`). Procedure:
    1. In `App/.env.local` set `NEXT_PUBLIC_DEV_TOOLS=1` and `NEXT_PUBLIC_PRIVY_SIGNER_ID=<the quorum id>`, then `npm run dev` in `App/`.
-   2. Open `/dev/privy`, sign in **with email** (the card says "Privy embedded wallet" when it will work), paste the policy id `wudc3vujs3wri9uoeerv5ws0`, click **Add signer**, approve Privy's prompt.
+   2. Open `/dev/privy`, sign in **with email** (the card says "Privy embedded wallet" when it will work), paste the policy id `wudc3vujs3wri9uoeerv5ws0`, click **Add signer** (no Privy popup is expected).
    3. Send the embedded wallet ~0.01 MON for gas (done for `0xfc7d...3d21`). **Immediately after the add** (do not click Remove first) run `03-user-signer.ts --wallet 0x...`. It must print `ours present: true`.
    4. Only then click **Remove signer**, and run the same script with `--expect-removed`.
    Status: all four steps done in run 2.

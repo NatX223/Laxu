@@ -324,7 +324,7 @@ Privy handles sign-in and embedded wallets, and the backend verifies every reque
 
 - The user adds Laxu as a **Privy signer** on their embedded wallet, restricted by a **Privy policy** to `repay` on that one pool, up to a per-call cap, with no native value. Privy enforces it: other calls (a `transfer`, another pool, a bigger amount) are refused by the policy.
 - The user also approves an ERC-20 allowance equal to their spend limit, so the allowance caps the total. A backend worker watches the health factor and repays through Privy.
-- Status: the signer and policy behaviour is measured on Monad testnet; the full end-to-end loan run is not yet recorded, and Part 3 (Privy server wallets for the faucet and liquidator) is not built. Details, the exact policy, limits and evidence: [docs/privy-integration.md](docs/privy-integration.md) and [docs/privy-findings.md](docs/privy-findings.md).
+- Status: the signer and policy behaviour is measured on Monad testnet; the full end-to-end loan run is not yet recorded, and Privy server wallets were only a spike proof (no faucet or liquidator wallet runs through Privy). Details, the exact policy, limits and evidence: [docs/privy-integration.md](docs/privy-integration.md) and [docs/privy-findings.md](docs/privy-findings.md).
 
 ## Built with / credits
 
