@@ -427,3 +427,30 @@ Ping period 30 s (default), PC kept awake with `SetThreadExecutionState` (no sta
 ### Honest read
 
 The earlier numbers are not explained by a missing ping: the 30 s pings were already being sent. The improvement from 6–9 to 1 per socket could come from the new start timing, but more likely from the environment (the soak ran with open positions and two Modern Standby sleeps; this run was idle and kept awake), so it should not be credited to the change. One close per socket in 30 min is 2/h, **right at the budget, not under it**. Not run: the second 30–45 min run with small orders, and a run from a hosted machine to separate "this PC's network" from "the server". For Perpl: `1008 ping timeout` hits both of an account pair's sockets within 5 ms, about 1 s after a protocol ping that we answered immediately, while data frames were still arriving.
+
+---
+
+## Transactions cited in the README
+
+Every hash the README links, in one place. All are from the run above except where noted. `createPosition` and `createPool` for step 1 are not printed in the step log; they were read on 2026-10-09 from the `PositionTokenFactory` and `LendingPoolFactory` logs in blocks 68478619–68479519, and their receipts name step 1's token (`0xaedd433235a6d5605535fcabbc157d6bde4253f9`) and pool (`0x5566777B0635E5185Ee5039634576fDB5c8962Dd`). Each hash was checked with `eth_getTransactionReceipt` on the Monad testnet RPC on 2026-10-09.
+
+| Step | Transaction | Receipt status |
+|---|---|---|
+| 1. Pay AUSD to the slot | [0x19d1add70c09045c58d7f052807ac359388ca2cae034f5c8c465a633540c298f](https://testnet.monadvision.com/tx/0x19d1add70c09045c58d7f052807ac359388ca2cae034f5c8c465a633540c298f) | success |
+| 1. Deposit into Perpl | [0x38509ca97624ff89ca092088c19ac0c8207dcbd073642ae1d83f36a896e85721](https://testnet.monadvision.com/tx/0x38509ca97624ff89ca092088c19ac0c8207dcbd073642ae1d83f36a896e85721) | success |
+| 1. `createPosition` (block 68478731, from factory logs) | [0x0e985052e84d99d152a5af61f9226b8f944097dea5440c1c195d39e295bb6a91](https://testnet.monadvision.com/tx/0x0e985052e84d99d152a5af61f9226b8f944097dea5440c1c195d39e295bb6a91) | success |
+| 1. `createPool` (block 68478737, from factory logs) | [0x8de67bc98362590fd9ccd91e87b9eb6fc14294662c1f1b4f39c7f8ce84a04397](https://testnet.monadvision.com/tx/0x8de67bc98362590fd9ccd91e87b9eb6fc14294662c1f1b4f39c7f8ce84a04397) | success |
+| 2. `applyFunding` | [0x37e6f74ff7e8600a12aa525391bfaf41f688ae890f92c8fa62d8b886a5bd22a9](https://testnet.monadvision.com/tx/0x37e6f74ff7e8600a12aa525391bfaf41f688ae890f92c8fa62d8b886a5bd22a9) | success |
+| 3. `depositCollateral` | [0xc1e8876be449661bc5925af1864e81fa148f31945d715c52ee7b218a90bfad3e](https://testnet.monadvision.com/tx/0xc1e8876be449661bc5925af1864e81fa148f31945d715c52ee7b218a90bfad3e) | success |
+| 3. `borrow` | [0xb0a458f3be0e02e8a2d9a6495b009770131f7b2c4ad3c2ef7074f3eba0bd1ae6](https://testnet.monadvision.com/tx/0xb0a458f3be0e02e8a2d9a6495b009770131f7b2c4ad3c2ef7074f3eba0bd1ae6) | success |
+| 4. Borrow above LTV | [0xa215022673e1763c0aab0a75c82592d76c0b708e71a9cb98d50df393d5cb40ed](https://testnet.monadvision.com/tx/0xa215022673e1763c0aab0a75c82592d76c0b708e71a9cb98d50df393d5cb40ed) | reverted (intended) |
+| 5. Buy-in fulfilled | [0xda824be3a5a7ee27c767574f2924df0ef9f94b05bb77ed4c4631190de685b643](https://testnet.monadvision.com/tx/0xda824be3a5a7ee27c767574f2924df0ef9f94b05bb77ed4c4631190de685b643) | success |
+| 6. Redeem fulfilled | [0xacf99eca298d549df5799adb3be7125735a8b3480bee2a8f03744f2d1146678e](https://testnet.monadvision.com/tx/0xacf99eca298d549df5799adb3be7125735a8b3480bee2a8f03744f2d1146678e) | success |
+| 7. Stop-loss executed | [0x93fb5e438f7a65feae397719d6f71b431e67e190c806a951bea680b5b2f48736](https://testnet.monadvision.com/tx/0x93fb5e438f7a65feae397719d6f71b431e67e190c806a951bea680b5b2f48736) | success |
+| 8. Borrow with the backend down (t+10 min) | [0x742b3f205899ac41eef14f02e98066135e4402068d62ac06db7bf6ecb03448e4](https://testnet.monadvision.com/tx/0x742b3f205899ac41eef14f02e98066135e4402068d62ac06db7bf6ecb03448e4) | success |
+| 9. `repay` | [0xef8aadbf4b6b38f8996817c05abd8af4b9cdfc13f1eadca2a849f050bc9ee166](https://testnet.monadvision.com/tx/0xef8aadbf4b6b38f8996817c05abd8af4b9cdfc13f1eadca2a849f050bc9ee166) | success |
+| 9. `withdrawCollateral` | [0xba27321e5d72a13082b97567c30272681816e61e26003c33018051567dad4bb8](https://testnet.monadvision.com/tx/0xba27321e5d72a13082b97567c30272681816e61e26003c33018051567dad4bb8) | success |
+| 9. `settle` | [0xc58c9ebf548b91499360b684fef160d8b7e68da7260b09abc95674d3432a4a99](https://testnet.monadvision.com/tx/0xc58c9ebf548b91499360b684fef160d8b7e68da7260b09abc95674d3432a4a99) | success |
+| 9. Claim pushed to A | [0xafb6a72763a8ee36eb7a77f2627256b36abe7b65a4f3d76b9e056f1e493907bc](https://testnet.monadvision.com/tx/0xafb6a72763a8ee36eb7a77f2627256b36abe7b65a4f3d76b9e056f1e493907bc) | success |
+| 10. Wrong payment refunded | [0x972409ff7f869d7f640ca8acbcccb99d725f828169ba7245e1cc294dd7b4a269](https://testnet.monadvision.com/tx/0x972409ff7f869d7f640ca8acbcccb99d725f828169ba7245e1cc294dd7b4a269) | success |
+| Privy signer spike (not this run): allowed `approve(dead, 1000)` from the user's wallet, signed only by the server key | [0x370e8a29a2c5a29fbdfc9a99db1b2b5b7b745e195ab81a1f64af367cb2f7cc8f](https://testnet.monadvision.com/tx/0x370e8a29a2c5a29fbdfc9a99db1b2b5b7b745e195ab81a1f64af367cb2f7cc8f) | success; see `docs/privy-findings.md` |
