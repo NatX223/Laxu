@@ -7,6 +7,10 @@ const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000").repl
 
 export const env = {
   privyAppId: process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "",
+  /** Dev-only pages (/dev/*) exist only when this is "1"; otherwise they 404. */
+  devTools: process.env.NEXT_PUBLIC_DEV_TOOLS === "1",
+  /** The Privy key quorum id (a public id, not a secret) that /dev/privy offers as signer. */
+  privySignerId: process.env.NEXT_PUBLIC_PRIVY_SIGNER_ID ?? "",
   /** Monad testnet. */
   chainId: Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 10143),
   rpcUrl: process.env.NEXT_PUBLIC_RPC_URL ?? "",
