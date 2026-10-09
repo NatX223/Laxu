@@ -28,6 +28,7 @@ import { db } from "../src/config/db";
 import { config } from "../src/config/env";
 import { createLogger, errorFields } from "../src/lib/logger";
 import { enrollApiKey } from "../src/venue/perpl/enroll";
+import { readSecrets, writeSecrets } from "../src/venue/perpl/enrollSlots";
 import {
   allowOrderForwarding,
   createAccount,
@@ -43,6 +44,8 @@ const log = createLogger("provision");
 const SLOT_COUNT = Number(process.env.SLOT_COUNT || 5);
 const MIN_GAS_WEI = BigInt(process.env.SLOT_MIN_GAS_WEI || "500000000000000000");
 const APPROVED = 2n ** 128n;
+/// Where newly enrolled keys go (0600, gitignored); the same file scripts/perpl/enrollSlotKey.ts writes.
+const SECRETS_FILE = "./secrets/slot-keys.json";
 
 type Row = { n: number; address: string; account: string; key: string; status: string; ok: boolean };
 
@@ -119,10 +122,25 @@ async function provisionOne(n: number): Promise<Row> {
       const enrolled = await enrollApiKey({ evmPrivateKey: evmKey, label: `laxu-slot-${n}` });
       apiKey = enrolled.apiKey;
       apiSecret = enrolled.secretHex;
-      console.log(`\nSlot ${n}: new Perpl API key enrolled. Put these in your env (they are not saved anywhere):`);
-      console.log(`  PERPL_API_KEY_${n}=${enrolled.apiKey}`);
-      console.log(`  SECRET_${apiRef}=${enrolled.secretHex}\n`);
-      keyNote = "; key enrolled (set the printed env vars)";
+      // Never printed: the key and secret go only to the 0600, gitignored file
+      // that scripts/perpl/enrollSlotKey.ts also writes.
+      const file = readSecrets(SECRETS_FILE);
+      file.env[`PERPL_API_KEY_${n}`] = enrolled.apiKey;
+      file.env[`SECRET_${apiRef}`] = enrolled.secretHex;
+      file.slots[String(n)] = {
+        address,
+        publicKey: enrolled.publicKeyHex,
+        label: `laxu-slot-${n}`,
+        scope: 3, // PERPL_SCOPE_READ_TRADE, what enrollApiKey requests
+        origin: config.perplOrigin,
+        enrolledAt: new Date().toISOString(),
+      };
+      writeSecrets(SECRETS_FILE, file);
+      console.log(
+        `\nSlot ${n}: new Perpl API key enrolled (key …${enrolled.apiKey.slice(-4)}). ` +
+          `PERPL_API_KEY_${n} and SECRET_${apiRef} were written to ${SECRETS_FILE}; copy them into your env.\n`,
+      );
+      keyNote = "; key enrolled (see the secrets file)";
     } else {
       // Forwarding is idempotent: turn it on now so the key works as soon as it exists.
       await allowOrderForwarding(wallet, true);
@@ -134,7 +152,7 @@ async function provisionOne(n: number): Promise<Row> {
       return row;
     }
   }
-  row.key = `${apiKey.slice(0, 8)}…`;
+  row.key = `…${apiKey.slice(-4)}`;
 
   // 4. Forwarding.
   let forwarding = false;
