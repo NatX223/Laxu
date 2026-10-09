@@ -107,3 +107,16 @@ export async function resolvePrivyWallet(privyUserId: string): Promise<string | 
 
   return (external ?? embedded)?.address.toLowerCase() ?? null;
 }
+
+/**
+ * Is `address` one of this Privy user's own EMBEDDED wallets? Signers attach to
+ * Privy wallets only, never to an external wallet like MetaMask, so loan
+ * protection refuses any other kind (Spec 05 2.0b). Asked of Privy each time,
+ * never inferred from the stored row.
+ */
+export async function isEmbeddedWalletOf(privyUserId: string, address: string): Promise<boolean> {
+  const user = await privy().users()._get(privyUserId);
+  return user.linked_accounts
+    .filter(isEthereumWallet)
+    .some((wallet) => wallet.wallet_client_type === "privy" && wallet.address.toLowerCase() === address.toLowerCase());
+}

@@ -644,3 +644,65 @@ model IndexerCheckpoint {
 
   @@map("indexer_checkpoint")
 }
+
+// ---------------------------------------------------------------------------
+// Loan protection (Spec 05 Part 2) -- auto-repay a user's loan from their own
+// Privy embedded wallet. The user grants the Laxu server a Privy signer
+// (restricted by a per-rule policy to `repay` on one pool, up to `maxPerCall`)
+// and a capped ERC-20 allowance; a worker watches healthFactor and repays.
+// Big numbers are strings, as everywhere else in this schema: amounts are the
+// debt asset's base units, health factors are decimal strings ("1.15") that the
+// code compares as 1e18-scaled integers.
+// ---------------------------------------------------------------------------
+
+model ProtectionRule {
+  id               String            @id @default(cuid())
+  /// The Privy user the rule belongs to; re-checked against users.walletAddress
+  /// before every action.
+  privyUserId      String            @map("privy_user_id")
+  /// users.walletAddress, lowercase. Never taken from a request body.
+  walletAddress    String            @map("wallet_address")
+  poolAddress      String            @map("pool_address")
+  positionToken    String            @map("position_token")
+  triggerHealth    String            @map("trigger_health")
+  targetHealth     String            @map("target_health")
+  /// Also the ERC-20 allowance the user approves to the pool.
+  maxSpend         String            @map("max_spend")
+  /// The per-repay cap written into the Privy policy.
+  maxPerCall       String            @map("max_per_call")
+  spent            String            @default("0")
+  privyPolicyId    String?           @map("privy_policy_id")
+  privyWalletId    String?           @map("privy_wallet_id")
+  enabled          Boolean           @default(false)
+  /// Set by POST /protection/:id/activate after the backend itself saw the
+  /// signer on the Privy wallet and the allowance on chain.
+  signerVerifiedAt DateTime?         @map("signer_verified_at")
+  lastCheckedAt    DateTime?         @map("last_checked_at")
+  lastActionAt     DateTime?         @map("last_action_at")
+  lastNote         String?           @map("last_note")
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  events           ProtectionEvent[]
+
+  @@unique([walletAddress, poolAddress])
+  @@index([enabled])
+  @@map("protection_rules")
+}
+
+model ProtectionEvent {
+  id           String         @id @default(cuid())
+  ruleId       String         @map("rule_id")
+  rule         ProtectionRule @relation(fields: [ruleId], references: [id])
+  /// PENDING | REPAID | SKIPPED | FAILED | ENABLED | DISABLED. A PENDING row is
+  /// the in-flight marker for an action; it becomes REPAID or FAILED in place.
+  kind         String
+  amount       String?
+  healthBefore String?        @map("health_before")
+  healthAfter  String?        @map("health_after")
+  txHash       String?        @map("tx_hash")
+  note         String?
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  @@index([ruleId, createdAt])
+  @@map("protection_events")
+}

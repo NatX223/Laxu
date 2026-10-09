@@ -2,7 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import cors from "cors";
 
 import { connectDb, db } from "./config/db";
-import { assertFaucetConfig, assertOrchestrationConfig, config } from "./config/env";
+import { assertFaucetConfig, assertOrchestrationConfig, assertProtectionConfig, config } from "./config/env";
 import { HttpError } from "./lib/errors";
 import { createLogger, errorFields } from "./lib/logger";
 import { startIndexer } from "./indexer";
@@ -12,6 +12,7 @@ import { healthRouter } from "./routes/health";
 import { marketDataRouter } from "./routes/marketData";
 import { marketsRouter } from "./routes/markets";
 import { positionsRouter } from "./routes/positions";
+import { protectionRouter } from "./routes/protection";
 import { usersRouter } from "./routes/users";
 import { verifySlotCredentials } from "./services/allocator";
 import { startSettlementJob } from "./services/closePosition";
@@ -19,6 +20,7 @@ import { startFaucetMonitor } from "./services/faucet";
 import { startLiquidationJob } from "./services/liquidator";
 import { startMarketSync } from "./services/marketSync";
 import { resumeOpenRequests } from "./services/openPosition";
+import { startProtectionJob } from "./services/protection";
 import { startReconciler } from "./services/reconciler";
 import { onStreamLiquidationSignal, startReportingJob } from "./services/reporter";
 import { statsRouter } from "./routes/stats";
@@ -39,6 +41,7 @@ app.use("/health", healthRouter);
 app.use("/market-data", marketDataRouter);
 app.use("/markets", marketsRouter);
 app.use("/positions", positionsRouter);
+app.use("/protection", protectionRouter);
 app.use("/stats", statsRouter);
 app.use("/users", usersRouter);
 
@@ -130,6 +133,11 @@ async function start(): Promise<void> {
   }
   if (config.enableReporter) stopWorkers.push(startReportingJob());
   if (config.enableLiquidator) stopWorkers.push(startLiquidationJob());
+  // Loan protection (Spec 05): refuses to boot without the Privy signer rather than failing at the first repay.
+  if (config.enableProtection) {
+    assertProtectionConfig();
+    stopWorkers.push(startProtectionJob());
+  }
 
   const server = app.listen(config.port, () => {
     log.info(`Laxu backend listening on port ${config.port}`, {
@@ -137,6 +145,7 @@ async function start(): Promise<void> {
       reconciler: config.enableReconciler,
       reporter: config.enableReporter,
       liquidator: config.enableLiquidator,
+      protection: config.enableProtection,
       faucet: config.faucetEnabled,
     });
   });

@@ -8,13 +8,13 @@
  */
 
 import "dotenv/config";
-import { createPrivateKey } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { APIError, PrivyClient } from "@privy-io/node";
 import { encodeFunctionData, parseAbi, type Address, type Hex } from "viem";
 
 import { config } from "../../src/config/env";
+import { normalizeAuthKey } from "../../src/privy/authKey";
 
 /** Thrown when a step needs a value the user has not provided yet. */
 export class MissingEnv extends Error {
@@ -51,29 +51,8 @@ export function signerId(): string {
   return need("PRIVY_SIGNER_ID", "the key quorum id from Dashboard -> Wallets -> Authorization keys -> Register key quorum");
 }
 
-/**
- * The SDK wants the authorization private key as base64 PKCS8 DER with no PEM
- * header (an optional `wallet-auth:` prefix is stripped by the SDK). The
- * quickstart's `openssl ecparam -genkey` writes a SEC1 PEM ("EC PRIVATE KEY"),
- * which is not that, so every common shape is accepted here and normalised.
- */
-export function normalizeAuthKey(raw: string): string {
-  const text = raw.trim().replace(/^wallet-auth:/, "").replace(/\\n/g, "\n");
-  const key = text.includes("BEGIN")
-    ? createPrivateKey(text)
-    : (() => {
-        const der = Buffer.from(text, "base64");
-        try {
-          return createPrivateKey({ key: der, format: "der", type: "pkcs8" });
-        } catch {
-          return createPrivateKey({ key: der, format: "der", type: "sec1" });
-        }
-      })();
-  if (key.asymmetricKeyType !== "ec" || key.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
-    throw new Error("PRIVY_AUTH_PRIVATE_KEY must be a P-256 (prime256v1) key");
-  }
-  return key.export({ format: "der", type: "pkcs8" }).toString("base64");
-}
+// Moved to src/privy/authKey.ts so the backend (Part 2) shares it; re-exported for the spike scripts.
+export { normalizeAuthKey };
 
 export function authContext() {
   const key = normalizeAuthKey(need("PRIVY_AUTH_PRIVATE_KEY", "the P-256 private key whose public half is registered in the key quorum"));

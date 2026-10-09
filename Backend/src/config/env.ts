@@ -146,6 +146,19 @@ export const config = {
   enableReconciler: bool("ENABLE_RECONCILER", false),
   enableReporter: bool("ENABLE_REPORTER", false),
   enableLiquidator: bool("ENABLE_LIQUIDATOR", false),
+  /// Loan protection (Spec 05 Part 2): auto-repay from the user's own Privy wallet.
+  /// Needs PRIVY_SIGNER_ID and PRIVY_AUTH_PRIVATE_KEY; see assertProtectionConfig.
+  enableProtection: bool("ENABLE_PROTECTION", false),
+
+  // --- Loan protection ------------------------------------------------------
+  /// How often every enabled rule's health factor is read.
+  protectionIntervalMs: num("PROTECTION_INTERVAL_MS", 5_000),
+  /// Minimum seconds between two actions on one rule (after a repay or a failure),
+  /// and between two identical "could not act" notes.
+  protectionCooldownS: num("PROTECTION_COOLDOWN_S", 60),
+  /// Hard ceiling on one rule's max total spend, in the debt asset's base units
+  /// (500000000 = 500 AUSD at 6 decimals).
+  protectionMaxSpendCap: optional("PROTECTION_MAX_SPEND_CAP", "500000000"),
 
   // --- Auth ----------------------------------------------------------------
   /// Backend calls carry a Privy access token; these verify it and look the
@@ -155,6 +168,11 @@ export const config = {
   /// Optional: the app's JWT verification key from the Privy dashboard. Unset,
   /// the SDK fetches it over JWKS instead.
   privyJwtVerificationKey: optional("PRIVY_JWT_VERIFICATION_KEY"),
+  /// The server signer (Spec 05): the id of the 1-of-1 key quorum users add as a
+  /// signer on their embedded wallet, and the P-256 private key it signs with.
+  /// SECRET: never log the key (see privy/authKey.ts for the accepted formats).
+  privySignerId: optional("PRIVY_SIGNER_ID"),
+  privyAuthPrivateKey: optional("PRIVY_AUTH_PRIVATE_KEY"),
 
   /// Hops of reverse proxy in front of the API, for `req.ip` (the faucet's
   /// per-IP limit). Behind one proxy (Render, Railway, Fly), 1; unproxied, 0 --
@@ -237,6 +255,26 @@ export function assertFaucetConfig(): void {
   if (problems.length > 0) {
     throw new Error(`FAUCET_ENABLED=true but: ${problems.join("; ")}`);
   }
+}
+
+/// Loan protection can run only with the Privy app credentials, the server signer
+/// and a sane spend cap. Called from src/index.ts when ENABLE_PROTECTION is on, and
+/// from the routes (as a 503) when they are hit without it.
+export function protectionConfigProblems(): string[] {
+  const problems: string[] = [];
+  if (!config.privyAppId || !config.privyAppSecret) problems.push("PRIVY_APP_ID / PRIVY_APP_SECRET");
+  if (!config.privySignerId) problems.push("PRIVY_SIGNER_ID");
+  if (!config.privyAuthPrivateKey) problems.push("PRIVY_AUTH_PRIVATE_KEY");
+  if (!config.assetAddress) problems.push("ASSET_ADDRESS");
+  if (!/^[1-9][0-9]*$/.test(config.protectionMaxSpendCap)) problems.push("PROTECTION_MAX_SPEND_CAP (a positive whole number of base units)");
+  if (!(config.protectionIntervalMs >= 1_000)) problems.push("PROTECTION_INTERVAL_MS (>= 1000)");
+  if (!(config.protectionCooldownS >= 0)) problems.push("PROTECTION_COOLDOWN_S (>= 0)");
+  return problems;
+}
+
+export function assertProtectionConfig(): void {
+  const problems = protectionConfigProblems();
+  if (problems.length > 0) throw new Error(`ENABLE_PROTECTION is on but these are missing or invalid: ${problems.join(", ")}`);
 }
 
 /// Fail loudly at boot for the values the orchestration cannot run without,
