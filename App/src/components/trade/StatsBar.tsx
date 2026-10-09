@@ -29,7 +29,7 @@ export default function StatsBar({ engine, mkt }: { engine: TradeEngine; mkt: Ma
       v: known ? (chg >= 0 ? "+" : "−") + money(Math.abs(mark - open), dp) : "—",
       c: known ? chgColor : "#e3ddf4",
     },
-    { k: `FUNDING / ${stats.fundingInterval}`, v: stats.funding, c: fundingColor },
+    { k: `FUNDING / ${stats.fundingInterval}`, v: stats.funding, c: fundingColor, title: stats.fundingNote ?? undefined },
     { k: "NEXT FUNDING", v: countdownLabel(stats.nextFundingIn), c: "#e3ddf4" },
     { k: "OPEN INTEREST", v: stats.openInterest, c: "#e3ddf4" },
     { k: "24H VOLUME", v: stats.volume, c: "#e3ddf4" },
@@ -75,7 +75,7 @@ export default function StatsBar({ engine, mkt }: { engine: TradeEngine; mkt: Ma
       <div className="laxu-stats-divider" style={{ width: 1, height: 34, background: "rgba(255,255,255,0.12)" }} />
 
       {cells.map((s) => (
-        <div key={s.k} className="laxu-stats-cell" style={{ display: "flex", flexDirection: "column", gap: 3, padding: "0 12px" }}>
+        <div key={s.k} className="laxu-stats-cell" title={"title" in s ? s.title : undefined} style={{ display: "flex", flexDirection: "column", gap: 3, padding: "0 12px" }}>
           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#a79bd0", whiteSpace: "nowrap" }}>
             {s.k}
           </div>

@@ -11,6 +11,7 @@ import type {
   ApiAccountEvent,
   ApiContext,
   ApiFill,
+  ApiFundingSeries,
   ApiOrder,
   ApiPosition,
   ApiTicker,
@@ -149,6 +150,12 @@ export function getTicker(marketId: number): Promise<ApiTicker> {
 
 export function getAllTickers(): Promise<ApiTicker> {
   return publicGet<ApiTicker>("/v1/market-data/ticker");
+}
+
+/// One market's funding events applied in [fromMs, toMs], oldest first. At most
+/// 1024 funding intervals per request; `toMs` at most one interval past now.
+export function getFundingSeries(marketId: number, fromMs: number, toMs: number): Promise<ApiFundingSeries> {
+  return publicGet<ApiFundingSeries>(`/v1/market-data/${marketId}/funding/${fromMs}-${toMs}`);
 }
 
 export function getBook(marketId: number, levels = 20): Promise<{ sn: number; bid: Array<{ p: number; s: number; o: number }>; ask: Array<{ p: number; s: number; o: number }> }> {

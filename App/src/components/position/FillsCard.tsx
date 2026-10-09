@@ -111,6 +111,16 @@ export default function FillsCard({ token, base, refreshKey }: { token: string; 
       )}
 
       <div style={{ padding: "10px 16px 12px", display: "flex", flexDirection: "column", gap: 6, fontSize: 11, fontWeight: 500, lineHeight: 1.5, color: MUTED }}>
+        {data?.realisedFunding != null && Number(data.realisedFunding) !== 0 && (
+          <div>
+            Funding realised on Perpl:{" "}
+            <span style={{ fontFamily: MONO, color: Number(data.realisedFunding) > 0 ? GOOD : BAD }}>
+              {Number(data.realisedFunding) > 0 ? "+" : "−"}
+              {num(String(Math.abs(Number(data.realisedFunding))))} {asset.symbol}
+            </span>{" "}
+            ({Number(data.realisedFunding) > 0 ? "received" : "paid"}; Perpl books it when the position size changes or closes).
+          </div>
+        )}
         {data?.stale && <div style={{ color: WARN }}>Perpl is busy right now; showing the last copy fetched at {time(data.fetchedAt)}.</div>}
         {data?.truncated && <div style={{ color: WARN }}>History is long; the oldest fills may be missing.</div>}
         <div>Straight from Perpl&apos;s API. Order history can lag up to ~25 seconds.</div>

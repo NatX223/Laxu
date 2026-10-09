@@ -120,6 +120,31 @@ export type VenueFills = {
 
 export const getVenueFills = (token: string) => apiFetch<VenueFills>(`/positions/${token}/venue-fills`);
 
+/** One funding interval. `ratePct` is percent per interval; positive: longs pay shorts. */
+export type FundingPoint = {
+  time: number;
+  block: number;
+  rateMicros: number;
+  ratePct: number;
+  annualizedPct: number;
+  indexPrice: number;
+  /** Applies in the future: Perpl's time is an estimate. */
+  estimatedTime: boolean;
+};
+
+export type FundingSummary = {
+  market: string;
+  venueMarketId: number;
+  intervalSec: number;
+  current: (FundingPoint & { whoPays: "longs pay shorts" | "shorts pay longs" | "no funding" }) | null;
+  history: FundingPoint[];
+  convention: string;
+  fetchedAt: string;
+};
+
+export const getFunding = (symbol: string, hours = 24) =>
+  apiFetch<FundingSummary>(`/markets/${encodeURIComponent(symbol)}/funding?hours=${hours}`);
+
 export type PositionStats = {
   holderCount: number;
   /** All-time bought in, 2dp, in the collateral asset. */

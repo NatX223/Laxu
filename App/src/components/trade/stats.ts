@@ -27,6 +27,8 @@ export type MarketStats = {
   /** "+0.0400%", or a dash. */
   funding: string;
   fundingPositive: boolean | null;
+  /** Annualised rate and who pays, for the cell's tooltip. */
+  fundingNote: string | null;
   /** "43M", "1H": the funding interval, for the cell label. */
   fundingInterval: string;
   /** Seconds to the next funding event; null when unknown. */
@@ -82,10 +84,19 @@ export function statsFor(
     openInterest: state ? compactUsd(state.openInterestUsd) : "—",
     funding: rate === null ? "—" : `${rate >= 0 ? "+" : "−"}${Math.abs(rate * 100).toFixed(4)}%`,
     fundingPositive: rate === null ? null : rate >= 0,
+    fundingNote: rate === null ? null : fundingNote(rate, market?.fundingIntervalSec ?? null),
     fundingInterval: intervalLabel(market?.fundingIntervalSec ?? null),
     nextFundingIn: market && now > 0 ? nextFunding(market, now) : null,
     tokens: market ? tokenCountLabel(inputs.counts, market.baseAsset) : "—",
   };
+}
+
+/** "≈ 12.2% a year. Longs pay shorts." Simple annualisation over the funding interval. */
+export function fundingNote(rate: number, intervalSec: number | null): string {
+  const who = rate > 0 ? "Longs pay shorts." : rate < 0 ? "Shorts pay longs." : "No one pays this interval.";
+  if (!intervalSec) return who;
+  const yearly = rate * 100 * ((365 * 24 * 3600) / intervalSec);
+  return `≈ ${yearly >= 0 ? "" : "−"}${Math.abs(yearly).toFixed(1)}% a year. ${who}`;
 }
 
 /** A clock that ticks every `ms`, for countdowns. Starts at 0 on the server so hydration matches. */

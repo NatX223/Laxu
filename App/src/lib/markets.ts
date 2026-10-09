@@ -68,8 +68,12 @@ const LAXU_MAX_LEVERAGE = 20;
 const leverageOf = (initialMargin: number) =>
   Math.max(1, Math.min(LAXU_MAX_LEVERAGE, Math.floor(initialMargin / 100)));
 
-/** `int16` "pct per 100k": 40 means 0.04% per funding interval. */
-const fundingFraction = (rate: number | undefined) => (rate === undefined ? null : rate / 100_000);
+/**
+ * Perpl's `FundingEvent.rate` is in micros (10^-6) per funding interval: 40 means
+ * 0.004%. Checked on testnet: `ppl` = idx x rate / 10^6 for every market (this
+ * used to divide by 100k, showing funding 10x too high).
+ */
+const fundingFraction = (rate: number | undefined) => (rate === undefined ? null : rate / 1_000_000);
 
 function stepOf(decimals: number): string {
   return decimals <= 0 ? "1" : `0.${"0".repeat(decimals - 1)}1`;

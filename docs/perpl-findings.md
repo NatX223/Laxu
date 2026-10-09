@@ -1136,3 +1136,25 @@ What the testnet actually returns (slot 1, account 824, and slot 2, account 841)
 **Matching method** (`services/venueFillsMath.ts`): order ids. A fill has `oid` but no `rq`, and a slot is reused across positions, so the backend takes the oids it saved (the entry order on `positions.venue_order_id`, the ledger rows' `venue_order_id`), finds the position's `pid` (saved on `positions.venue_position_pid`, or named by the entry order's position-history event), adds every oid from position-history events with that `pid`, and keeps only fills with account + market + one of those oids. The `pid` step matters: the close order's oid is not stored anywhere in our DB (close ledger rows have no `venue_order_id`). A time window alone would also be wrong: the entry fill (18:57:54) is two minutes before `opened_at` (18:59:51, set when the token minted). The time window (open request − 5 min to close + 10 min) is used only when not a single oid is known.
 
 Checked on the real data: slot 1 held two Laxu ETH longs one after the other, next to probe trades. Position `0xaedd…53f9` gets 5 fills (open, increase, two decreases, close), `0x96e2…d7fa` gets 2 (open, close); no overlap, and none of the 19 probe/e2e fills. Spot-check against `GET /v1/trading/order-history` for oid 4489210494992: `fp` 271592 = price 2715.92, `fs` 14 = 0.014 ETH, `f` 13118 = 0.013118 AUSD, `t` 1 OpenLong, same txid, all as the panel shows.
+
+### Part 3: funding (2026-10-09)
+
+Quoted from `rest-endpoints.md` (`GET /api/v1/market-data/:market_id/funding/:from-:to`): "`from` and `to` are matched against the timestamp each event **applies** at", "The period may cover at most **1024 funding intervals** of the market", the response's `d` is "Funding events, oldest first", and "The **most recent event** may carry an estimated `at.t` ..., which is corrected within about a minute". From `types.md`: `rate: Micros; // Funding rate (10^-6)`, "treat a repeat of a known `feb` as an update, not a new funding event". From `exchange/funding.md`: the direction "depends on whether the funding rate is positive (payment flows from long positions to short positions) or negative (payment flows in the opposite direction)".
+
+**Units, checked on testnet:** `rate` is micros per funding interval. Proof: `ppl` (payment per lot) = floor(`idx` × `rate` / 10^6) for all 8 markets in `/v1/pub/context` and every event in the BTC series (BTC: 823792 × 10 / 10^6 = 8.2 → `ppl` 8; ZEC: 1219187 × 30 / 10^6 = 36.57 → `ppl` 3657 with `div` 100). So:
+
+- percent per interval = `rate` / 10^4 (BTC `rate` 10 = 0.001%);
+- annualised (simple, not compounded) = percent × 365 × 86400 / `funding_interval_sec`;
+- `funding_interval_sec` is **2580** (43 min, 8571 blocks) on every testnet market, not one hour.
+
+**Bug fixed in the App:** `App/src/lib/markets.ts` read the context's `funding.rate` as "pct per 100k" (`rate / 100_000`), so the trade screen showed funding **10x too high** (BTC 0.0100% instead of 0.0010%). The on-chain contract's `fundingRatePct100k` is a different field; the API's `rate` is micros. Now `rate / 1_000_000`.
+
+**Sign:** positive rate, longs pay shorts. Matches the realised funding seen in position history: the ETH long `pid 4489210494977` has `fnd` −13300 (paid 0.0133 AUSD) and the BTC short `pid 4489238347777` has `fnd` +14535 (received), while rates were positive.
+
+**Other behaviour seen:**
+
+- `to` more than one funding interval past now is refused with a bare `400 Bad Request` (text/plain). The docs say this only for the all-markets endpoint ("`to` may run up to the **longest** funding interval past the current time"); it holds for the per-market one too. The backend clamps `to` to now + 0.9 interval.
+- A 30-day request (1005 intervals) is over the cap; the backend splits it (2 requests) and dedupes by `feb`: 991 unique intervals came back for ETH.
+- The current rate is the newest event (the ticker has no funding field). It matched `/v1/pub/context`'s `markets[].funding` (BTC 10, ETH 20 micros at `feb` 69467955).
+- **Funding paid per position is not in account history.** No `Funding` (type 8) account event exists on either slot. Perpl realises funding into the position when its size changes or it closes, as `fnd` on the position-history event, so the "Fills on Perpl" card sums `fnd` over the position's `pid` events. While a position stays open and unchanged, that figure does not move: the accruing part is in the token's own `fundingAccrued` (the reporter), not on Perpl's history.
+- **Not cross-checked against Perpl's web UI**: no browser in this session. Cross-checked against `/v1/pub/context` and the `ppl` identity instead.
