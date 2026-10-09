@@ -153,7 +153,7 @@ The full commit history is in this repository.
 
 1. **Sign in** with email (needed for loan protection) or a wallet.
 2. **Get test funds:** AUSD from Perpl's faucet (10,000 per claim when observed) and MON topped up to 0.5. Once per 24 hours.
-3. **Open a trade.** **Trade** → **ETH** (or BTC), long, **3×**, **50 AUSD** → open, and approve the payment. The ticket's minimum is one lot at your leverage plus 5%, never under 1 AUSD; at 3× on ETH or BTC one lot is under 1 AUSD, so the 1 AUSD floor applies. Stay at 10 AUSD or more: Perpl's exchange has a 10 AUSD minimum deposit that the ticket does not check.
+3. **Open a trade.** **Trade** → **ETH** (or BTC), long, **3×**, **50 AUSD** → open, and approve the payment. The ticket's minimum is the larger of Perpl's minimum deposit (10 AUSD on testnet, read from Perpl's `min_deposit_amount`) and one lot at your leverage plus 5%. At 3× on ETH or BTC one lot is under 1 AUSD, so the 10 AUSD deposit minimum applies; the backend refuses a smaller open before you pay, from the same field.
 4. **Land on the position page.** The token is in your wallet and the pool shows as ready.
 5. **Deposit and borrow** about half the maximum. Health appears and your AUSD balance goes up.
 6. **Protect this loan** (email sign-in only). Set a trigger above your current health (for example 1.6 against 1.3) so it acts at once, a target at least 0.10 higher, and a maximum spend. Add the signer: no Privy popup appeared on this setup, so the card's text and button are the consent step. Approve the allowance. Expected: the card shows "Protected", then a repay with its tx link. Needs `NEXT_PUBLIC_ENABLE_PROTECTION=true` and `ENABLE_PROTECTION=true`. ⚠ Not yet run end to end in a browser.
@@ -224,7 +224,6 @@ Steps 1, 2, 5 and 9 of that run passed only after a fix or a corrected check; th
 - **Custody:** Laxu's slot wallets hold the Perpl accounts. Per-user delegated accounts are planned, pending exchange support.
 - **Funding, fills and settlement amounts are operator-reported.** The mark is not.
 - **Capacity:** one open trade per slot. ⚠ TODO: number of slots on the deployed backend (the local database checked on 9 Oct 2026 had 2).
-- **Perpl's 10 AUSD minimum deposit** is not checked by the trade ticket. What a smaller open does has not been tested.
 - **Unaudited contracts.** Bad debt is not absorbed and there is no insurance fund.
 - **Perpl testnet may reset**, which would affect every open position.
 - **Not built:** a vault screen for lenders (the ERC-4626 vault works directly) and a secondary market. The liquidation bot is built and off by default; `liquidate()` is open to anyone.

@@ -218,6 +218,24 @@ export function feeMicrosToPpm(micros: number): number {
   return Math.max(0, Math.round(micros));
 }
 
+// --- Exchange minimums ----------------------------------------------------------
+
+/**
+ * Perpl's minimum deposit for the exchange at `exchange`, as the API Amount
+ * string (`instances[].min_deposit_amount`, CNS; "10000000" = 10 AUSD on
+ * testnet). The exchange refuses a smaller `depositCollateral`, so an open
+ * below it could never reach the order. The trade ticket reads the same field
+ * (App/src/lib/markets.ts). Throws when the context lists no such exchange.
+ */
+export function exchangeMinDeposit(
+  instances: ReadonlyArray<{ address: string; min_deposit_amount: string }>,
+  exchange: string,
+): string {
+  const instance = instances.find((i) => i.address.toLowerCase() === exchange.toLowerCase());
+  if (!instance) throw new Error(`Perpl context lists no exchange instance at ${exchange}`);
+  return instance.min_deposit_amount ?? "0";
+}
+
 // --- Time -------------------------------------------------------------------------
 
 /// API `at.t` is milliseconds; on-chain timestamps are seconds.

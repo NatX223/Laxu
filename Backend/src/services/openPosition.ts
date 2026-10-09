@@ -30,8 +30,8 @@ import {
 import { badRequest, conflict, forbidden, notFound, serviceUnavailable } from "../lib/errors";
 import { alert, createLogger, errorFields } from "../lib/logger";
 import { PRICE_SCALE, fromPrice18, fromSize6, toPrice18, toSize6 } from "../lib/units";
-import { getPositions as getApiPositions } from "../venue/perpl/rest";
-import { apiAmountToAsset, assertOpenScale, collateralScale } from "../venue/perpl/units";
+import { getContext, getPositions as getApiPositions } from "../venue/perpl/rest";
+import { apiAmountToAsset, assertOpenScale, collateralScale, exchangeMinDeposit } from "../venue/perpl/units";
 import { raiseLastRequestId } from "../venue/requests";
 import { venue, type OrderOutcome, type SentRequest } from "../venue/types";
 import {
@@ -124,10 +124,29 @@ export interface OpenPositionReservation {
   expiresAt: string;
 }
 
-/// The smallest open: one base unit, or the market's minimum posting amount.
+let minDepositCache: Promise<bigint> | undefined;
+
+/// Perpl's minimum deposit in asset base units (10 AUSD on testnet), read once
+/// from `GET /v1/pub/context`: the same field the trade ticket enforces.
+function minDepositAmount(): Promise<bigint> {
+  minDepositCache ??= (async () => {
+    const [context, scale] = await Promise.all([getContext(), collateralScale()]);
+    return apiAmountToAsset(exchangeMinDeposit(context.instances, config.perplExchangeAddress), scale);
+  })().catch((error) => {
+    minDepositCache = undefined;
+    throw error;
+  });
+  return minDepositCache;
+}
+
+/// The smallest open: the larger of Perpl's minimum deposit (every open
+/// deposits its whole amount) and the market's minimum posting amount; at
+/// least one base unit.
 async function minOpenAmount(market: ResolvedMarket): Promise<bigint> {
-  const minPosting = apiAmountToAsset(market.minPostingAmount, await collateralScale());
-  return minPosting > 1n ? minPosting : 1n;
+  const [scale, minDeposit] = await Promise.all([collateralScale(), minDepositAmount()]);
+  const minPosting = apiAmountToAsset(market.minPostingAmount, scale);
+  const floor = minPosting > minDeposit ? minPosting : minDeposit;
+  return floor > 1n ? floor : 1n;
 }
 
 export async function requestOpenPosition(request: OpenPositionRequest): Promise<OpenPositionReservation> {
@@ -147,7 +166,10 @@ export async function requestOpenPosition(request: OpenPositionRequest): Promise
   }
   const minimum = await minOpenAmount(market);
   if (amount < minimum) {
-    throw badRequest(`Amount must be at least ${fromBaseUnits(minimum, decimals)}`, "INVALID_AMOUNT");
+    throw badRequest(
+      `Amount must be at least ${fromBaseUnits(minimum, decimals)}: Perpl does not accept a smaller deposit`,
+      "INVALID_AMOUNT",
+    );
   }
 
   // A fresh mark, not the cached row: sizing and the SL/TP check must use the

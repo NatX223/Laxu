@@ -3,7 +3,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { apiFetch } from "./api";
 import { env } from "./env";
-import { fetchContext, type PerplContextMarket } from "./perplMarketData";
+import { fetchContext, type PerplContext, type PerplContextMarket } from "./perplMarketData";
 
 /** One market: the backend's row (`GET /markets`) joined with Perpl's own market config. */
 export type LaxuMarket = {
@@ -41,6 +41,12 @@ export type LaxuMarket = {
   fundingIntervalSec: number | null;
   /** ms since epoch of the next funding event, from the last one plus the interval. */
   nextFundingAt: number | null;
+  /**
+   * Perpl's minimum deposit for this market's exchange, in whole asset units (10 AUSD on testnet).
+   * Every open deposits its whole amount, so this is the smallest ticket; the backend refuses
+   * anything smaller from the same `min_deposit_amount` field.
+   */
+  minDeposit: number;
 };
 
 /** What `GET /markets` carries; the rest comes from Perpl's context. */
@@ -98,8 +104,17 @@ function venueFields(m: PerplContextMarket): Pick<
   };
 }
 
+/** `instances[].min_deposit_amount` for the market's exchange, in whole units of its collateral token. */
+function minDepositOf(context: PerplContext, m: PerplContextMarket): number {
+  const instance = context.instances.find((i) => i.id === m.instance_id) ?? context.instances[0];
+  if (!instance) return 0;
+  const token = context.tokens.find((t) => t.id === instance.collateral_token_id);
+  const raw = Number(instance.min_deposit_amount ?? 0);
+  return token && Number.isFinite(raw) ? raw / 10 ** token.decimals : 0;
+}
+
 /** The same mapping the backend's market sync applies to `GET /v1/pub/context`. */
-function fromContext(m: PerplContextMarket): LaxuMarket {
+function fromContext(m: PerplContextMarket, context: PerplContext): LaxuMarket {
   const base = m.symbol.trim().toUpperCase().replace(/-?USD$/, "") || m.symbol.toUpperCase();
   const mark = m.state?.mrk ? m.state.mrk / 10 ** m.config.price_decimals : 0;
   const prev = m.state?.prv ? m.state.prv / 10 ** m.config.price_decimals : 0;
@@ -120,6 +135,7 @@ function fromContext(m: PerplContextMarket): LaxuMarket {
     minOrderSize: step,
     minOrderNotional: "0",
     ...venueFields(m),
+    minDeposit: minDepositOf(context, m),
   };
 }
 
@@ -141,7 +157,7 @@ export async function getMarkets(): Promise<LaxuMarket[]> {
     return rows.flatMap((row): LaxuMarket[] => {
       const venue = byId.get(row.venueMarketId);
       // A market Perpl no longer lists can't be charted or priced: leave it out.
-      return venue ? [{ ...row, ...venueFields(venue) }] : [];
+      return venue ? [{ ...row, ...venueFields(venue), minDeposit: minDepositOf(context, venue) }] : [];
     });
   } catch (error) {
     // an HTTP error from a live backend is real; a network failure is the fallback's cue
@@ -153,7 +169,7 @@ export async function getMarkets(): Promise<LaxuMarket[]> {
     const context = await fetchContext(undefined, env.perplApiUrl);
     return context.markets
       .filter((m) => m.config.is_open)
-      .map(fromContext)
+      .map((m) => fromContext(m, context))
       .sort((a, b) => a.displaySymbol.localeCompare(b.displaySymbol));
   }
 }

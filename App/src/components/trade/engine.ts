@@ -121,16 +121,21 @@ export const MIN_TRADE_AMOUNT = 1;
 /** An asset amount as the decimal string the backend wants ("50", "12.5"), never exponent notation. */
 export const amountString = (n: number) => n.toFixed(6).replace(/\.?0+$/, "");
 
+/** The smallest ticket, and why (empty when it is just the UI's own floor). */
+export type MinTrade = { amount: number; note: string };
+
 /**
- * The smallest ticket Perpl can fill at this leverage: the position must be at
- * least one lot, `10^-sizeDecimals` of the base asset. A 5% buffer covers the
- * mark moving before the order lands. Null before the mark is known.
+ * The smallest ticket Perpl will take: at least its minimum deposit (every open
+ * deposits the whole amount; the backend refuses less from the same Perpl
+ * field), and at least one lot, `10^-sizeDecimals` of the base asset, at this
+ * leverage, with a 5% buffer for the mark moving before the order lands.
  */
-export function minTradeFor(market: LaxuMarket, lev: number, mark: number | null): number {
-  if (mark === null || !(lev > 0)) return MIN_TRADE_AMOUNT;
-  const oneLotUsd = mark / 10 ** market.sizeDecimals;
-  const needed = Math.ceil(((oneLotUsd / lev) * 1.05) * 100) / 100;
-  return Math.max(MIN_TRADE_AMOUNT, needed);
+export function minTradeFor(market: LaxuMarket, lev: number, mark: number | null): MinTrade {
+  const deposit = market.minDeposit > 0 ? market.minDeposit : 0;
+  const lot = mark === null || !(lev > 0) ? 0 : Math.ceil(((mark / 10 ** market.sizeDecimals / lev) * 1.05) * 100) / 100;
+  if (lot > deposit && lot > MIN_TRADE_AMOUNT) return { amount: lot, note: "one lot at this leverage" };
+  if (deposit > MIN_TRADE_AMOUNT) return { amount: deposit, note: "Perpl's minimum deposit" };
+  return { amount: MIN_TRADE_AMOUNT, note: "" };
 }
 
 /**
@@ -289,7 +294,9 @@ export function useTradeEngine() {
   /** Leverage is clamped to the active market's cap. */
   const lev = Math.max(1, Math.min(st.lev, levMax || 1));
   const mark = market.live ? markOf(market.live.baseAsset) : null;
-  const minTrade = market.live ? minTradeFor(market.live, lev, mark) : MIN_TRADE_AMOUNT;
+  const { amount: minTrade, note: minTradeNote } = market.live
+    ? minTradeFor(market.live, lev, mark)
+    : { amount: MIN_TRADE_AMOUNT, note: "" };
 
   /**
    * Why the ticket can't submit right now, or null. `nudge`: the fix is test
@@ -300,7 +307,7 @@ export function useTradeEngine() {
     if (!wallet || !owner) return { reason: "Loading your wallet…" };
     // No live market, no ticket: the screen never falls back to made-up limits.
     if (!market.live) return { reason: marketsFailed ? "Markets are unavailable right now" : "Loading markets…" };
-    if (!(st.size >= minTrade)) return { reason: `Minimum trade is ${minTrade} ${symbol}${minTrade > MIN_TRADE_AMOUNT ? " at this leverage" : ""}` };
+    if (!(st.size >= minTrade)) return { reason: `Minimum trade is ${minTrade} ${symbol}${minTradeNote ? ` (${minTradeNote})` : ""}` };
     if (balances.asset === null || balances.mon === null) return { reason: "Checking your balances…" };
     if (balances.asset < st.size) return { reason: `Not enough ${symbol} for this trade`, nudge: true };
     if (balances.mon <= MIN_GAS_MON) return { reason: "Not enough MON for gas", nudge: true };
@@ -308,7 +315,7 @@ export function useTradeEngine() {
     if (triggerProblem(st.side, st.sl, st.tp, mark)) return { reason: "Fix the stop loss / take profit" };
     if (open.phase.kind !== "idle" && open.phase.kind !== "error") return { reason: "Opening your position…" };
     return null;
-  }, [authenticated, wallet, owner, market.live, marketsFailed, st.size, minTrade, st.side, st.sl, st.tp, mark, balances.asset, balances.mon, symbol, slots, open.phase.kind]);
+  }, [authenticated, wallet, owner, market.live, marketsFailed, st.size, minTrade, minTradeNote, st.side, st.sl, st.tp, mark, balances.asset, balances.mon, symbol, slots, open.phase.kind]);
 
   const startOpen = open.start;
   const placeOrder = useCallback(() => {
@@ -373,6 +380,7 @@ export function useTradeEngine() {
     levMax,
     mark,
     minTrade,
+    minTradeNote,
     marketsFailed,
     markOf,
     selected,

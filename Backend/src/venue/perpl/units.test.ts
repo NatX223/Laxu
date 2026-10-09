@@ -7,6 +7,7 @@ import {
   assetToCns,
   chainTypeToDirection,
   cnsToAsset,
+  exchangeMinDeposit,
   lotsToSize6,
   pnsToPrice18,
   price18ToPns,
@@ -84,4 +85,14 @@ test("units: API position side 1/2 and chain positionType 0/1 map to the same di
   assert.equal(chainTypeToDirection(1), "short");
   assert.throws(() => apiSideToDirection(0));
   assert.throws(() => chainTypeToDirection(2));
+});
+
+test("units: exchangeMinDeposit reads min_deposit_amount of the configured exchange, any address case", () => {
+  const instances = [
+    { address: "0x1111111111111111111111111111111111111111", min_deposit_amount: "1" },
+    { address: "0x1964c32f0be608e7d29302aff5e61268e72080cc", min_deposit_amount: "10000000" },
+  ];
+  assert.equal(exchangeMinDeposit(instances, "0x1964C32f0bE608E7D29302AFF5E61268E72080cc"), "10000000");
+  assert.equal(cnsToAsset(BigInt(exchangeMinDeposit(instances, instances[1].address)), scale(6, 6)), 10_000_000n);
+  assert.throws(() => exchangeMinDeposit(instances, "0x2222222222222222222222222222222222222222"), /no exchange instance/);
 });

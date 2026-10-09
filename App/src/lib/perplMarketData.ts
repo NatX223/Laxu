@@ -48,6 +48,8 @@ type RawState = {
 
 export type PerplContextMarket = {
   id: number;
+  /** The exchange instance this market trades on (`instances[].id`). */
+  instance_id?: number;
   perpetual_id: number;
   symbol: string;
   name: string;
@@ -66,8 +68,8 @@ export type PerplContextMarket = {
 };
 
 export type PerplContext = {
-  instances: Array<{ min_account_open_amount: string }>;
-  tokens: Array<{ symbol: string; decimals: number }>;
+  instances: Array<{ id: number; collateral_token_id: number; min_account_open_amount: string; min_deposit_amount: string }>;
+  tokens: Array<{ id: number; symbol: string; decimals: number }>;
   markets: PerplContextMarket[];
 };
 

@@ -23,7 +23,7 @@ const INPUT: React.CSSProperties = {
 
 /** The order ticket column, with the fill toast docked to its bottom edge. */
 export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt: MarketView }) {
-  const { st, set, lev, levMax, minTrade, balances, blocker, open, actions } = engine;
+  const { st, set, lev, levMax, minTrade, minTradeNote, balances, blocker, open, actions } = engine;
   const { mark, dp } = mkt;
   const { symbol } = useAsset();
   const laxuFeePct = useLaxuFeePct();
@@ -148,7 +148,7 @@ export default function OrderTicket({ engine, mkt }: { engine: TradeEngine; mkt:
           {hasMarket && (
             <div style={{ fontSize: 10.5, color: "#998dbd" }}>
               Minimum {minTrade} {symbol}
-              {minTrade > 1 ? " at this leverage" : ""}
+              {minTradeNote ? ` (${minTradeNote})` : ""}
             </div>
           )}
           <div style={{ display: "flex", gap: 5 }}>
