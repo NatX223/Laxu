@@ -385,7 +385,7 @@ The full commit history is public in this repository and covers the build window
 - Perpl access: one funded wallet per slot, with a trade-scope API key (see [`docs/slot-provisioning.md`](docs/slot-provisioning.md)), and AUSD from Perpl's faucet: 100 per slot as its account reserve (Perpl's minimum account open), plus whatever you seed into the vault
 - MON for the deployer, operator, faucet and slot wallets
 
-⚠ TODO: `docs/deploy.md` (hosting the backend and app) does not exist yet.
+To host it (backend on a VM behind Caddy, Neon, frontend on Vercel), see [`docs/deploy.md`](docs/deploy.md).
 
 ### Contracts
 
