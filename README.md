@@ -10,7 +10,7 @@ Monad testnet (chain 10143) · trading on Perpl · Privy wallets and loan protec
 
 - **Problem:** a trader with an open, winning perp position on Perpl can only get cash out by closing it or pulling margin, which raises its leverage.
 - **What Laxu does:** turns each open Perpl trade into its own token on Monad with an isolated lending pool, so the holder can borrow AUSD against the trade's live value.
-- **Loan protection:** Laxu can repay part of a loan from the borrower's own wallet when its health falls to a level they chose, through a Privy signer whose policy allows `repay` on that one pool and nothing else.
+- **Loan protection:** Laxu can repay part of a loan from the borrower's own wallet when its health falls to a level they chose, through a Privy signer whose policy allows `repay` on that one pool and nothing else. ([how it uses Privy](docs/PRIVY.md))
 - **In 5 minutes a judge can:** get test funds, open a 3× long on ETH or BTC, borrow against it, repay and withdraw ([steps](#try-it-yourself-for-judges)).
 - **The Monad parts:** six Laxu contracts plus one token clone and one pool clone per trade; the token reads Perpl's mark price from Perpl's exchange contract on every valuation ([details](#how-laxu-uses-monad)).
 
@@ -19,19 +19,20 @@ Monad testnet (chain 10143) · trading on Perpl · Privy wallets and loan protec
 1. [The problem, and who has it](#the-problem-and-who-has-it)
 2. [How Laxu works](#how-laxu-works)
 3. [How Laxu uses Monad](#how-laxu-uses-monad)
-4. [Where this codebase started](#where-this-codebase-started)
-5. [Try it yourself (for judges)](#try-it-yourself-for-judges)
-6. [What works / what doesn't work yet](#what-works--what-doesnt-work-yet)
-7. [Key decisions and tradeoffs](#key-decisions-and-tradeoffs)
-8. [Code tour](#code-tour)
-9. [Tests: the risky path](#tests-the-risky-path)
-10. [Edge cases handled](#edge-cases-handled)
-11. [Deployed contracts](#deployed-contracts)
-12. [Tech stack and credits](#tech-stack-and-credits)
-13. [How this was built](#how-this-was-built)
-14. [Run it locally](#run-it-locally)
-15. [Roadmap](#roadmap)
-16. [Acknowledgments and license](#acknowledgments-and-license)
+4. [How Laxu uses Privy](#how-laxu-uses-privy)
+5. [Where this codebase started](#where-this-codebase-started)
+6. [Try it yourself (for judges)](#try-it-yourself-for-judges)
+7. [What works / what doesn't work yet](#what-works--what-doesnt-work-yet)
+8. [Key decisions and tradeoffs](#key-decisions-and-tradeoffs)
+9. [Code tour](#code-tour)
+10. [Tests: the risky path](#tests-the-risky-path)
+11. [Edge cases handled](#edge-cases-handled)
+12. [Deployed contracts](#deployed-contracts)
+13. [Tech stack and credits](#tech-stack-and-credits)
+14. [How this was built](#how-this-was-built)
+15. [Run it locally](#run-it-locally)
+16. [Roadmap](#roadmap)
+17. [Acknowledgments and license](#acknowledgments-and-license)
 
 ## The problem, and who has it
 
@@ -117,6 +118,16 @@ Numbers from `LendingPool._riskTierFor` and `Backend/src/services/protectionMath
 Monad charges the gas limit, and the backend adds 30% to every estimate (`GAS_BUFFER_BPS`), so these costs include that headroom.
 
 **RPC pacing.** Monad's public RPC answers "requests limited to 25/sec" and refuses `eth_getLogs` over 100 blocks. The backend spaces requests to 12 per second (`RPC_MAX_RPS`) and splits log queries into 100-block windows (`RPC_LOGS_MAX_RANGE`).
+
+## How Laxu uses Privy
+
+- **Login and embedded wallets:** email, Google or an external wallet; an email user gets a Privy embedded wallet at first login.
+- **User-signed transactions:** the user's wallet signs every payment, approval and lending call through Privy's provider.
+- **Token verification:** the backend verifies the Privy access token on every authenticated call and reads the user's wallet from Privy, never from the request.
+- **Signers and policies:** for loan protection, Laxu's server key is added as a signer on the user's embedded wallet, under a policy that allows only `repay()` on one pool, up to a per-call cap, on chain 10143.
+- **Proof:** with only the server key, an allowed call from a user's wallet was mined and three forbidden calls were refused with `policy_violation` (Privy app: Laxu).
+
+Full explanation, policy, evidence and screenshots: [docs/PRIVY.md](docs/PRIVY.md)
 
 ## Where this codebase started
 
