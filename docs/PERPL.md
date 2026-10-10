@@ -106,7 +106,7 @@ Laxu runs on Monad testnet (chain ID 10143) and trades on Perpl, the perpetual f
 
 **Strictly increasing `rq`, one mover per slot.** The `rq` and the slot's counter are saved in one transaction, with a SQL `GREATEST` so the counter never moves backwards ([`requests.ts:57-68`](../Backend/src/venue/requests.ts#L57-L68)). `withSlotLock` serialises every money movement on a slot ([`float.ts:68`](../Backend/src/services/float.ts#L68)). Workers run in **one** backend process; the [deploy guide](deploy.md) forbids a second backend with workers on the same database.
 
-**Slot allocator.** A slot is reserved when a user is told to pay. Unpaid reservations expire after 15 minutes and are swept before each reservation ([`allocator.ts:37`](../Backend/src/services/allocator.ts#L37)). **Capacity: 2 slots** in the database checked on 9 Oct 2026 (Perpl accounts 824 and 841), so 2 trades can be open at once. Adding slots needs key enrolment, which waits on Perpl (§10).
+**Slot allocator.** A slot is reserved when a user is told to pay. Unpaid reservations expire after 15 minutes and are swept before each reservation ([`allocator.ts:37`](../Backend/src/services/allocator.ts#L37)). **Capacity: 5 slots** in the database checked on 10 Oct 2026 (Perpl accounts 824, 841, 1063, 1064 and 1065), so 5 trades can be open at once. The keys for 1063–1065 were made by hand in Perpl's API-key page; programmatic enrolment still waits on Perpl (§10).
 
 **Connection handling.**
 - Reconnect with backoff (1 s, 2 s … 60 s), reset when a wallet snapshot arrives. `1001` reconnects at once, and a `3401` re-signs with a fresh nonce ([`tradingWs.ts:497-512`](../Backend/src/venue/perpl/tradingWs.ts#L497-L512)).
@@ -219,7 +219,7 @@ No strategy bot was run for this submission; a funding-rate demo strategy is on 
 | Good risk management | Caps per market, an on-chain venue check, a mark the operator cannot set, tiered LTV, and liquidation that never pauses. | §5.1; `Venue.js`, `Lending.js` |
 | Ability to be profitable | Laxu makes a trader's results verifiable and lets them earn 2% of buy-ins; the PnL of our own test trades is reported, and it is negative. | §5.2 |
 | Real on-chain activity | 69 Perpl orders, 37 fills, 4 tokens, 4 pools, 7 borrows and 1 repay, plus a full verified transaction trail. | §7 |
-| **Known gaps** | 1008 socket closes are open; 2 slots; no strategy bot; funding is operator-reported; the hosted keep-alive run is not done. | §10 |
+| **Known gaps** | 1008 socket closes are open; 5 slots; no strategy bot; funding is operator-reported; the hosted keep-alive run is not done. | §10 |
 
 ## 7. Real on-chain activity
 
@@ -338,7 +338,7 @@ Foundry form (not run here, since Foundry is not installed on this machine): `ca
 | Delegated accounts | Not built | Per-user accounts via `target_profile`; the owner-side grant is not documented |
 | `1008 ping timeout` | Open | 1 close per socket in 30 min idle, 6–9 in a 53-min soak; evidence points outside Laxu; orders are safe through the lot rule |
 | Keep-alive run on a hosted backend | Not yet run | Local runs only |
-| Slots | 2 | Accounts 824 and 841; 2 trades open at once |
+| Slots | 5 | Accounts 824, 841, 1063, 1064 and 1065; 5 trades open at once |
 | Funding | Operator-reported | Bounded by `FUNDING_MAX_AGE` (2 h); the mark is not operator-reported |
 | Strategy bot | None | A funding-rate demo strategy is on the roadmap |
 | Protect this loan | Server QA passed | The full trigger-and-repay cycle is not exercised ([`PRIVY.md`](PRIVY.md)) |

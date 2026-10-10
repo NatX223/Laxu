@@ -15,7 +15,8 @@
  *   4. allowOrderForwarding(true) unless the API already reports fw == true;
  *   5. API key: from env, else enrolled (PERPL_ORIGIN set; printed, never stored),
  *      else manual steps printed;
- *   6. upsert OperatorWallet + SubaccountSlot (accountIndex 0).
+ *   6. upsert OperatorWallet + SubaccountSlot (accountIndex 0) -- a new slot
+ *      whose account holds more than the reserve is not registered (see slots:register).
  *
  * Secrets are never written to disk or the database -- only their ref names.
  */
@@ -44,6 +45,8 @@ const log = createLogger("provision");
 const SLOT_COUNT = Number(process.env.SLOT_COUNT || 5);
 const MIN_GAS_WEI = BigInt(process.env.SLOT_MIN_GAS_WEI || "500000000000000000");
 const APPROVED = 2n ** 128n;
+/// Same threshold sweep.ts uses: below it, money above the reserve is left in place.
+const DUST = 10_000n;
 /// Where newly enrolled keys go (0600, gitignored); the same file scripts/perpl/enrollSlotKey.ts writes.
 const SECRETS_FILE = "./secrets/slot-keys.json";
 
@@ -169,6 +172,22 @@ async function provisionOne(n: number): Promise<Row> {
 
   // 6. Database.
   const reserve = config.perplSlotReserve ? BigInt(config.perplSlotReserve) : minAsset;
+  // settlement.ts pays everything above the reserve to the first position's
+  // holders, so a new slot that already holds more is left to slots:register,
+  // which can sweep the excess to the float first.
+  const existing = await db.subaccountSlot.findFirst({
+    where: { operatorWallet: { address: address.toLowerCase() }, accountIndex: 0 },
+  });
+  if (!existing) {
+    const free = account.balanceCNS > account.lockedBalanceCNS ? account.balanceCNS - account.lockedBalanceCNS : 0n;
+    const excess = cnsToAsset(free, scale) - reserve;
+    if (excess > DUST) {
+      row.status =
+        `not registered: account holds ${excess} units above the ${reserve} reserve; ` +
+        `run npm run slots:register -- --slots ${n} --sweep-excess --apply`;
+      return row;
+    }
+  }
   const operatorWallet = await db.operatorWallet.upsert({
     where: { address: address.toLowerCase() },
     create: { address: address.toLowerCase(), evmSignerRef: evmRef },

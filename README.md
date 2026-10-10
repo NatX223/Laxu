@@ -244,7 +244,7 @@ Steps 1, 2, 5 and 9 of that run passed only after a fix or a corrected check; th
 - **Pending with Perpl:** origin whitelisting (needed for key enrollment and direct browser market data) and a builder code, asked through the hackathon mentors, no answer yet. Builder-code support is built behind a flag that is off.
 - **Custody:** Laxu's slot wallets hold the Perpl accounts. Per-user delegated accounts are planned, pending exchange support.
 - **Funding, fills and settlement amounts are operator-reported.** The mark is not.
-- **Capacity:** one open trade per slot. The database checked on 10 Oct 2026 has 2 slots (Perpl accounts 824 and 841); more slots are being provisioned. ⚠ TODO: final slot count on the deployed backend.
+- **Capacity:** one open trade per slot. The database checked on 10 Oct 2026 has 5 slots (Perpl accounts 824, 841, 1063, 1064 and 1065), so 5 trades can be open at once. ⚠ TODO: final slot count on the deployed backend.
 - **Unaudited contracts.** Bad debt is not absorbed and there is no insurance fund.
 - **Perpl testnet may reset**, which would affect every open position.
 - **Not built:** a vault screen for lenders (the ERC-4626 vault works directly) and a secondary market. The liquidation bot is built and off by default; `liquidate()` is open to anyone.
