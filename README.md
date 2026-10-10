@@ -244,7 +244,7 @@ Steps 1, 2, 5 and 9 of that run passed only after a fix or a corrected check; th
 - **Pending with Perpl:** origin whitelisting (needed for key enrollment and direct browser market data) and a builder code, asked through the hackathon mentors, no answer yet. Builder-code support is built behind a flag that is off.
 - **Custody:** Laxu's slot wallets hold the Perpl accounts. Per-user delegated accounts are planned, pending exchange support.
 - **Funding, fills and settlement amounts are operator-reported.** The mark is not.
-- **Capacity:** one open trade per slot. ⚠ TODO: number of slots on the deployed backend (the local database checked on 9 Oct 2026 had 2).
+- **Capacity:** one open trade per slot. The database checked on 10 Oct 2026 has 2 slots (Perpl accounts 824 and 841); more slots are being provisioned. ⚠ TODO: final slot count on the deployed backend.
 - **Unaudited contracts.** Bad debt is not absorbed and there is no insurance fund.
 - **Perpl testnet may reset**, which would affect every open position.
 - **Not built:** a vault screen for lenders (the ERC-4626 vault works directly) and a secondary market. The liquidation bot is built and off by default; `liquidate()` is open to anyone.
@@ -382,7 +382,7 @@ Perpl's contracts (external, not Laxu's):
 All are compatible with this repository's MIT license. Third-party code inside this repository (not through npm):
 
 - **[OpenZeppelin community contracts](https://github.com/OpenZeppelin/openzeppelin-community-contracts)** (MIT): `ERC7540.sol`, `ERC7540AdminDeposit.sol`, `ERC7540AdminRedeem.sol` and the unchanged `interfaces/IERC7540.sol`, `interfaces/IERC7575.sol`, vendored in [`Contracts/contracts/vendor/`](Contracts/contracts/vendor/). Four storage fields, `_deposits`, `_redeems`, `_totalPendingDepositAssets` and `_totalPendingRedeemShares`, are `internal` instead of upstream's `private`, so `PositionToken` can settle on fulfil and cancel requests. Each header records the change and the upstream file's sha256.
-- **Perpl's Exchange ABI**, trimmed from `PerplFoundation/dex-sdk` (commit `01b9910`) into `Contracts/abi/perpl/Exchange.json`; `IPerplExchange.sol` is generated from it. ⚠ TODO: confirm dex-sdk's license.
+- **Perpl's Exchange ABI**, trimmed from `PerplFoundation/dex-sdk` (commit `01b9910`) into `Contracts/abi/perpl/Exchange.json`; `IPerplExchange.sol` is generated from it. dex-sdk is MIT-licensed (Copyright (c) 2025 Perpl Foundation); the notice is kept in [`Contracts/abi/perpl/LICENSE`](Contracts/abi/perpl/LICENSE).
 - **[TradingView Lightweight Charts](https://github.com/tradingview/lightweight-charts)** (Apache-2.0, via npm): charts keep the TradingView attribution its license asks for.
 
 Origin: this codebase started as an earlier build of Laxu on Robinhood Chain, trading on Arcus, made for the Arbitrum Open House Singapore buildathon ([details](#where-this-codebase-started)). Everything else was written for Laxu.
