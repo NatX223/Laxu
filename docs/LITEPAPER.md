@@ -130,7 +130,7 @@ Any failure before the fill refunds the user: from the slot wallet, or first wit
 - **Max leverage per market** is min(20, `initial_margin` / 100); Perpl silently clamps anything higher. As read on 5 October 2026: BTC 15×, ETH 12×, SOL 10×, PUMP 5×, MON, ZEC, LIT and NEAR 3×. The backend re-reads them every minute.
 - **Taker fee** 0.0345%. **Funding interval** 43 minutes on testnet.
 
-**Slots** move `free → reserved → allocated → free`. Expired reservations return to `free` under the payment check's row lock, so a payment and an expiry never both win. Each slot has a lock. Settled slots are swept to their reserve and reused. **A new open is refused before the user pays when no slot is free.** 7 concurrent positions today, one per provisioned slot. More slots can be provisioned at any time; capacity is a matter of provisioning more wallets and keys, nothing in the contracts changes.
+**Slots** move `free → reserved → allocated → free`. Expired reservations return to `free` under the payment check's row lock, so a payment and an expiry never both win. Each slot has a lock. Settled slots are swept to their reserve and reused. **A new open is refused before the user pays when no slot is free.** 2 concurrent positions today, one per provisioned slot; more slots are being provisioned. Capacity is a matter of wallets and keys; nothing in the contracts changes.
 
 **Units.** A unit error does not throw; the numbers just come out wrong. All conversions live in `Backend/src/lib/units.ts` and `Backend/src/venue/perpl/units.ts`, integers only, with tests; `PerplReader` does the same maths on-chain.
 
@@ -276,7 +276,7 @@ Test names are quoted exactly from the test files.
 | The signer can only `repay` one pool | Privy policy | *"repay policy: one ALLOW rule, no DENY (a DENY-all would override the ALLOW), and the ABI is repay only"* |
 | Protection never overpays | `planRepay` clamps | *"never more than the debt"*; *"each clamp binds on its own, and is named"* |
 
-**Totals:** **143 contract tests** pass (76 `PositionToken`, 38 lending, 29 Perpl integration and trust model), plus 2 pending tests that need a live Monad RPC. **151 backend tests** pass.
+**Totals:** **143 contract tests** pass (76 `PositionToken`, 38 lending, 29 Perpl integration and trust model), plus 2 pending tests that need a live Monad RPC. **152 backend tests** pass.
 
 ```bash
 cd Contracts && npx hardhat test
@@ -294,7 +294,7 @@ cd Backend && npm test
 | Fills and settlement | Supplied by the backend; contract checks the trade at creation and that payouts are funded | Orders and withdrawals go through Perpl | On-chain fill checks **(planned)** |
 | Liveness | One backend | Speed of shipping | Multiple reporters **(planned)** |
 | Lending | **On-chain**, permissionless liquidation | Lenders' money sits here | — |
-| Capacity | 7 concurrent positions today, one per provisioned slot | One wallet = one account | Provision more wallets and keys; nothing in the contracts changes |
+| Capacity | 2 concurrent positions today, one per provisioned slot; more slots are being provisioned | One wallet = one account | Provision more wallets and keys; nothing in the contracts changes |
 | Protection signer | Privy authorization key, bounded to `repay` by policy and allowance | Repaying means signing as the user | Smart accounts or session keys **(planned)** |
 
 **When the backend fails:** repay and liquidation stay open; borrowing works while funding is within `FUNDING_MAX_AGE`; closed positions' collateral can always be withdrawn; buy-ins and redeems can be cancelled after 20 minutes; interrupted opens resume or refund; protection stops acting. Settlement after a close needs the backend. **Not handled:** a Perpl outage longer than the timeouts during an open needs manual resolution.
@@ -444,7 +444,7 @@ All cut to ship **open → borrow** end to end.
 | Slippage bound | 1%, clamped per market | `PERPL_SLIPPAGE_BPS` |
 | Reservation timeout | 15 minutes | `RESERVATION_TIMEOUT_MS` |
 | Slot reserve | 100 AUSD | Perpl minimum account open |
-| Slots provisioned | 7 (operator setting, not a contract limit) | backend database |
+| Slots provisioned | 2, more being provisioned (an operator setting) | backend database |
 | Protection interval / cooldown | 5 s / 60 s | `PROTECTION_INTERVAL_MS`, `PROTECTION_COOLDOWN_S` |
 | Protection max spend | 500 AUSD | `PROTECTION_MAX_SPEND_CAP` |
 | RPC pacing | 12 req/s; logs in 100-block windows | `RPC_MAX_RPS`, `RPC_LOGS_MAX_RANGE` |
