@@ -20,19 +20,20 @@ Monad testnet (chain 10143) · trading on Perpl · Privy wallets and loan protec
 2. [How Laxu works](#how-laxu-works)
 3. [How Laxu uses Monad](#how-laxu-uses-monad)
 4. [How Laxu uses Privy](#how-laxu-uses-privy)
-5. [Where this codebase started](#where-this-codebase-started)
-6. [Try it yourself (for judges)](#try-it-yourself-for-judges)
-7. [What works / what doesn't work yet](#what-works--what-doesnt-work-yet)
-8. [Key decisions and tradeoffs](#key-decisions-and-tradeoffs)
-9. [Code tour](#code-tour)
-10. [Tests: the risky path](#tests-the-risky-path)
-11. [Edge cases handled](#edge-cases-handled)
-12. [Deployed contracts](#deployed-contracts)
-13. [Tech stack and credits](#tech-stack-and-credits)
-14. [How this was built](#how-this-was-built)
-15. [Run it locally](#run-it-locally)
-16. [Roadmap](#roadmap)
-17. [Acknowledgments and license](#acknowledgments-and-license)
+5. [Perpl](#perpl)
+6. [Where this codebase started](#where-this-codebase-started)
+7. [Try it yourself (for judges)](#try-it-yourself-for-judges)
+8. [What works / what doesn't work yet](#what-works--what-doesnt-work-yet)
+9. [Key decisions and tradeoffs](#key-decisions-and-tradeoffs)
+10. [Code tour](#code-tour)
+11. [Tests: the risky path](#tests-the-risky-path)
+12. [Edge cases handled](#edge-cases-handled)
+13. [Deployed contracts](#deployed-contracts)
+14. [Tech stack and credits](#tech-stack-and-credits)
+15. [How this was built](#how-this-was-built)
+16. [Run it locally](#run-it-locally)
+17. [Roadmap](#roadmap)
+18. [Acknowledgments and license](#acknowledgments-and-license)
 
 ## The problem, and who has it
 
@@ -128,6 +129,15 @@ Monad charges the gas limit, and the backend adds 30% to every estimate (`GAS_BU
 - **Proof:** with only the server key, an allowed call from a user's wallet was mined and three forbidden calls were refused with `policy_violation` (Privy app: Laxu).
 
 Full explanation, policy, evidence and screenshots: [docs/PRIVY.md](docs/PRIVY.md)
+
+## Perpl
+
+- **What Laxu does on Perpl:** opens a real Perpl position per trade (deposit, signed IOC order over the trading WebSocket, fill forwarded on-chain), then mints a token that prices itself from Perpl's on-chain mark.
+- **The angle, idea 04 (social trading):** every position is a verifiable token. Anyone can follow a trader by buying a slice of that exact position, the creator earns 2% of each buy-in, and holders can borrow against it. Options and structured products are not built.
+- **The four criteria:** *execution:* resumable opens, and an order with an unknown result is decided on-chain, never sent twice. *Risk:* per-market leverage caps, an on-chain venue check, tiered LTV, liquidation that never pauses. *Profitability:* infrastructure, not a strategy; our test trades are reported with real fees and funding (net −$0.62). *On-chain:* 69 Perpl orders, 37 fills, 4 tokens, 4 pools, 7 borrows, 1 repay, counted by `npm run perpl:report`.
+- **Related:** loan protection with Privy is in [docs/PRIVY.md](docs/PRIVY.md).
+
+[Full explanation, evidence and screenshots](docs/PERPL.md) ([PDF](docs/PERPL.pdf))
 
 ## Where this codebase started
 

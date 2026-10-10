@@ -20,7 +20,8 @@
     "abi:gen": "ts-node-dev --transpile-only --respawn=false scripts/genAbi.ts",
     "probe": "ts-node --transpile-only scripts/probe.ts",
     "e2e": "ts-node --transpile-only scripts/e2e.ts",
-    "soak": "ts-node --transpile-only scripts/soak.ts"
+    "soak": "ts-node --transpile-only scripts/soak.ts",
+    "perpl:report": "ts-node --transpile-only scripts/perplReport.ts"
   },
   "prisma": {
     "seed": "ts-node-dev --transpile-only --respawn=false prisma/seed.ts"
