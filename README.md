@@ -2,7 +2,14 @@
 
 Borrow against your open perp trade while it keeps running.
 
-Monad testnet (chain 10143) · trading on Perpl · Privy wallets and loan protection · 3-min demo video: ⚠ TODO (video URL) · live app: ⚠ TODO (hosted URL; until then, [run it locally](#run-it-locally)) · [litepaper](docs/LITEPAPER.pdf) ([Markdown](docs/LITEPAPER.md))
+| | |
+|---|---|
+| **Network** | Monad testnet (chain 10143) |
+| **Trading** | Perpl |
+| **Wallets** | Privy wallets and loan protection |
+| **Demo video (3 min)** | ⚠ TODO (video URL) |
+| **Live app** | ⚠ TODO (hosted URL; until then, [run it locally](#run-it-locally)) |
+| **Litepaper** | [PDF](docs/LITEPAPER.pdf) · [Markdown](docs/LITEPAPER.md) |
 
 > Testnet only, no real funds. Laxu is an independent project built on Perpl, not affiliated with or endorsed by Perpl, Monad or Privy. The contracts are unaudited.
 
